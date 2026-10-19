@@ -103,12 +103,23 @@ internal/
 | POST | `/api/v1/users` | Tạo user `{email, name}` | 201 |
 | GET | `/api/v1/users?limit=&offset=` | Danh sách, mặc định limit 20, tối đa 100; offset tối đa 10.000 | 200 |
 | GET | `/api/v1/users/{id}` | Lấy một user | 200 |
-| PATCH | `/api/v1/users/{id}` | Cập nhật từng phần; field không gửi thì giữ nguyên | 200 |
+| PATCH | `/api/v1/users/{id}` | Cập nhật từng phần; field không gửi thì giữ nguyên. Hỗ trợ `If-Match` | 200 |
 | DELETE | `/api/v1/users/{id}` | Xoá | 204 |
 | GET | `/healthz` | Liveness: tiến trình còn sống | 200 |
 | GET | `/readyz` | Readiness: 503 khi đang shutdown; ping database nếu bật `READINESS_CHECK_DB` | 200 / 503 |
 
 Kết quả danh sách có dạng `{"data": [...], "meta": {"limit": 20, "offset": 0, "total": 42}}`.
+
+### Cập nhật đồng thời (optimistic locking)
+
+Mỗi user có trường `version`, tăng 1 sau mỗi thay đổi, và được trả kèm header `ETag: "<version>"` ở POST/GET/PATCH. Repository ghi bằng compare-and-set (`UPDATE ... WHERE id = $1 AND version = $n`), nên hai PATCH chạy song song không bao giờ âm thầm ghi đè thay đổi của nhau.
+
+| Client gửi | Hành vi khi có xung đột |
+|---|---|
+| Không có `If-Match` (hoặc `*`) | Service tự đọc lại và áp dụng lại thay đổi, tối đa 3 lần. Vẫn xung đột thì trả **409** |
+| `If-Match: "<version>"` | Version không khớp (client đang giữ dữ liệu cũ) thì trả **412**, không retry. Client cần GET lại rồi quyết định |
+
+`If-Match` là tuỳ chọn để không phá vỡ client cũ. Client nào hiển thị form sửa cho người dùng nên gửi nó, vì đó là cách duy nhất phát hiện "người dùng sửa trên dữ liệu đã cũ".
 
 ### Định dạng lỗi (RFC 9457)
 
@@ -133,6 +144,8 @@ Mọi lỗi trả về `Content-Type: application/problem+json`:
 | `*domain.ValidationError` | 422, kèm danh sách lỗi theo từng trường |
 | `domain.ErrUserNotFound` (kể cả id không đúng định dạng UUID) | 404 |
 | `domain.ErrEmailAlreadyExists` | 409 |
+| `domain.ErrVersionConflict` khi không có `If-Match` (đã retry 3 lần) | 409 |
+| `If-Match` không khớp version hiện tại | 412 |
 | JSON hỏng, `limit`/`offset` không phải số | 400 |
 | `offset` lớn hơn 10.000 | 422 |
 | Client đóng kết nối trước khi có response (`context.Canceled`) | 499, log mức WARN, không tính là lỗi server |
@@ -202,6 +215,8 @@ Contract test là thứ đảm bảo kiến trúc giữ đúng lời hứa: mộ
 **UUIDv7 tự viết (khoảng 50 dòng).** ID tăng dần theo thời gian giúp index B-tree ít bị phân mảnh. Generator đứng sau port, nên muốn chuyển sang `google/uuid` chỉ cần viết một adapter mới.
 
 **`Clock` là một port.** Test của service hoàn toàn tất định. Đồng hồ thật làm tròn thời gian xuống micro giây để khớp độ chính xác của PostgreSQL, nhờ đó dữ liệu đọc lại bằng đúng dữ liệu đã ghi.
+
+**Optimistic locking thay vì `SELECT ... FOR UPDATE`.** Compare-and-set trên cột `version` chỉ cần một câu `UPDATE`, không giữ lock hay transaction giữa lúc đọc và ghi, và cùng cơ chế đó cung cấp luôn `ETag`. Đánh đổi: khi rất nhiều request cùng sửa *một* bản ghi, một phần sẽ nhận 409 và phải thử lại. Với dữ liệu kiểu hồ sơ user (tranh chấp thấp) đây là lựa chọn phù hợp.
 
 **Migration nhúng và idempotent.** Cách này đủ dùng cho repo mẫu. Dự án thật nên dùng công cụ có bảng version như golang-migrate, goose hoặc atlas.
 

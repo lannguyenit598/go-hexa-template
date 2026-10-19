@@ -63,6 +63,7 @@ func decode[T any](t *testing.T, rec *httptest.ResponseRecorder) T {
 
 type user struct {
 	ID, Email, Name string
+	Version         int64
 }
 
 type problem struct {
@@ -237,4 +238,52 @@ func TestAPIMiddleware_AppliesToAPIOnly(t *testing.T) {
 	})
 	expectStatus(t, api.do(http.MethodGet, "/api/v1/users", ""), http.StatusUnauthorized)
 	expectStatus(t, api.do(http.MethodGet, "/healthz", ""), http.StatusOK)
+}
+
+func (a *apiClient) doWithHeader(method, path, body, key, value string) *httptest.ResponseRecorder {
+	a.t.Helper()
+	req := httptest.NewRequest(method, path, strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(key, value)
+	rec := httptest.NewRecorder()
+	a.h.ServeHTTP(rec, req)
+	return rec
+}
+
+func TestETagAndIfMatch(t *testing.T) {
+	api := newAPI(t, nil)
+	rec := api.do(http.MethodPost, "/api/v1/users", `{"email":"e@example.com","name":"E"}`)
+	expectStatus(t, rec, http.StatusCreated)
+	created := decode[user](t, rec)
+	if rec.Header().Get("ETag") != `"1"` || created.Version != 1 {
+		t.Fatalf("ETag = %q, version = %d", rec.Header().Get("ETag"), created.Version)
+	}
+	path := "/api/v1/users/" + created.ID
+
+	if got := api.do(http.MethodGet, path, "").Header().Get("ETag"); got != `"1"` {
+		t.Fatalf("GET ETag = %q", got)
+	}
+
+	// Đúng version: thành công, ETag mới.
+	rec = api.doWithHeader(http.MethodPatch, path, `{"name":"E2"}`, "If-Match", `"1"`)
+	expectStatus(t, rec, http.StatusOK)
+	if rec.Header().Get("ETag") != `"2"` {
+		t.Fatalf("ETag after update = %q", rec.Header().Get("ETag"))
+	}
+
+	// Version cũ, weak ETag, rác: đều 412 và không ghi gì.
+	for _, ifMatch := range []string{`"1"`, `W/"2"`, `garbage`} {
+		rec = api.doWithHeader(http.MethodPatch, path, `{"name":"Lost"}`, "If-Match", ifMatch)
+		expectStatus(t, rec, http.StatusPreconditionFailed)
+		if p := decode[problem](t, rec); p.Status != http.StatusPreconditionFailed {
+			t.Fatalf("problem %+v", p)
+		}
+	}
+	if got := decode[user](t, api.do(http.MethodGet, path, "")); got.Name != "E2" || got.Version != 2 {
+		t.Fatalf("rejected update must not be applied: %+v", got)
+	}
+
+	// "*" và không có If-Match: không kiểm tra version.
+	expectStatus(t, api.doWithHeader(http.MethodPatch, path, `{"name":"E3"}`, "If-Match", "*"), http.StatusOK)
+	expectStatus(t, api.do(http.MethodPatch, path, `{"name":"E4"}`), http.StatusOK)
 }

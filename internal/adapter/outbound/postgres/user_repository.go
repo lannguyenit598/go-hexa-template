@@ -114,6 +114,7 @@ type userRow struct {
 	Name      string    `db:"name"`
 	CreatedAt time.Time `db:"created_at"`
 	UpdatedAt time.Time `db:"updated_at"`
+	Version   int64     `db:"version"`
 }
 
 func (r userRow) toDomain() domain.User {
@@ -123,15 +124,16 @@ func (r userRow) toDomain() domain.User {
 		Name:      r.Name,
 		CreatedAt: r.CreatedAt.UTC(),
 		UpdatedAt: r.UpdatedAt.UTC(),
+		Version:   r.Version,
 	}
 }
 
-const selectCols = `id::text AS id, email, name, created_at, updated_at`
+const selectCols = `id::text AS id, email, name, created_at, updated_at, version`
 
 func (r *UserRepository) Create(ctx context.Context, u domain.User) error {
 	_, err := r.pool.Exec(ctx,
-		`INSERT INTO users (id, email, name, created_at, updated_at) VALUES ($1, $2, $3, $4, $5)`,
-		u.ID.String(), u.Email, u.Name, u.CreatedAt, u.UpdatedAt)
+		`INSERT INTO users (id, email, name, created_at, updated_at, version) VALUES ($1, $2, $3, $4, $5, $6)`,
+		u.ID.String(), u.Email, u.Name, u.CreatedAt, u.UpdatedAt, u.Version)
 	return mapError(err)
 }
 
@@ -168,17 +170,27 @@ func (r *UserRepository) List(ctx context.Context, limit, offset int) ([]domain.
 	return users, total, nil
 }
 
-func (r *UserRepository) Update(ctx context.Context, u domain.User) error {
+// Update là compare-and-set trên cột version: một câu UPDATE duy nhất, không cần
+// transaction hay SELECT ... FOR UPDATE, nên không giữ lock giữa lúc đọc và ghi.
+func (r *UserRepository) Update(ctx context.Context, u domain.User, expectedVersion int64) error {
 	tag, err := r.pool.Exec(ctx,
-		`UPDATE users SET email = $2, name = $3, updated_at = $4 WHERE id = $1`,
-		u.ID.String(), u.Email, u.Name, u.UpdatedAt)
+		`UPDATE users SET email = $2, name = $3, updated_at = $4, version = $5 WHERE id = $1 AND version = $6`,
+		u.ID.String(), u.Email, u.Name, u.UpdatedAt, u.Version, expectedVersion)
 	if err != nil {
 		return mapError(err)
 	}
-	if tag.RowsAffected() == 0 {
+	if tag.RowsAffected() > 0 {
+		return nil
+	}
+	// Không dòng nào được ghi: hoặc bản ghi không tồn tại, hoặc version đã đổi.
+	var exists bool
+	if err := r.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM users WHERE id = $1)`, u.ID.String()).Scan(&exists); err != nil {
+		return mapError(err)
+	}
+	if !exists {
 		return domain.ErrUserNotFound
 	}
-	return nil
+	return domain.ErrVersionConflict
 }
 
 func (r *UserRepository) Delete(ctx context.Context, id domain.UserID) error {

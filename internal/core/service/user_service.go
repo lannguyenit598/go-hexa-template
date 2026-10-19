@@ -4,6 +4,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/example/userapi/internal/core/domain"
@@ -76,22 +77,36 @@ func (s *UserService) List(ctx context.Context, q port.ListUsersQuery) (port.Use
 	return port.UserPage{Users: users, Total: total, Limit: limit, Offset: offset}, nil
 }
 
+// maxUpdateAttempts: số lần thử khi xung đột version mà client không gửi If-Match.
+// Apply là hàm thuần (pure), nên đọc lại rồi áp dụng lại thay đổi là an toàn.
+const maxUpdateAttempts = 3
+
 func (s *UserService) Update(ctx context.Context, cmd port.UpdateUserCmd) (domain.User, error) {
-	current, err := s.Get(ctx, cmd.ID)
-	if err != nil {
-		return domain.User{}, err
+	for attempt := 1; ; attempt++ {
+		current, err := s.Get(ctx, cmd.ID)
+		if err != nil {
+			return domain.User{}, err
+		}
+		if cmd.ExpectedVersion != 0 && current.Version != cmd.ExpectedVersion {
+			return domain.User{}, domain.ErrVersionConflict
+		}
+		next, err := current.Apply(cmd.Changes, s.clock.Now())
+		if err != nil {
+			return domain.User{}, err
+		}
+		if next == current {
+			return current, nil // không có gì thay đổi, khỏi ghi xuống storage
+		}
+		err = s.repo.Update(ctx, next, current.Version)
+		switch {
+		case err == nil:
+			return next, nil
+		case errors.Is(err, domain.ErrVersionConflict) && cmd.ExpectedVersion == 0 && attempt < maxUpdateAttempts:
+			continue // ai đó vừa ghi đè giữa lúc đọc và ghi: đọc lại và áp dụng lại
+		default:
+			return domain.User{}, fmt.Errorf("update user: %w", err)
+		}
 	}
-	next, err := current.Apply(cmd.Changes, s.clock.Now())
-	if err != nil {
-		return domain.User{}, err
-	}
-	if next == current {
-		return current, nil // không có gì thay đổi, khỏi ghi xuống storage
-	}
-	if err := s.repo.Update(ctx, next); err != nil {
-		return domain.User{}, fmt.Errorf("update user: %w", err)
-	}
-	return next, nil
 }
 
 func (s *UserService) Delete(ctx context.Context, id domain.UserID) error {

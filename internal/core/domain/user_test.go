@@ -27,6 +27,9 @@ func TestNewUser_NormalizesInput(t *testing.T) {
 	if !u.CreatedAt.Equal(t0) || !u.UpdatedAt.Equal(t0) {
 		t.Errorf("timestamps not set")
 	}
+	if u.Version != 1 {
+		t.Errorf("version = %d, want 1", u.Version)
+	}
 }
 
 func TestNewUser_Validation(t *testing.T) {
@@ -71,13 +74,13 @@ func TestApply(t *testing.T) {
 
 	same := "A"
 	got, err := u.Apply(domain.Changes{Name: &same}, t1)
-	if err != nil || !got.UpdatedAt.Equal(t0) {
-		t.Fatalf("no-op change must not bump UpdatedAt: %v %v", got.UpdatedAt, err)
+	if err != nil || !got.UpdatedAt.Equal(t0) || got.Version != 1 {
+		t.Fatalf("no-op change must not bump UpdatedAt/Version: %+v %v", got, err)
 	}
 
 	newName := "B"
 	got, err = u.Apply(domain.Changes{Name: &newName}, t1)
-	if err != nil || got.Name != "B" || !got.UpdatedAt.Equal(t1) {
+	if err != nil || got.Name != "B" || !got.UpdatedAt.Equal(t1) || got.Version != 2 {
 		t.Fatalf("rename failed: %+v %v", got, err)
 	}
 	if u.Name != "A" {

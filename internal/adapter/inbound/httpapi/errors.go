@@ -47,6 +47,8 @@ func toProblem(err error) problem {
 		return problem{Status: http.StatusNotFound, Detail: "user not found"}
 	case errors.Is(err, domain.ErrEmailAlreadyExists):
 		return problem{Status: http.StatusConflict, Detail: "a user with this email already exists"}
+	case errors.Is(err, domain.ErrVersionConflict):
+		return problem{Status: http.StatusConflict, Detail: "the user was modified concurrently, please retry"}
 	case errors.Is(err, context.DeadlineExceeded):
 		return problem{Status: http.StatusServiceUnavailable, Detail: "request timed out"}
 	case errors.Is(err, context.Canceled):

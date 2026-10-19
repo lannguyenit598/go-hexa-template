@@ -50,6 +50,8 @@ type User struct {
 	Name      string
 	CreatedAt time.Time
 	UpdatedAt time.Time
+	// Version tăng 1 sau mỗi thay đổi; dùng cho optimistic locking và ETag.
+	Version int64
 }
 
 // NewUser tạo User mới sau khi chuẩn hoá và kiểm tra dữ liệu đầu vào.
@@ -66,6 +68,7 @@ func NewUser(id UserID, email, name string, now time.Time) (User, error) {
 		Name:      normName,
 		CreatedAt: now,
 		UpdatedAt: now,
+		Version:   1,
 	}, nil
 }
 
@@ -76,7 +79,7 @@ type Changes struct {
 }
 
 // Apply áp dụng thay đổi lên bản sao của User và trả về bản mới.
-// Nếu không có gì thay đổi thì UpdatedAt giữ nguyên.
+// Nếu không có gì thay đổi thì UpdatedAt và Version giữ nguyên.
 func (u User) Apply(c Changes, now time.Time) (User, error) {
 	v := &ValidationError{}
 	next := u
@@ -91,6 +94,7 @@ func (u User) Apply(c Changes, now time.Time) (User, error) {
 	}
 	if next.Email != u.Email || next.Name != u.Name {
 		next.UpdatedAt = now
+		next.Version = u.Version + 1
 	}
 	return next, nil
 }

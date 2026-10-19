@@ -11,6 +11,8 @@ import (
 var (
 	ErrUserNotFound       = errors.New("user not found")
 	ErrEmailAlreadyExists = errors.New("email already exists")
+	// ErrVersionConflict: bản ghi đã bị thay đổi kể từ lúc được đọc (optimistic locking).
+	ErrVersionConflict = errors.New("version conflict")
 )
 
 // FieldError mô tả một lỗi trên một trường dữ liệu.
