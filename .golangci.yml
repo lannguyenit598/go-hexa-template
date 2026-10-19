@@ -1,0 +1,57 @@
+version: "2"
+
+linters:
+  enable:
+    - depguard # thực thi quy tắc phụ thuộc của kiến trúc hexagonal (xem rules bên dưới)
+    - errorlint # so sánh lỗi bằng errors.Is/As, wrap bằng %w
+    - bodyclose
+    - noctx # không gọi I/O mạng mà thiếu context
+    - gosec
+    - misspell
+    - unconvert
+  settings:
+    depguard:
+      rules:
+        # Core (domain, port, service) chỉ được phụ thuộc thư viện chuẩn và chính nó.
+        # Test của core được phép dùng adapter (ví dụ repository in-memory) nên loại trừ $test.
+        core:
+          files:
+            - "**/internal/core/**"
+            - "!$test"
+          allow:
+            - $gostd
+            - github.com/example/userapi/internal/core
+        # Adapter inbound không được biết storage; adapter outbound không được biết transport.
+        inbound-adapters:
+          files:
+            - "**/internal/adapter/inbound/**"
+            - "!$test"
+          deny:
+            - pkg: github.com/example/userapi/internal/adapter/outbound
+              desc: inbound adapters must only talk to the core through ports
+            - pkg: github.com/jackc/pgx
+              desc: inbound adapters must not know about the database
+        outbound-adapters:
+          files:
+            - "**/internal/adapter/outbound/**"
+            - "!$test"
+          deny:
+            - pkg: github.com/example/userapi/internal/adapter/inbound
+              desc: outbound adapters must not depend on transports
+            - pkg: github.com/labstack/echo
+              desc: outbound adapters must not depend on the HTTP framework
+    gosec:
+      excludes:
+        - G115 # chuyển đổi số nguyên có kiểm tra phạm vi ở nơi parse (config)
+  exclusions:
+    presets:
+      - std-error-handling
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/example/userapi

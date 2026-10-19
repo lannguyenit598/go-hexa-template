@@ -46,7 +46,7 @@ func Migrate(ctx context.Context, dsn string, logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	locker, err := lock.NewPostgresSessionLocker()
 	if err != nil {
@@ -73,7 +73,7 @@ func Migrate(ctx context.Context, dsn string, logger *slog.Logger) error {
 // khởi động để dừng sớm với thông báo rõ ràng, thay vì chạy rồi lỗi "column does not exist".
 func PendingMigrations(ctx context.Context, pool *pgxpool.Pool) (bool, error) {
 	db := stdlib.OpenDBFromPool(pool)
-	defer db.Close()
+	defer func() { _ = db.Close() }() // không đóng pool, chỉ đóng wrapper
 	provider, err := goose.NewProvider(goose.DialectPostgres, db, migrationsFS())
 	if err != nil {
 		return false, fmt.Errorf("create migration provider: %w", err)

@@ -25,9 +25,8 @@ test-integration: db-up ## Chạy thêm contract test trên PostgreSQL (sẽ TRU
 cover: ## Báo cáo coverage
 	go test -coverprofile=coverage.out ./... && go tool cover -func=coverage.out | tail -1
 
-lint: ## gofmt + go vet
-	@test -z "$$(gofmt -l .)" || (echo "Cần chạy gofmt:"; gofmt -l .; exit 1)
-	go vet ./...
+lint: ## golangci-lint (gồm depguard kiểm tra quy tắc phụ thuộc của kiến trúc)
+	golangci-lint run ./...
 
 build: ## Build binary vào ./bin
 	CGO_ENABLED=0 go build -trimpath -ldflags "-X main.version=$(VERSION)" -o bin/userapi ./cmd/userapi

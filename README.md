@@ -64,11 +64,17 @@ flowchart LR
     MAIN["cmd/userapi/main.go<br/>composition root"] --> HTTP & SVC & MEM & PG & SYS
 ```
 
-**Quy tắc phụ thuộc** là quy tắc duy nhất phải giữ: mũi tên import luôn hướng vào trong. `domain` không import gì của dự án. `port` chỉ import `domain`. `service` chỉ import `domain` và `port`. Adapter import core, còn core không bao giờ import adapter. Chỉ `main.go` biết tất cả mọi thứ, vì đây là nơi lắp ráp. Có thể kiểm tra nhanh bằng lệnh:
+**Quy tắc phụ thuộc** là quy tắc duy nhất phải giữ: mũi tên import luôn hướng vào trong. `domain` không import gì của dự án. `port` chỉ import `domain`. `service` chỉ import `domain` và `port`. Adapter import core, còn core không bao giờ import adapter. Chỉ `main.go` biết tất cả mọi thứ, vì đây là nơi lắp ráp.
 
-```bash
-go list -deps ./internal/core/... | grep -E 'echo|pgx|adapter'   # phải không in ra gì
-```
+Quy tắc này được **CI thực thi tự động** bằng `depguard` trong `.golangci.yml`, không dựa vào việc review bằng mắt:
+
+| Rule | Ràng buộc |
+|---|---|
+| `core` | `internal/core/**` chỉ được import thư viện chuẩn và chính `internal/core` |
+| `inbound-adapters` | Không import adapter outbound hay driver database |
+| `outbound-adapters` | Không import adapter inbound hay Echo |
+
+Test của core (`*_test.go`) được miễn, vì dùng repository in-memory làm test double là hợp lý. Chạy `make lint` để kiểm tra local.
 
 ### Cấu trúc thư mục
 
@@ -211,15 +217,22 @@ Probe không bị trace. Trace context từ upstream (`traceparent`) luôn đư�
 ```bash
 make test               # unit + HTTP, không cần database
 make test-integration   # thêm contract test trên PostgreSQL (TRUNCATE bảng users!)
+make lint               # golangci-lint, gồm depguard
 ```
 
 | Tầng | Ở đâu | Kiểm tra gì |
 |---|---|---|
 | Domain | `core/domain/*_test.go` | Chuẩn hoá, validate, `Apply` không làm thay đổi bản gốc |
 | Service | `core/service/*_test.go` | Use case, dùng clock và ID giả để kết quả tất định |
-| Contract | `adapter/outbound/repotest` | **Cùng một bộ test** chạy cho memory và postgres |
-| HTTP | `adapter/inbound/httpapi/*_test.go` | Toàn bộ luồng CRUD qua `httptest`, status code, body problem+json |
+| Contract | `adapter/outbound/repotest` | **Cùng một bộ test** chạy cho memory và postgres, gồm cả compare-and-set theo version |
+| Đồng thời | `adapter/outbound/postgres/*_test.go` | 20 goroutine cùng update một user trên PostgreSQL thật: version cuối = 1 + số lần ghi thành công |
+| HTTP | `adapter/inbound/httpapi/*_test.go` | Luồng CRUD, problem+json, ETag/If-Match, 499, IP qua proxy tin cậy, probe không bị log/trace, tên span theo route |
+| Observability | `observability/*_test.go` | `request_id`/`trace_id` được gắn vào log từ ctx |
 | Config | `config/*_test.go` | Giá trị mặc định và lỗi cấu hình |
+
+**CI** (`.github/workflows/ci.yml`): lint (golangci-lint + depguard, `go mod tidy` sạch), test với `-race` trên một PostgreSQL service container (nên contract test và test đồng thời luôn chạy), chạy migration hai lần để chắc chắn idempotent, `govulncheck`, và build Docker image.
+
+Integration test dùng PostgreSQL do CI (service container) hoặc `docker compose` cung cấp, qua `TEST_DATABASE_URL`, thay vì testcontainers-go. Lý do: testcontainers kéo thêm vài chục dependency gián tiếp (Docker client...) vào `go.mod` chỉ để dựng một container mà CI và compose đã dựng sẵn. Khi dự án cần nhiều loại hạ tầng (Kafka, Redis...) trong test thì testcontainers mới đáng giá.
 
 Contract test là thứ đảm bảo kiến trúc giữ đúng lời hứa: một adapter mới chỉ được coi là đúng khi nó vượt qua `repotest.Run`.
 

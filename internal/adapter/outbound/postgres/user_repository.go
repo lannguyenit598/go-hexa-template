@@ -71,7 +71,7 @@ func Connect(ctx context.Context, dsn string, opts PoolOptions) (*pgxpool.Pool, 
 	// Span cho mỗi query (chỉ câu SQL, KHÔNG kèm giá trị tham số để không lộ PII vào trace)
 	// và span chờ lấy kết nối từ pool: pool cạn kết nối hiện ra ngay trên trace.
 	// Dùng provider toàn cục, nên là no-op khi OpenTelemetry chưa được bật.
-	cfg.ConnConfig.Tracer = otelpgx.NewTracer(otelpgx.WithTrimSQLInSpanName())
+	cfg.ConnConfig.Tracer = otelpgx.NewTracer()
 
 	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
