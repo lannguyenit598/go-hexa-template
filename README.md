@@ -71,8 +71,9 @@ Quy tắc này được **CI thực thi tự động** bằng `depguard` trong `
 | Rule | Ràng buộc |
 |---|---|
 | `core` | `internal/core/**` chỉ được import thư viện chuẩn và chính `internal/core` |
-| `inbound-adapters` | Không import adapter outbound hay driver database |
-| `outbound-adapters` | Không import adapter inbound hay Echo |
+| `inbound-adapters` | Không import adapter outbound, driver database hay `internal/app` |
+| `outbound-adapters` | Không import adapter inbound, Echo, adapter outbound khác, bộ test `repotest` hay `internal/app` |
+| `platform` | `internal/config`, `internal/observability` không import core, adapter hay `internal/app` |
 
 Test của core (`*_test.go`) được miễn, vì dùng repository in-memory làm test double là hợp lý. Chạy `make lint` để kiểm tra local.
 
