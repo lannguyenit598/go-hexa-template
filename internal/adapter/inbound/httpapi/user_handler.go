@@ -103,7 +103,7 @@ func (h *userHandler) create(c *echo.Context) error {
 }
 
 func (h *userHandler) get(c *echo.Context) error {
-	u, err := h.users.Get(c.Request().Context(), domain.UserID(c.Param("id")))
+	u, err := h.users.Get(c.Request().Context(), c.Param("id"))
 	if err != nil {
 		return err
 	}
@@ -143,8 +143,9 @@ func (h *userHandler) update(c *echo.Context) error {
 		return err
 	}
 	u, err := h.users.Update(c.Request().Context(), port.UpdateUserCmd{
-		ID:              domain.UserID(c.Param("id")),
-		Changes:         domain.Changes{Email: req.Email, Name: req.Name},
+		ID:              c.Param("id"),
+		Email:           req.Email,
+		Name:            req.Name,
 		ExpectedVersion: expected,
 	})
 	if err != nil {
@@ -159,7 +160,7 @@ func (h *userHandler) update(c *echo.Context) error {
 }
 
 func (h *userHandler) delete(c *echo.Context) error {
-	if err := h.users.Delete(c.Request().Context(), domain.UserID(c.Param("id"))); err != nil {
+	if err := h.users.Delete(c.Request().Context(), c.Param("id")); err != nil {
 		return err
 	}
 	return c.NoContent(http.StatusNoContent)

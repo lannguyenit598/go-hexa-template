@@ -248,6 +248,8 @@ Contract test là thứ đảm bảo kiến trúc giữ đúng lời hứa: mộ
 
 **`Email` là value object.** Chỉ tạo được qua `domain.ParseEmail` (đã chuẩn hoá và hợp lệ), nên không thể gán chuỗi rác vào `User.Email`. Adapter lưu trữ dựng lại bằng `domain.EmailFromStore`, hàm này **cố ý không validate lại**: nếu sau này quy tắc được thắt chặt, bản ghi cũ vẫn đọc được thay vì làm mọi request liên quan lỗi 500. Các field khác của `User` vẫn exported: trong Go, private hoá toàn bộ kèm getter tạo nhiều boilerplate mà lợi ích không tương xứng; chỉ những giá trị có invariant riêng mới cần kiểu riêng.
 
+**Inbound port chỉ nhận primitive.** `port.UpdateUserCmd` và tham số của `Get`/`Delete` là `string`, `*string`, `int64`, không phải `domain.UserID` hay `domain.Changes`. Mọi transport (HTTP hôm nay, gRPC hay consumer từ queue sau này) dùng chung một hợp đồng mà không phải tự dựng kiểu domain, và việc validate ID nằm ở một chỗ duy nhất trong core thay vì phụ thuộc vào việc mỗi adapter nhớ gọi `Valid()`. Kết quả trả về vẫn là `domain.User`; adapter được phép đọc kiểu domain.
+
 **Domain không mang tag JSON.** `domain.FieldError` được map sang DTO `fieldError` trong `httpapi`; định dạng JSON thuộc về adapter.
 
 **`Clock` là một port.** Test của service hoàn toàn tất định. Đồng hồ thật làm tròn thời gian xuống micro giây để khớp độ chính xác của PostgreSQL, nhờ đó dữ liệu đọc lại bằng đúng dữ liệu đã ghi.

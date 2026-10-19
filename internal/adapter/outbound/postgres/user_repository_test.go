@@ -15,7 +15,6 @@ import (
 	"github.com/example/userapi/internal/adapter/outbound/postgres"
 	"github.com/example/userapi/internal/adapter/outbound/repotest"
 	"github.com/example/userapi/internal/adapter/outbound/system"
-	"github.com/example/userapi/internal/core/domain"
 	"github.com/example/userapi/internal/core/port"
 	"github.com/example/userapi/internal/core/service"
 )
@@ -71,7 +70,7 @@ func TestUserRepositoryContract(t *testing.T) {
 			go func() {
 				defer wg.Done()
 				name := fmt.Sprintf("Worker %d", i)
-				_, err := svc.Update(ctx, port.UpdateUserCmd{ID: u.ID, Changes: domain.Changes{Name: &name}})
+				_, err := svc.Update(ctx, port.UpdateUserCmd{ID: u.ID.String(), Name: &name})
 				switch {
 				case err == nil:
 					successes.Add(1)
@@ -82,7 +81,7 @@ func TestUserRepositoryContract(t *testing.T) {
 		}
 		wg.Wait()
 
-		got, err := svc.Get(ctx, u.ID)
+		got, err := svc.Get(ctx, u.ID.String())
 		if err != nil {
 			t.Fatal(err)
 		}

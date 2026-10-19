@@ -50,10 +50,26 @@ func (s *UserService) Register(ctx context.Context, cmd port.RegisterUserCmd) (d
 	return u, nil
 }
 
-func (s *UserService) Get(ctx context.Context, id domain.UserID) (domain.User, error) {
+// parseUserID chuyển ID dạng chuỗi từ inbound adapter sang domain.UserID. ID sai định dạng
+// được coi là không tồn tại (404): không gửi chuỗi rác xuống storage (PostgreSQL sẽ lỗi 22P02)
+// và không tiết lộ định dạng ID cho client.
+func parseUserID(raw string) (domain.UserID, error) {
+	id := domain.UserID(raw)
 	if !id.Valid() {
-		return domain.User{}, fmt.Errorf("user %s: %w", id, port.ErrNotFound)
+		return "", fmt.Errorf("user %s: %w", raw, port.ErrNotFound)
 	}
+	return id, nil
+}
+
+func (s *UserService) Get(ctx context.Context, rawID string) (domain.User, error) {
+	id, err := parseUserID(rawID)
+	if err != nil {
+		return domain.User{}, err
+	}
+	return s.get(ctx, id)
+}
+
+func (s *UserService) get(ctx context.Context, id domain.UserID) (domain.User, error) {
 	u, err := s.repo.GetByID(ctx, id)
 	if err != nil {
 		return domain.User{}, fmt.Errorf("get user: %w", err)
@@ -89,15 +105,20 @@ func (s *UserService) List(ctx context.Context, q port.ListUsersQuery) (port.Use
 const maxUpdateAttempts = 3
 
 func (s *UserService) Update(ctx context.Context, cmd port.UpdateUserCmd) (domain.User, error) {
+	id, err := parseUserID(cmd.ID)
+	if err != nil {
+		return domain.User{}, err
+	}
+	changes := domain.Changes{Email: cmd.Email, Name: cmd.Name}
 	for attempt := 1; ; attempt++ {
-		current, err := s.Get(ctx, cmd.ID)
+		current, err := s.get(ctx, id)
 		if err != nil {
 			return domain.User{}, err
 		}
 		if cmd.ExpectedVersion != 0 && current.Version != cmd.ExpectedVersion {
 			return domain.User{}, fmt.Errorf("user %s: %w", cmd.ID, port.ErrVersionConflict)
 		}
-		next, err := current.Apply(cmd.Changes, s.clock.Now())
+		next, err := current.Apply(changes, s.clock.Now())
 		if err != nil {
 			return domain.User{}, err
 		}
@@ -110,7 +131,7 @@ func (s *UserService) Update(ctx context.Context, cmd port.UpdateUserCmd) (domai
 			return next, nil
 		case errors.Is(err, port.ErrVersionConflict) && cmd.ExpectedVersion == 0 && attempt < maxUpdateAttempts:
 			// Ai đó vừa ghi giữa lúc đọc và ghi: đọc lại và áp dụng lại. Log để thấy được mức tranh chấp.
-			s.logger.InfoContext(ctx, "user update hit a version conflict, retrying", "user_id", cmd.ID.String(), "attempt", attempt)
+			s.logger.InfoContext(ctx, "user update hit a version conflict, retrying", "user_id", id.String(), "attempt", attempt)
 			continue
 		default:
 			return domain.User{}, fmt.Errorf("update user: %w", err)
@@ -118,9 +139,10 @@ func (s *UserService) Update(ctx context.Context, cmd port.UpdateUserCmd) (domai
 	}
 }
 
-func (s *UserService) Delete(ctx context.Context, id domain.UserID) error {
-	if !id.Valid() {
-		return fmt.Errorf("user %s: %w", id, port.ErrNotFound)
+func (s *UserService) Delete(ctx context.Context, rawID string) error {
+	id, err := parseUserID(rawID)
+	if err != nil {
+		return err
 	}
 	if err := s.repo.Delete(ctx, id); err != nil {
 		return fmt.Errorf("delete user: %w", err)

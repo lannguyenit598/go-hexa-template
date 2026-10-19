@@ -16,6 +16,10 @@ import (
 )
 
 // ---------- Inbound (driving) ----------
+//
+// Command và query đầu vào chỉ chứa kiểu primitive: mọi transport (HTTP, gRPC, CLI, consumer
+// từ queue) dùng chung một hợp đồng mà không cần biết kiểu domain; việc chuyển sang kiểu domain
+// và validate (kể cả định dạng ID) do service đảm nhận. Kết quả trả về vẫn là kiểu domain.
 
 type RegisterUserCmd struct {
 	Email string
@@ -23,8 +27,9 @@ type RegisterUserCmd struct {
 }
 
 type UpdateUserCmd struct {
-	ID      domain.UserID
-	Changes domain.Changes
+	ID    string
+	Email *string // nil = giữ nguyên
+	Name  *string // nil = giữ nguyên
 	// ExpectedVersion: version client đã đọc (từ If-Match). 0 = client không yêu cầu kiểm tra;
 	// khi đó service vẫn dùng optimistic locking với version nó vừa đọc và tự retry khi xung đột.
 	ExpectedVersion int64
@@ -45,10 +50,10 @@ type UserPage struct {
 // UserService là use case của ứng dụng.
 type UserService interface {
 	Register(ctx context.Context, cmd RegisterUserCmd) (domain.User, error)
-	Get(ctx context.Context, id domain.UserID) (domain.User, error)
+	Get(ctx context.Context, id string) (domain.User, error)
 	List(ctx context.Context, q ListUsersQuery) (UserPage, error)
 	Update(ctx context.Context, cmd UpdateUserCmd) (domain.User, error)
-	Delete(ctx context.Context, id domain.UserID) error
+	Delete(ctx context.Context, id string) error
 }
 
 // ---------- Outbound (driven) ----------
