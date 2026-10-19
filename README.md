@@ -101,12 +101,12 @@ internal/
 | Method | Path | Mô tả | Thành công |
 |---|---|---|---|
 | POST | `/api/v1/users` | Tạo user `{email, name}` | 201 |
-| GET | `/api/v1/users?limit=&offset=` | Danh sách, mặc định limit 20, tối đa 100 | 200 |
+| GET | `/api/v1/users?limit=&offset=` | Danh sách, mặc định limit 20, tối đa 100; offset tối đa 10.000 | 200 |
 | GET | `/api/v1/users/{id}` | Lấy một user | 200 |
 | PATCH | `/api/v1/users/{id}` | Cập nhật từng phần; field không gửi thì giữ nguyên | 200 |
 | DELETE | `/api/v1/users/{id}` | Xoá | 204 |
 | GET | `/healthz` | Liveness: tiến trình còn sống | 200 |
-| GET | `/readyz` | Readiness: ping database (khi `STORAGE=postgres`) | 200 / 503 |
+| GET | `/readyz` | Readiness: 503 khi đang shutdown; ping database nếu bật `READINESS_CHECK_DB` | 200 / 503 |
 
 Kết quả danh sách có dạng `{"data": [...], "meta": {"limit": 20, "offset": 0, "total": 42}}`.
 
@@ -134,6 +134,8 @@ Mọi lỗi trả về `Content-Type: application/problem+json`:
 | `domain.ErrUserNotFound` (kể cả id không đúng định dạng UUID) | 404 |
 | `domain.ErrEmailAlreadyExists` | 409 |
 | JSON hỏng, `limit`/`offset` không phải số | 400 |
+| `offset` lớn hơn 10.000 | 422 |
+| Client đóng kết nối trước khi có response (`context.Canceled`) | 499, log mức WARN, không tính là lỗi server |
 | Route không tồn tại / sai method / body quá lớn | 404 / 405 / 413 |
 | Lỗi không lường trước | 500, không lộ chi tiết nội bộ ra ngoài; lỗi gốc được ghi vào log |
 
@@ -147,10 +149,30 @@ Toàn bộ việc ánh xạ nằm trong một hàm duy nhất là `httpapi.toPro
 | `STORAGE` | `memory` | `memory` hoặc `postgres` |
 | `DATABASE_URL` | (trống) | Bắt buộc khi `STORAGE=postgres` |
 | `LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error` |
-| `SHUTDOWN_TIMEOUT` | `10s` | Thời gian chờ các request đang chạy khi nhận SIGTERM |
+| `SHUTDOWN_DELAY` | `0s` | Thời gian chờ sau SIGTERM trước khi ngừng nhận kết nối. Trên Kubernetes đặt 5s–10s |
+| `SHUTDOWN_TIMEOUT` | `10s` | Thời gian chờ các request đang chạy hoàn tất, tính sau `SHUTDOWN_DELAY` |
 | `REQUEST_TIMEOUT` | `10s` | Timeout của context cho mỗi request |
+| `TRUSTED_PROXIES` | (trống) | CIDR của LB/ingress, phân tách bằng dấu phẩy. Khi có, IP client lấy từ `X-Forwarded-For` |
+| `READINESS_CHECK_DB` | `false` | `/readyz` có ping database hay không (timeout 500ms) |
+| `DB_MAX_CONNS` | `10` | Số kết nối tối đa **mỗi pod** |
+| `DB_MIN_CONNS` | `0` | Số kết nối giữ sẵn |
+| `DB_MAX_CONN_LIFETIME` | `30m` | Tuổi thọ tối đa của một kết nối (giúp cân bằng lại sau failover) |
+| `DB_MAX_CONN_IDLE_TIME` | `5m` | Đóng kết nối rảnh quá lâu |
+| `DB_STATEMENT_TIMEOUT` | `5s` | `statement_timeout` phía PostgreSQL |
 
-Cấu hình sai sẽ làm tiến trình dừng ngay khi khởi động, và mọi lỗi được báo cùng một lúc. Log ra stdout ở dạng JSON, mỗi request một dòng `http_request`: 2xx/3xx ghi mức INFO, 4xx ghi mức WARN, 5xx ghi mức ERROR kèm lỗi gốc.
+Cấu hình sai sẽ làm tiến trình dừng ngay khi khởi động, và mọi lỗi được báo cùng một lúc. Log ra stdout ở dạng JSON, mỗi request một dòng `http_request` (trừ `/healthz`, `/readyz`): 2xx/3xx ghi mức INFO, 4xx ghi mức WARN, 5xx ghi mức ERROR kèm lỗi gốc.
+
+## Triển khai production
+
+**Shutdown không làm rơi request.** Khi nhận SIGTERM, app đánh dấu `/readyz` là 503, **vẫn phục vụ bình thường** trong `SHUTDOWN_DELAY`, rồi mới đóng listener và chờ tối đa `SHUTDOWN_TIMEOUT` cho request đang chạy. Lý do: Kubernetes gỡ pod khỏi Endpoints và cập nhật kube-proxy/ingress *bất đồng bộ* với SIGTERM; đóng listener ngay sẽ gây 502 ở mỗi lần rolling deploy. Image distroless không có `sleep` cho `preStop`, nên việc chờ được làm trong app. Đặt `terminationGracePeriodSeconds` lớn hơn `SHUTDOWN_DELAY + SHUTDOWN_TIMEOUT` (ví dụ 5s + 10s → 30s). Nhấn Ctrl+C lần hai để thoát ngay khi chạy local.
+
+**Readiness không phụ thuộc database dùng chung.** Nếu `/readyz` ping database, một sự cố database vài giây sẽ làm *mọi* pod cùng lúc unready, service mất hết endpoint và client nhận 503 từ LB thay vì nhận lỗi nhanh rồi tự hồi phục khi database trở lại. Vì vậy mặc định readiness chỉ phản ánh trạng thái của chính pod. Theo dõi sức khoẻ database bằng metrics và alert.
+
+**Kích thước pool.** Mặc định của pgx là `max(4, runtime.NumCPU())`, và trong container `NumCPU` là số core của *node*, không phải CPU limit của pod. Luôn đặt `DB_MAX_CONNS` sao cho `DB_MAX_CONNS × số replica (lúc HPA scale tối đa, cộng thêm pod của lần deploy) < max_connections` của PostgreSQL, chừa chỗ cho migration và kết nối quản trị. Khi số replica lớn, đặt PgBouncer phía trước.
+
+**IP client.** Sau LB, `RemoteAddr` là IP của LB. Đặt `TRUSTED_PROXIES` bằng đúng dải IP của LB/ingress; app chỉ tin các hop `X-Forwarded-For` nằm trong dải này (các dải private mặc định *không* được tin, vì mọi pod trong cluster đều nằm trong mạng private).
+
+**Xác thực.** Template **không có xác thực**, và `GET /api/v1/users` trả email của mọi user. Gắn middleware xác thực/phân quyền qua `httpapi.Options.APIMiddleware` (chỉ áp cho `/api/v1`, không áp cho probe) trước khi đưa lên môi trường thật.
 
 ## Test
 

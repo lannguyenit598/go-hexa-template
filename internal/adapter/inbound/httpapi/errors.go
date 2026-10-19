@@ -25,6 +25,18 @@ type problem struct {
 
 const problemContentType = "application/problem+json"
 
+// StatusClientClosedRequest (quy ước của nginx): client đã đóng kết nối trước khi có
+// response. Không phải lỗi của server nên không được tính là 5xx, tránh làm sai
+// error rate trên SLO dashboard và bắn alert giả mỗi khi mobile client đổi mạng.
+const StatusClientClosedRequest = 499
+
+func statusText(code int) string {
+	if code == StatusClientClosedRequest {
+		return "Client Closed Request"
+	}
+	return http.StatusText(code)
+}
+
 // toProblem là nơi DUY NHẤT ánh xạ lỗi domain sang HTTP.
 func toProblem(err error) problem {
 	var ve *domain.ValidationError
@@ -37,6 +49,8 @@ func toProblem(err error) problem {
 		return problem{Status: http.StatusConflict, Detail: "a user with this email already exists"}
 	case errors.Is(err, context.DeadlineExceeded):
 		return problem{Status: http.StatusServiceUnavailable, Detail: "request timed out"}
+	case errors.Is(err, context.Canceled):
+		return problem{Status: StatusClientClosedRequest, Detail: "client closed request"}
 	}
 
 	// Lỗi do Echo sinh ra (404 route, 405, bind 400, 413 body quá lớn...).
@@ -62,7 +76,7 @@ func newErrorHandler(logger *slog.Logger) echo.HTTPErrorHandler {
 
 		p := toProblem(err)
 		p.Type = "about:blank"
-		p.Title = http.StatusText(p.Status)
+		p.Title = statusText(p.Status)
 		p.Instance = c.Request().URL.Path
 
 		if c.Request().Method == http.MethodHead {

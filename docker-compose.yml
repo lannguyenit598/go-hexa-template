@@ -22,6 +22,7 @@ services:
       STORAGE: postgres
       DATABASE_URL: postgres://userapi:userapi@db:5432/userapi?sslmode=disable
       LOG_LEVEL: info
+      DB_MAX_CONNS: "10"
     ports:
       - "8080:8080"
     depends_on:

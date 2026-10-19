@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io/fs"
 	"sort"
+	"strconv"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -34,9 +35,45 @@ func NewUserRepository(pool *pgxpool.Pool) *UserRepository {
 	return &UserRepository{pool: pool}
 }
 
+// PoolOptions cấu hình pool kết nối. Giá trị 0 = dùng mặc định của pgx.
+//
+// Luôn đặt MaxConns tường minh: mặc định của pgx là max(4, runtime.NumCPU()), mà
+// trong container NumCPU trả số core của NODE chứ không phải CPU limit của pod.
+// Pod 1 CPU trên node 64 core sẽ mở tới 64 kết nối; nhân với số replica là đủ
+// vượt max_connections (mặc định 100) của PostgreSQL.
+type PoolOptions struct {
+	MaxConns        int32
+	MinConns        int32
+	MaxConnLifetime time.Duration
+	MaxConnIdleTime time.Duration
+	// StatementTimeout đặt statement_timeout phía server: chặn query chạy mãi kể cả
+	// khi client đã bỏ đi (context bị huỷ không phải lúc nào cũng tới được server).
+	StatementTimeout time.Duration
+}
+
 // Connect tạo pool kết nối và kiểm tra kết nối ngay.
-func Connect(ctx context.Context, dsn string) (*pgxpool.Pool, error) {
-	pool, err := pgxpool.New(ctx, dsn)
+func Connect(ctx context.Context, dsn string, opts PoolOptions) (*pgxpool.Pool, error) {
+	cfg, err := pgxpool.ParseConfig(dsn)
+	if err != nil {
+		return nil, fmt.Errorf("parse database url: %w", err)
+	}
+	if opts.MaxConns > 0 {
+		cfg.MaxConns = opts.MaxConns
+	}
+	if opts.MinConns > 0 {
+		cfg.MinConns = opts.MinConns
+	}
+	if opts.MaxConnLifetime > 0 {
+		cfg.MaxConnLifetime = opts.MaxConnLifetime
+	}
+	if opts.MaxConnIdleTime > 0 {
+		cfg.MaxConnIdleTime = opts.MaxConnIdleTime
+	}
+	if opts.StatementTimeout > 0 {
+		cfg.ConnConfig.RuntimeParams["statement_timeout"] = strconv.FormatInt(opts.StatementTimeout.Milliseconds(), 10)
+	}
+
+	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("create pool: %w", err)
 	}

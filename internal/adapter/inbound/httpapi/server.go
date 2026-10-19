@@ -5,6 +5,7 @@ package httpapi
 import (
 	"context"
 	"log/slog"
+	"net"
 	"net/http"
 	"time"
 
@@ -16,13 +17,24 @@ import (
 
 type Options struct {
 	Logger *slog.Logger
-	// Ready kiểm tra các phụ thuộc (ví dụ ping database). nil = luôn sẵn sàng.
+	// Ready trả lỗi khi pod không nên nhận traffic (đang shutdown, chưa khởi động xong...).
+	// nil = luôn sẵn sàng. Chỉ nên kiểm tra trạng thái CỦA CHÍNH pod; xem README.
 	Ready func(ctx context.Context) error
 	// RequestTimeout áp cho context của mỗi request. 0 = mặc định 10s.
 	RequestTimeout time.Duration
 	// BodyLimit tính bằng byte. 0 = mặc định 1 MiB.
 	BodyLimit int64
+	// TrustedProxies: dải CIDR của reverse proxy / load balancer tin cậy. Khi có, IP client
+	// lấy từ X-Forwarded-For (chỉ tin các hop nằm trong dải này). Rỗng = IP của kết nối TCP.
+	TrustedProxies []*net.IPNet
+	// APIMiddleware áp cho nhóm /api/v1 (không áp cho probe), ví dụ xác thực, rate limit.
+	// Template KHÔNG có xác thực: hãy gắn middleware auth ở đây trước khi đưa lên production.
+	APIMiddleware []echo.MiddlewareFunc
 }
+
+// probePaths không đi qua request logger: probe gọi vài giây một lần trên mỗi pod,
+// log chúng chỉ tốn chi phí log ingestion mà không có giá trị.
+var probePaths = map[string]bool{"/healthz": true, "/readyz": true}
 
 // NewServer dựng *echo.Echo với middleware, error handler và route.
 func NewServer(users port.UserService, opts Options) *echo.Echo {
@@ -38,6 +50,7 @@ func NewServer(users port.UserService, opts Options) *echo.Echo {
 
 	e := echo.New()
 	e.Logger = opts.Logger
+	e.IPExtractor = ipExtractor(opts.TrustedProxies)
 	e.HTTPErrorHandler = newErrorHandler(opts.Logger)
 
 	// Thứ tự quan trọng: RequestID trước để logger có request_id; Recover ngay sau logger
@@ -62,7 +75,7 @@ func NewServer(users port.UserService, opts Options) *echo.Echo {
 	})
 
 	h := &userHandler{users: users}
-	v1 := e.Group("/api/v1")
+	v1 := e.Group("/api/v1", opts.APIMiddleware...)
 	v1.POST("/users", h.create)
 	v1.GET("/users", h.list)
 	v1.GET("/users/:id", h.get)
@@ -72,10 +85,26 @@ func NewServer(users port.UserService, opts Options) *echo.Echo {
 	return e
 }
 
-// requestLogger ghi một dòng log cho mỗi request: 2xx/3xx = INFO, 4xx = WARN, 5xx = ERROR.
+func ipExtractor(trusted []*net.IPNet) echo.IPExtractor {
+	if len(trusted) == 0 {
+		return echo.ExtractIPDirect()
+	}
+	// Tắt các mặc định (loopback, link-local, mạng private) để CHỈ tin đúng dải được cấu hình:
+	// trong cluster, mọi pod khác cũng nằm trong mạng private và có thể giả X-Forwarded-For.
+	opts := []echo.TrustOption{echo.TrustLoopback(false), echo.TrustLinkLocal(false), echo.TrustPrivateNet(false)}
+	for _, n := range trusted {
+		opts = append(opts, echo.TrustIPRange(n))
+	}
+	return echo.ExtractIPFromXFFHeader(opts...)
+}
+
+// requestLogger ghi một dòng log cho mỗi request (trừ probe): 2xx/3xx = INFO, 4xx = WARN, 5xx = ERROR.
 // (Logger mặc định của Echo ghi mọi request có lỗi ở mức ERROR, kể cả 404/422.)
 func requestLogger(logger *slog.Logger) echo.MiddlewareFunc {
 	return middleware.RequestLoggerWithConfig(middleware.RequestLoggerConfig{
+		Skipper: func(c *echo.Context) bool {
+			return probePaths[c.Request().URL.Path]
+		},
 		LogStatus:    true,
 		LogMethod:    true,
 		LogURI:       true,

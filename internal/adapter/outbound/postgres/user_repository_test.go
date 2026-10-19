@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/example/userapi/internal/adapter/outbound/postgres"
 	"github.com/example/userapi/internal/adapter/outbound/repotest"
@@ -21,7 +22,7 @@ func TestUserRepositoryContract(t *testing.T) {
 		t.Skip("TEST_DATABASE_URL not set; skipping PostgreSQL integration test")
 	}
 	ctx := context.Background()
-	pool, err := postgres.Connect(ctx, dsn)
+	pool, err := postgres.Connect(ctx, dsn, postgres.PoolOptions{MaxConns: 4, StatementTimeout: 5 * time.Second})
 	if err != nil {
 		t.Fatal(err)
 	}

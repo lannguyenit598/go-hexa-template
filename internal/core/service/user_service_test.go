@@ -91,6 +91,18 @@ func TestList_ClampsPaging(t *testing.T) {
 	}
 }
 
+func TestList_RejectsDeepOffset(t *testing.T) {
+	svc, _ := newSUT()
+	_, err := svc.List(ctx, port.ListUsersQuery{Offset: service.MaxOffset + 1})
+	var ve *domain.ValidationError
+	if !errors.As(err, &ve) || ve.Fields[0].Field != "offset" {
+		t.Fatalf("want offset validation error, got %v", err)
+	}
+	if _, err := svc.List(ctx, port.ListUsersQuery{Offset: service.MaxOffset}); err != nil {
+		t.Fatalf("offset at limit must be accepted: %v", err)
+	}
+}
+
 func TestUpdate(t *testing.T) {
 	svc, clock := newSUT()
 	u, _ := svc.Register(ctx, port.RegisterUserCmd{Email: "a@example.com", Name: "A"})

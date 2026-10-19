@@ -13,6 +13,9 @@ import (
 const (
 	DefaultPageSize = 20
 	MaxPageSize     = 100
+	// MaxOffset chặn phân trang quá sâu: OFFSET n buộc database đọc rồi bỏ đi n dòng,
+	// nên ?offset=50000000 là một request rất đắt. Cần duyệt sâu hơn thì dùng keyset/cursor.
+	MaxOffset = 10_000
 )
 
 type UserService struct {
@@ -60,6 +63,11 @@ func (s *UserService) List(ctx context.Context, q port.ListUsersQuery) (port.Use
 	}
 	if offset < 0 {
 		offset = 0
+	}
+	if offset > MaxOffset {
+		v := &domain.ValidationError{}
+		v.Add("offset", fmt.Sprintf("must be at most %d", MaxOffset))
+		return port.UserPage{}, v
 	}
 	users, total, err := s.repo.List(ctx, limit, offset)
 	if err != nil {
