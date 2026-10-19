@@ -81,8 +81,8 @@ func runWithTimeout(t *testing.T, ctx context.Context, cfg config.Config, opts a
 	return waitDone(t, done, timeout)
 }
 
-// startApp chạy app trên 127.0.0.1:<cổng ngẫu nhiên> và chờ tới khi /healthz trả 200.
-func startApp(t *testing.T, env map[string]string) (base string, cancel context.CancelFunc, done <-chan error) {
+// startApp chạy app trên 127.0.0.1:<cổng ngẫu nhiên> và chờ tối đa readyWithin tới khi /healthz trả 200.
+func startApp(t *testing.T, env map[string]string, readyWithin time.Duration) (base string, cancel context.CancelFunc, done <-chan error) {
 	t.Helper()
 	ln := listen(t)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -91,7 +91,7 @@ func startApp(t *testing.T, env map[string]string) (base string, cancel context.
 	go func() { ch <- app.Run(ctx, mustConfig(t, env), quiet, app.Options{Listener: ln}) }()
 
 	base = "http://" + ln.Addr().String()
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(readyWithin)
 	for {
 		if resp, err := get(base + "/healthz"); err == nil {
 			_ = resp.Body.Close()
@@ -112,7 +112,7 @@ func startApp(t *testing.T, env map[string]string) (base string, cancel context.
 }
 
 func TestRun_DrainsBeforeClosingListener(t *testing.T) {
-	base, cancel, done := startApp(t, map[string]string{"SHUTDOWN_DELAY": "500ms"})
+	base, cancel, done := startApp(t, map[string]string{"SHUTDOWN_DELAY": "500ms"}, 2*time.Second)
 	expectGET(t, base+"/readyz", http.StatusOK)
 	cancel()
 	time.Sleep(100 * time.Millisecond)
@@ -156,7 +156,9 @@ func TestRun_RefusesToStartWithPendingMigrations(t *testing.T) {
 	}
 
 	env["MIGRATE_ON_START"] = "true"
-	base, cancel, done := startApp(t, env)
+	// Advisory lock của goose dùng chung cho cả database: khi package khác (go test ./...) đang
+	// migrate cùng lúc, goose chờ lock và thử lại mỗi 5s, nên phải chờ lâu hơn một chu kỳ đó.
+	base, cancel, done := startApp(t, env, 15*time.Second)
 	expectGET(t, base+"/api/v1/users", http.StatusOK)
 	cancel()
 	if err := waitDone(t, done, 3*time.Second); err != nil {
