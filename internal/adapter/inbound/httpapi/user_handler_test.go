@@ -43,7 +43,7 @@ func (a *apiClient) do(method, path, body string) *httptest.ResponseRecorder {
 	if body != "" {
 		r = strings.NewReader(body)
 	}
-	req := httptest.NewRequest(method, path, r)
+	req := httptest.NewRequestWithContext(context.Background(), method, path, r)
 	if body != "" {
 		req.Header.Set("Content-Type", "application/json")
 	}
@@ -177,7 +177,7 @@ func TestClientCanceledRequest_Is499AndNotLoggedAsError(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // client đã đóng kết nối
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/users", nil).WithContext(ctx)
+	req := httptest.NewRequestWithContext(ctx, http.MethodGet, "/api/v1/users", nil)
 	rec := httptest.NewRecorder()
 	api.h.ServeHTTP(rec, req)
 
@@ -219,7 +219,7 @@ func TestClientIP_TrustedProxies(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			var logs bytes.Buffer
 			api := newAPIWith(t, httpapi.Options{Logger: slog.New(slog.NewJSONHandler(&logs, nil)), TrustedProxies: tc.trusted})
-			req := httptest.NewRequest(http.MethodGet, "/api/v1/users", nil)
+			req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/api/v1/users", nil)
 			req.RemoteAddr = tc.remote
 			req.Header.Set("X-Forwarded-For", tc.xff)
 			api.h.ServeHTTP(httptest.NewRecorder(), req)
@@ -244,7 +244,7 @@ func TestAPIMiddleware_AppliesToAPIOnly(t *testing.T) {
 
 func (a *apiClient) doWithHeader(method, path, body, key, value string) *httptest.ResponseRecorder {
 	a.t.Helper()
-	req := httptest.NewRequest(method, path, strings.NewReader(body))
+	req := httptest.NewRequestWithContext(context.Background(), method, path, strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set(key, value)
 	rec := httptest.NewRecorder()
