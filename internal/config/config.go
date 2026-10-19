@@ -52,7 +52,7 @@ type DB struct {
 	MaxConnIdleTime  time.Duration
 	StatementTimeout time.Duration
 	// MigrateOnStart: chạy migration khi app khởi động. Tiện cho dev; production nên chạy
-	// `userapi migrate` như một Job / initContainer riêng (xem README).
+	// `userapi migrate` như một Job / initContainer riêng (xem docs/operations.md).
 	MigrateOnStart bool
 }
 

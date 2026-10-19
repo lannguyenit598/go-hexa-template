@@ -22,7 +22,7 @@ import (
 type Options struct {
 	Logger *slog.Logger
 	// Ready trả lỗi khi pod không nên nhận traffic (đang shutdown, chưa khởi động xong...).
-	// nil = luôn sẵn sàng. Chỉ nên kiểm tra trạng thái CỦA CHÍNH pod; xem README.
+	// nil = luôn sẵn sàng. Chỉ nên kiểm tra trạng thái CỦA CHÍNH pod; xem docs/operations.md.
 	Ready func(ctx context.Context) error
 	// RequestTimeout áp cho context của mỗi request. 0 = mặc định 10s.
 	RequestTimeout time.Duration
