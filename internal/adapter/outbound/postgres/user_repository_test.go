@@ -75,7 +75,7 @@ func TestUserRepositoryContract(t *testing.T) {
 				switch {
 				case err == nil:
 					successes.Add(1)
-				case !errors.Is(err, domain.ErrVersionConflict):
+				case !errors.Is(err, port.ErrVersionConflict):
 					t.Errorf("unexpected error: %v", err)
 				}
 			}()

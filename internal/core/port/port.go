@@ -55,9 +55,9 @@ type UserService interface {
 
 // UserRepository lưu trữ User. Hợp đồng lỗi (mọi adapter phải tuân theo):
 //   - Create/Update trả domain.ErrEmailAlreadyExists khi trùng email.
-//   - GetByID/Update/Delete trả domain.ErrUserNotFound khi không tồn tại.
+//   - GetByID/Update/Delete trả ErrNotFound khi không tồn tại.
 //   - Update là compare-and-set: chỉ ghi khi version đang lưu bằng expectedVersion,
-//     ngược lại trả domain.ErrVersionConflict. u.Version là version MỚI sẽ được lưu.
+//     ngược lại trả ErrVersionConflict. u.Version là version MỚI sẽ được lưu.
 //
 // Hợp đồng này được kiểm bằng bộ test dùng chung ở package repotest.
 type UserRepository interface {

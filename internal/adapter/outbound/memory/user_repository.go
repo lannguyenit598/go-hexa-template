@@ -48,7 +48,7 @@ func (r *UserRepository) GetByID(ctx context.Context, id domain.UserID) (domain.
 	defer r.mu.RUnlock()
 	u, ok := r.byID[id]
 	if !ok {
-		return domain.User{}, domain.ErrUserNotFound
+		return domain.User{}, port.ErrNotFound
 	}
 	return u, nil
 }
@@ -93,10 +93,10 @@ func (r *UserRepository) Update(ctx context.Context, u domain.User, expectedVers
 	defer r.mu.Unlock()
 	old, ok := r.byID[u.ID]
 	if !ok {
-		return domain.ErrUserNotFound
+		return port.ErrNotFound
 	}
 	if old.Version != expectedVersion {
-		return domain.ErrVersionConflict
+		return port.ErrVersionConflict
 	}
 	if owner, taken := r.byEmail[u.Email]; taken && owner != u.ID {
 		return domain.ErrEmailAlreadyExists
@@ -115,7 +115,7 @@ func (r *UserRepository) Delete(ctx context.Context, id domain.UserID) error {
 	defer r.mu.Unlock()
 	u, ok := r.byID[id]
 	if !ok {
-		return domain.ErrUserNotFound
+		return port.ErrNotFound
 	}
 	delete(r.byID, id)
 	delete(r.byEmail, u.Email)

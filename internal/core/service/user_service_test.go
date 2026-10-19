@@ -61,8 +61,16 @@ func TestRegister(t *testing.T) {
 
 func TestGet_InvalidIDIsNotFound(t *testing.T) {
 	svc, _ := newSUT()
-	if _, err := svc.Get(ctx, "garbage"); !errors.Is(err, domain.ErrUserNotFound) {
+	if _, err := svc.Get(ctx, "garbage"); !errors.Is(err, port.ErrNotFound) {
 		t.Fatalf("got %v", err)
+	}
+}
+
+func TestGet_NotFoundCarriesContext(t *testing.T) {
+	svc, _ := newSUT()
+	_, err := svc.Get(ctx, "garbage")
+	if !errors.Is(err, port.ErrNotFound) || !strings.Contains(err.Error(), "user garbage") {
+		t.Fatalf("want wrapped port.ErrNotFound mentioning the id, got %v", err)
 	}
 }
 
@@ -128,7 +136,7 @@ func TestUpdate(t *testing.T) {
 	}
 
 	_, err = svc.Update(ctx, port.UpdateUserCmd{ID: "00000000-0000-7000-8000-999999999999", Changes: domain.Changes{Name: &name}})
-	if !errors.Is(err, domain.ErrUserNotFound) {
+	if !errors.Is(err, port.ErrNotFound) {
 		t.Fatalf("want ErrUserNotFound, got %v", err)
 	}
 }
@@ -182,7 +190,7 @@ func TestUpdate_GivesUpAfterRepeatedConflicts(t *testing.T) {
 
 	name := "Renamed"
 	_, err := svc.Update(ctx, port.UpdateUserCmd{ID: u.ID, Changes: domain.Changes{Name: &name}})
-	if !errors.Is(err, domain.ErrVersionConflict) {
+	if !errors.Is(err, port.ErrVersionConflict) {
 		t.Fatalf("want ErrVersionConflict, got %v", err)
 	}
 	if repo.races != 97 {
@@ -196,14 +204,14 @@ func TestUpdate_ExpectedVersion(t *testing.T) {
 	name := "Renamed"
 
 	_, err := svc.Update(ctx, port.UpdateUserCmd{ID: u.ID, Changes: domain.Changes{Name: &name}, ExpectedVersion: 7})
-	if !errors.Is(err, domain.ErrVersionConflict) {
+	if !errors.Is(err, port.ErrVersionConflict) {
 		t.Fatalf("stale If-Match: want ErrVersionConflict, got %v", err)
 	}
 
 	// Khi client gửi version, xung đột lúc ghi KHÔNG được retry: client phải đọc lại.
 	repo.races = 1
 	_, err = svc.Update(ctx, port.UpdateUserCmd{ID: u.ID, Changes: domain.Changes{Name: &name}, ExpectedVersion: 1})
-	if !errors.Is(err, domain.ErrVersionConflict) {
+	if !errors.Is(err, port.ErrVersionConflict) {
 		t.Fatalf("race with If-Match: want ErrVersionConflict, got %v", err)
 	}
 
@@ -244,7 +252,7 @@ func TestDelete(t *testing.T) {
 	if err := svc.Delete(ctx, u.ID); err != nil {
 		t.Fatal(err)
 	}
-	if err := svc.Delete(ctx, u.ID); !errors.Is(err, domain.ErrUserNotFound) {
+	if err := svc.Delete(ctx, u.ID); !errors.Is(err, port.ErrNotFound) {
 		t.Fatalf("got %v", err)
 	}
 }

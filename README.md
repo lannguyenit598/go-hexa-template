@@ -82,8 +82,8 @@ Test của core (`*_test.go`) được miễn, vì dùng repository in-memory l�
 cmd/userapi/main.go                  composition root: config, chọn adapter, start/shutdown
 internal/
   core/
-    domain/        entity User, chuẩn hoá và validate, ValidationError, ErrUserNotFound...
-    port/          interface: inbound (UserService) và outbound (UserRepository, IDGenerator, Clock)
+    domain/        entity User, value object Email, ValidationError, ErrEmailAlreadyExists
+    port/          interface: inbound (UserService) và outbound (UserRepository, IDGenerator, Clock); lỗi kết quả use case (ErrNotFound, ErrVersionConflict)
     service/       use case: Register, Get, List, Update (PATCH), Delete
   adapter/
     inbound/httpapi/        Echo v5: route, DTO, middleware, ánh xạ lỗi sang problem+json
@@ -149,9 +149,9 @@ Mọi lỗi trả về `Content-Type: application/problem+json`:
 | Lỗi | HTTP |
 |---|---|
 | `*domain.ValidationError` | 422, kèm danh sách lỗi theo từng trường |
-| `domain.ErrUserNotFound` (kể cả id không đúng định dạng UUID) | 404 |
+| `port.ErrNotFound` (kể cả id không đúng định dạng UUID) | 404 |
 | `domain.ErrEmailAlreadyExists` | 409 |
-| `domain.ErrVersionConflict` khi không có `If-Match` (đã retry 3 lần) | 409 |
+| `port.ErrVersionConflict` khi không có `If-Match` (đã retry 3 lần) | 409 |
 | `If-Match` không khớp version hiện tại | 412 |
 | JSON hỏng, `limit`/`offset` không phải số | 400 |
 | `offset` lớn hơn 10.000 | 422 |

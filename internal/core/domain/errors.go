@@ -6,14 +6,11 @@ import (
 	"strings"
 )
 
-// Lỗi nghiệp vụ dạng sentinel. Adapter inbound (HTTP, gRPC, CLI...) tự quyết định
-// ánh xạ chúng sang mã lỗi của giao thức; core không biết gì về HTTP status.
-var (
-	ErrUserNotFound       = errors.New("user not found")
-	ErrEmailAlreadyExists = errors.New("email already exists")
-	// ErrVersionConflict: bản ghi đã bị thay đổi kể từ lúc được đọc (optimistic locking).
-	ErrVersionConflict = errors.New("version conflict")
-)
+// Domain chỉ giữ lỗi của quy tắc nghiệp vụ (dữ liệu không hợp lệ, email đã được dùng).
+// Lỗi kết quả của use case (không tìm thấy, xung đột version) nằm ở package port.
+// Adapter inbound (HTTP, gRPC, CLI...) tự quyết định ánh xạ chúng sang mã lỗi của giao thức;
+// core không biết gì về HTTP status.
+var ErrEmailAlreadyExists = errors.New("email already exists")
 
 // FieldError mô tả một lỗi trên một trường dữ liệu.
 type FieldError struct {

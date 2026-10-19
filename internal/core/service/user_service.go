@@ -52,7 +52,7 @@ func (s *UserService) Register(ctx context.Context, cmd port.RegisterUserCmd) (d
 
 func (s *UserService) Get(ctx context.Context, id domain.UserID) (domain.User, error) {
 	if !id.Valid() {
-		return domain.User{}, domain.ErrUserNotFound
+		return domain.User{}, fmt.Errorf("user %s: %w", id, port.ErrNotFound)
 	}
 	u, err := s.repo.GetByID(ctx, id)
 	if err != nil {
@@ -95,7 +95,7 @@ func (s *UserService) Update(ctx context.Context, cmd port.UpdateUserCmd) (domai
 			return domain.User{}, err
 		}
 		if cmd.ExpectedVersion != 0 && current.Version != cmd.ExpectedVersion {
-			return domain.User{}, domain.ErrVersionConflict
+			return domain.User{}, fmt.Errorf("user %s: %w", cmd.ID, port.ErrVersionConflict)
 		}
 		next, err := current.Apply(cmd.Changes, s.clock.Now())
 		if err != nil {
@@ -108,7 +108,7 @@ func (s *UserService) Update(ctx context.Context, cmd port.UpdateUserCmd) (domai
 		switch {
 		case err == nil:
 			return next, nil
-		case errors.Is(err, domain.ErrVersionConflict) && cmd.ExpectedVersion == 0 && attempt < maxUpdateAttempts:
+		case errors.Is(err, port.ErrVersionConflict) && cmd.ExpectedVersion == 0 && attempt < maxUpdateAttempts:
 			// Ai đó vừa ghi giữa lúc đọc và ghi: đọc lại và áp dụng lại. Log để thấy được mức tranh chấp.
 			s.logger.InfoContext(ctx, "user update hit a version conflict, retrying", "user_id", cmd.ID.String(), "attempt", attempt)
 			continue
@@ -120,7 +120,7 @@ func (s *UserService) Update(ctx context.Context, cmd port.UpdateUserCmd) (domai
 
 func (s *UserService) Delete(ctx context.Context, id domain.UserID) error {
 	if !id.Valid() {
-		return domain.ErrUserNotFound
+		return fmt.Errorf("user %s: %w", id, port.ErrNotFound)
 	}
 	if err := s.repo.Delete(ctx, id); err != nil {
 		return fmt.Errorf("delete user: %w", err)

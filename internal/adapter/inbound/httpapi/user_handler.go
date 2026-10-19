@@ -150,7 +150,7 @@ func (h *userHandler) update(c *echo.Context) error {
 	if err != nil {
 		// Client đã gửi If-Match: xung đột version là điều kiện tiên quyết không thoả (412).
 		// Không có If-Match: service đã tự retry mà vẫn xung đột => 409 (xem toProblem).
-		if expected != 0 && errors.Is(err, domain.ErrVersionConflict) {
+		if expected != 0 && errors.Is(err, port.ErrVersionConflict) {
 			return errPreconditionFailed
 		}
 		return err
