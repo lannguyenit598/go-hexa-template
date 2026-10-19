@@ -1,0 +1,80 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: go mod tidy is clean
+        run: go mod tidy -diff
+      - uses: golangci/golangci-lint-action@v8
+        with:
+          version: v2.5.0
+
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: userapi
+          POSTGRES_PASSWORD: userapi
+          POSTGRES_DB: userapi
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U userapi -d userapi"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 15
+    env:
+      # Bật contract test + test đồng thời trên PostgreSQL thật.
+      TEST_DATABASE_URL: postgres://userapi:userapi@localhost:5432/userapi?sslmode=disable
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Test (unit, HTTP, PostgreSQL contract)
+        run: go test -race -count=1 -coverprofile=coverage.out ./...
+      - name: Coverage
+        run: go tool cover -func=coverage.out | tail -1
+      - name: Migrations apply cleanly and are idempotent
+        env:
+          DATABASE_URL: ${{ env.TEST_DATABASE_URL }}
+        run: |
+          go run ./cmd/userapi migrate
+          go run ./cmd/userapi migrate
+
+  vulncheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          # Cùng phiên bản Go với image build production (Dockerfile), vì lỗ hổng của
+          # thư viện chuẩn phụ thuộc vào toolchain thực sự dùng để build binary.
+          go-version: "1.26.x"
+      - run: go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build image
+        run: docker build --build-arg VERSION=${{ github.sha }} -t userapi:ci .

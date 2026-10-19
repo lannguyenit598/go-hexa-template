@@ -29,10 +29,19 @@ func mkUser(t *testing.T, n int) domain.User {
 	return u
 }
 
+func mustEmail(t *testing.T, s string) domain.Email {
+	t.Helper()
+	e, err := domain.ParseEmail(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return e
+}
+
 func assertSameUser(t *testing.T, got, want domain.User) {
 	t.Helper()
 	if got.ID != want.ID || got.Email != want.Email || got.Name != want.Name ||
-		!got.CreatedAt.Equal(want.CreatedAt) || !got.UpdatedAt.Equal(want.UpdatedAt) {
+		!got.CreatedAt.Equal(want.CreatedAt) || !got.UpdatedAt.Equal(want.UpdatedAt) || got.Version != want.Version {
 		t.Fatalf("user mismatch:\n got  %+v\n want %+v", got, want)
 	}
 }
@@ -103,8 +112,8 @@ func Run(t *testing.T, newRepo Factory) {
 			t.Fatal(err)
 		}
 		oldEmail := u.Email
-		u.Email, u.Name, u.UpdatedAt = "renamed@example.com", "Renamed", u.UpdatedAt.Add(time.Hour)
-		if err := r.Update(ctx, u); err != nil {
+		u.Email, u.Name, u.UpdatedAt, u.Version = mustEmail(t, "renamed@example.com"), "Renamed", u.UpdatedAt.Add(time.Hour), 2
+		if err := r.Update(ctx, u, 1); err != nil {
 			t.Fatal(err)
 		}
 		got, _ := r.GetByID(ctx, u.ID)
@@ -122,17 +131,41 @@ func Run(t *testing.T, newRepo Factory) {
 		a, b := mkUser(t, 1), mkUser(t, 2)
 		_ = r.Create(ctx, a)
 		_ = r.Create(ctx, b)
-		b.Email = a.Email
-		if err := r.Update(ctx, b); !errors.Is(err, domain.ErrEmailAlreadyExists) {
+		b.Email, b.Version = a.Email, 2
+		if err := r.Update(ctx, b, 1); !errors.Is(err, domain.ErrEmailAlreadyExists) {
 			t.Fatalf("got %v", err)
 		}
 	})
 
 	t.Run("update missing", func(t *testing.T) {
 		r := newRepo(t)
-		if err := r.Update(ctx, mkUser(t, 1)); !errors.Is(err, domain.ErrUserNotFound) {
+		if err := r.Update(ctx, mkUser(t, 1), 1); !errors.Is(err, domain.ErrUserNotFound) {
 			t.Fatalf("got %v", err)
 		}
+	})
+
+	t.Run("update with stale version is rejected and changes nothing", func(t *testing.T) {
+		r := newRepo(t)
+		u := mkUser(t, 1)
+		if err := r.Create(ctx, u); err != nil {
+			t.Fatal(err)
+		}
+		first := u
+		first.Name, first.Version = "First", 2
+		if err := r.Update(ctx, first, 1); err != nil {
+			t.Fatal(err)
+		}
+		// Ghi lần hai dựa trên bản đọc cũ (version 1) phải thất bại, không ghi đè "First".
+		stale := u
+		stale.Email, stale.Version = mustEmail(t, "stale@example.com"), 2
+		if err := r.Update(ctx, stale, 1); !errors.Is(err, domain.ErrVersionConflict) {
+			t.Fatalf("want ErrVersionConflict, got %v", err)
+		}
+		got, err := r.GetByID(ctx, u.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		assertSameUser(t, got, first)
 	})
 
 	t.Run("delete", func(t *testing.T) {

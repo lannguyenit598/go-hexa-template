@@ -11,12 +11,14 @@ import (
 var (
 	ErrUserNotFound       = errors.New("user not found")
 	ErrEmailAlreadyExists = errors.New("email already exists")
+	// ErrVersionConflict: bản ghi đã bị thay đổi kể từ lúc được đọc (optimistic locking).
+	ErrVersionConflict = errors.New("version conflict")
 )
 
 // FieldError mô tả một lỗi trên một trường dữ liệu.
 type FieldError struct {
-	Field   string `json:"field"`
-	Message string `json:"message"`
+	Field   string
+	Message string
 }
 
 // ValidationError gom tất cả lỗi kiểm tra dữ liệu để trả về một lần.

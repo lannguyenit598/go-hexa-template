@@ -19,6 +19,13 @@ Content-Type: application/json
 
 {"name": "Lan Pham"}
 
+### Cập nhật có kiểm tra version (lấy ETag từ response GET); sai version => 412
+PATCH {{base}}/api/v1/users/REPLACE_WITH_ID
+Content-Type: application/json
+If-Match: "1"
+
+{"name": "Lan Tran"}
+
 ### Xoá
 DELETE {{base}}/api/v1/users/REPLACE_WITH_ID
 

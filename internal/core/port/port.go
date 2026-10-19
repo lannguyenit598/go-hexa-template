@@ -25,6 +25,9 @@ type RegisterUserCmd struct {
 type UpdateUserCmd struct {
 	ID      domain.UserID
 	Changes domain.Changes
+	// ExpectedVersion: version client đã đọc (từ If-Match). 0 = client không yêu cầu kiểm tra;
+	// khi đó service vẫn dùng optimistic locking với version nó vừa đọc và tự retry khi xung đột.
+	ExpectedVersion int64
 }
 
 type ListUsersQuery struct {
@@ -53,6 +56,8 @@ type UserService interface {
 // UserRepository lưu trữ User. Hợp đồng lỗi (mọi adapter phải tuân theo):
 //   - Create/Update trả domain.ErrEmailAlreadyExists khi trùng email.
 //   - GetByID/Update/Delete trả domain.ErrUserNotFound khi không tồn tại.
+//   - Update là compare-and-set: chỉ ghi khi version đang lưu bằng expectedVersion,
+//     ngược lại trả domain.ErrVersionConflict. u.Version là version MỚI sẽ được lưu.
 //
 // Hợp đồng này được kiểm bằng bộ test dùng chung ở package repotest.
 type UserRepository interface {
@@ -60,7 +65,7 @@ type UserRepository interface {
 	GetByID(ctx context.Context, id domain.UserID) (domain.User, error)
 	// List trả về trang dữ liệu sắp xếp theo CreatedAt tăng dần (rồi tới ID), kèm tổng số bản ghi.
 	List(ctx context.Context, limit, offset int) ([]domain.User, int, error)
-	Update(ctx context.Context, u domain.User) error
+	Update(ctx context.Context, u domain.User, expectedVersion int64) error
 	Delete(ctx context.Context, id domain.UserID) error
 }
 

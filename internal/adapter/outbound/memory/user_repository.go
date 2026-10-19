@@ -14,7 +14,7 @@ import (
 type UserRepository struct {
 	mu      sync.RWMutex
 	byID    map[domain.UserID]domain.User
-	byEmail map[string]domain.UserID
+	byEmail map[domain.Email]domain.UserID
 }
 
 var _ port.UserRepository = (*UserRepository)(nil)
@@ -22,7 +22,7 @@ var _ port.UserRepository = (*UserRepository)(nil)
 func NewUserRepository() *UserRepository {
 	return &UserRepository{
 		byID:    make(map[domain.UserID]domain.User),
-		byEmail: make(map[string]domain.UserID),
+		byEmail: make(map[domain.Email]domain.UserID),
 	}
 }
 
@@ -85,7 +85,7 @@ func (r *UserRepository) List(ctx context.Context, limit, offset int) ([]domain.
 	return all[offset:end], total, nil
 }
 
-func (r *UserRepository) Update(ctx context.Context, u domain.User) error {
+func (r *UserRepository) Update(ctx context.Context, u domain.User, expectedVersion int64) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -94,6 +94,9 @@ func (r *UserRepository) Update(ctx context.Context, u domain.User) error {
 	old, ok := r.byID[u.ID]
 	if !ok {
 		return domain.ErrUserNotFound
+	}
+	if old.Version != expectedVersion {
+		return domain.ErrVersionConflict
 	}
 	if owner, taken := r.byEmail[u.Email]; taken && owner != u.ID {
 		return domain.ErrEmailAlreadyExists

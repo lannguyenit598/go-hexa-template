@@ -15,28 +15,58 @@ import (
 // problem là body lỗi theo RFC 9457 (application/problem+json),
 // mở rộng thêm "errors" cho lỗi validation theo từng trường.
 type problem struct {
-	Type     string              `json:"type"`
-	Title    string              `json:"title"`
-	Status   int                 `json:"status"`
-	Detail   string              `json:"detail,omitempty"`
-	Instance string              `json:"instance,omitempty"`
-	Errors   []domain.FieldError `json:"errors,omitempty"`
+	Type     string       `json:"type"`
+	Title    string       `json:"title"`
+	Status   int          `json:"status"`
+	Detail   string       `json:"detail,omitempty"`
+	Instance string       `json:"instance,omitempty"`
+	Errors   []fieldError `json:"errors,omitempty"`
+}
+
+// fieldError là DTO của domain.FieldError: định dạng JSON thuộc về adapter, không thuộc domain.
+type fieldError struct {
+	Field   string `json:"field"`
+	Message string `json:"message"`
+}
+
+func toFieldErrors(in []domain.FieldError) []fieldError {
+	out := make([]fieldError, len(in))
+	for i, f := range in {
+		out[i] = fieldError{Field: f.Field, Message: f.Message}
+	}
+	return out
 }
 
 const problemContentType = "application/problem+json"
+
+// StatusClientClosedRequest (quy ước của nginx): client đã đóng kết nối trước khi có
+// response. Không phải lỗi của server nên không được tính là 5xx, tránh làm sai
+// error rate trên SLO dashboard và bắn alert giả mỗi khi mobile client đổi mạng.
+const StatusClientClosedRequest = 499
+
+func statusText(code int) string {
+	if code == StatusClientClosedRequest {
+		return "Client Closed Request"
+	}
+	return http.StatusText(code)
+}
 
 // toProblem là nơi DUY NHẤT ánh xạ lỗi domain sang HTTP.
 func toProblem(err error) problem {
 	var ve *domain.ValidationError
 	switch {
 	case errors.As(err, &ve):
-		return problem{Status: http.StatusUnprocessableEntity, Detail: "request body failed validation", Errors: ve.Fields}
+		return problem{Status: http.StatusUnprocessableEntity, Detail: "request failed validation", Errors: toFieldErrors(ve.Fields)}
 	case errors.Is(err, domain.ErrUserNotFound):
 		return problem{Status: http.StatusNotFound, Detail: "user not found"}
 	case errors.Is(err, domain.ErrEmailAlreadyExists):
 		return problem{Status: http.StatusConflict, Detail: "a user with this email already exists"}
+	case errors.Is(err, domain.ErrVersionConflict):
+		return problem{Status: http.StatusConflict, Detail: "the user was modified concurrently, please retry"}
 	case errors.Is(err, context.DeadlineExceeded):
 		return problem{Status: http.StatusServiceUnavailable, Detail: "request timed out"}
+	case errors.Is(err, context.Canceled):
+		return problem{Status: StatusClientClosedRequest, Detail: "client closed request"}
 	}
 
 	// Lỗi do Echo sinh ra (404 route, 405, bind 400, 413 body quá lớn...).
@@ -62,7 +92,7 @@ func newErrorHandler(logger *slog.Logger) echo.HTTPErrorHandler {
 
 		p := toProblem(err)
 		p.Type = "about:blank"
-		p.Title = http.StatusText(p.Status)
+		p.Title = statusText(p.Status)
 		p.Instance = c.Request().URL.Path
 
 		if c.Request().Method == http.MethodHead {
@@ -75,7 +105,7 @@ func newErrorHandler(logger *slog.Logger) echo.HTTPErrorHandler {
 			return
 		}
 		if wErr := c.Blob(p.Status, problemContentType, body); wErr != nil {
-			logger.Error("failed to write error response", "error", wErr)
+			logger.ErrorContext(c.Request().Context(), "failed to write error response", "error", wErr)
 		}
 	}
 }

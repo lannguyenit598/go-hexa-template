@@ -1,7 +1,8 @@
 .DEFAULT_GOAL := help
 DB_URL ?= postgres://userapi:userapi@localhost:5432/userapi?sslmode=disable
+VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 
-.PHONY: help run run-pg test test-integration cover lint build db-up db-down up down
+.PHONY: help run run-pg migrate test test-integration cover lint build db-up db-down up down
 
 help: ## Liệt kê các lệnh
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-18s %s\n", $$1, $$2}'
@@ -9,8 +10,11 @@ help: ## Liệt kê các lệnh
 run: ## Chạy API với storage in-memory
 	go run ./cmd/userapi
 
-run-pg: db-up ## Chạy API với PostgreSQL (khởi động DB bằng docker compose)
+run-pg: db-up migrate ## Chạy API với PostgreSQL (khởi động DB bằng docker compose)
 	STORAGE=postgres DATABASE_URL="$(DB_URL)" go run ./cmd/userapi
+
+migrate: db-up ## Áp dụng migration PostgreSQL
+	DATABASE_URL="$(DB_URL)" go run ./cmd/userapi migrate
 
 test: ## Unit test + test HTTP (không cần DB)
 	go test -race ./...
@@ -21,12 +25,11 @@ test-integration: db-up ## Chạy thêm contract test trên PostgreSQL (sẽ TRU
 cover: ## Báo cáo coverage
 	go test -coverprofile=coverage.out ./... && go tool cover -func=coverage.out | tail -1
 
-lint: ## gofmt + go vet
-	@test -z "$$(gofmt -l .)" || (echo "Cần chạy gofmt:"; gofmt -l .; exit 1)
-	go vet ./...
+lint: ## golangci-lint (gồm depguard kiểm tra quy tắc phụ thuộc của kiến trúc)
+	golangci-lint run ./...
 
 build: ## Build binary vào ./bin
-	CGO_ENABLED=0 go build -trimpath -o bin/userapi ./cmd/userapi
+	CGO_ENABLED=0 go build -trimpath -ldflags "-X main.version=$(VERSION)" -o bin/userapi ./cmd/userapi
 
 db-up: ## Khởi động PostgreSQL
 	docker compose up -d --wait db

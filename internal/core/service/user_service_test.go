@@ -40,7 +40,7 @@ func TestRegister(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if u.ID != "00000000-0000-7000-8000-000000000001" || u.Email != "a@example.com" || !u.CreatedAt.Equal(clock.now) {
+	if u.ID != "00000000-0000-7000-8000-000000000001" || u.Email.String() != "a@example.com" || !u.CreatedAt.Equal(clock.now) {
 		t.Fatalf("unexpected user %+v", u)
 	}
 
@@ -91,6 +91,18 @@ func TestList_ClampsPaging(t *testing.T) {
 	}
 }
 
+func TestList_RejectsDeepOffset(t *testing.T) {
+	svc, _ := newSUT()
+	_, err := svc.List(ctx, port.ListUsersQuery{Offset: service.MaxOffset + 1})
+	var ve *domain.ValidationError
+	if !errors.As(err, &ve) || ve.Fields[0].Field != "offset" {
+		t.Fatalf("want offset validation error, got %v", err)
+	}
+	if _, err := svc.List(ctx, port.ListUsersQuery{Offset: service.MaxOffset}); err != nil {
+		t.Fatalf("offset at limit must be accepted: %v", err)
+	}
+}
+
 func TestUpdate(t *testing.T) {
 	svc, clock := newSUT()
 	u, _ := svc.Register(ctx, port.RegisterUserCmd{Email: "a@example.com", Name: "A"})
@@ -115,6 +127,86 @@ func TestUpdate(t *testing.T) {
 	_, err = svc.Update(ctx, port.UpdateUserCmd{ID: "00000000-0000-7000-8000-999999999999", Changes: domain.Changes{Name: &name}})
 	if !errors.Is(err, domain.ErrUserNotFound) {
 		t.Fatalf("want ErrUserNotFound, got %v", err)
+	}
+}
+
+// racingRepo mô phỏng một request khác ghi vào bản ghi NGAY GIỮA lúc service đọc và ghi.
+type racingRepo struct {
+	*memory.UserRepository
+	races int // số lần còn chen ngang
+}
+
+func (r *racingRepo) Update(ctx context.Context, u domain.User, expected int64) error {
+	if r.races > 0 {
+		r.races--
+		cur, _ := r.GetByID(ctx, u.ID)
+		other := cur
+		other.Email, other.Version = domain.EmailFromStore(fmt.Sprintf("other%d@example.com", cur.Version)), cur.Version+1
+		if err := r.UserRepository.Update(ctx, other, cur.Version); err != nil {
+			return err
+		}
+	}
+	return r.UserRepository.Update(ctx, u, expected)
+}
+
+func newRacingSUT(races int) (*service.UserService, *racingRepo) {
+	repo := &racingRepo{UserRepository: memory.NewUserRepository()}
+	clock := &fakeClock{now: time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC)}
+	svc := service.NewUserService(repo, &seqIDs{}, clock)
+	return svc, repo
+}
+
+func TestUpdate_ConcurrentWriteIsNotLost(t *testing.T) {
+	svc, repo := newRacingSUT(0)
+	u, _ := svc.Register(ctx, port.RegisterUserCmd{Email: "a@example.com", Name: "A"})
+	repo.races = 1
+
+	name := "Renamed"
+	got, err := svc.Update(ctx, port.UpdateUserCmd{ID: u.ID, Changes: domain.Changes{Name: &name}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Không có optimistic locking, email do request kia ghi sẽ bị ghi đè về "a@example.com".
+	if got.Name != "Renamed" || got.Email.String() != "other1@example.com" || got.Version != 3 {
+		t.Fatalf("concurrent change lost: %+v", got)
+	}
+}
+
+func TestUpdate_GivesUpAfterRepeatedConflicts(t *testing.T) {
+	svc, repo := newRacingSUT(0)
+	u, _ := svc.Register(ctx, port.RegisterUserCmd{Email: "a@example.com", Name: "A"})
+	repo.races = 100
+
+	name := "Renamed"
+	_, err := svc.Update(ctx, port.UpdateUserCmd{ID: u.ID, Changes: domain.Changes{Name: &name}})
+	if !errors.Is(err, domain.ErrVersionConflict) {
+		t.Fatalf("want ErrVersionConflict, got %v", err)
+	}
+	if repo.races != 97 {
+		t.Fatalf("expected exactly 3 attempts, got %d", 100-repo.races)
+	}
+}
+
+func TestUpdate_ExpectedVersion(t *testing.T) {
+	svc, repo := newRacingSUT(0)
+	u, _ := svc.Register(ctx, port.RegisterUserCmd{Email: "a@example.com", Name: "A"})
+	name := "Renamed"
+
+	_, err := svc.Update(ctx, port.UpdateUserCmd{ID: u.ID, Changes: domain.Changes{Name: &name}, ExpectedVersion: 7})
+	if !errors.Is(err, domain.ErrVersionConflict) {
+		t.Fatalf("stale If-Match: want ErrVersionConflict, got %v", err)
+	}
+
+	// Khi client gửi version, xung đột lúc ghi KHÔNG được retry: client phải đọc lại.
+	repo.races = 1
+	_, err = svc.Update(ctx, port.UpdateUserCmd{ID: u.ID, Changes: domain.Changes{Name: &name}, ExpectedVersion: 1})
+	if !errors.Is(err, domain.ErrVersionConflict) {
+		t.Fatalf("race with If-Match: want ErrVersionConflict, got %v", err)
+	}
+
+	got, err := svc.Update(ctx, port.UpdateUserCmd{ID: u.ID, Changes: domain.Changes{Name: &name}, ExpectedVersion: 2})
+	if err != nil || got.Version != 3 {
+		t.Fatalf("matching version: %+v %v", got, err)
 	}
 }
 

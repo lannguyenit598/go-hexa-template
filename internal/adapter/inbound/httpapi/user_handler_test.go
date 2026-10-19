@@ -1,15 +1,19 @@
 package httpapi_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/labstack/echo/v5"
 
 	"github.com/example/userapi/internal/adapter/inbound/httpapi"
 	"github.com/example/userapi/internal/adapter/outbound/memory"
@@ -24,9 +28,13 @@ type apiClient struct {
 
 func newAPI(t *testing.T, ready func(context.Context) error) *apiClient {
 	t.Helper()
+	return newAPIWith(t, httpapi.Options{Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), Ready: ready})
+}
+
+func newAPIWith(t *testing.T, opts httpapi.Options) *apiClient {
+	t.Helper()
 	svc := service.NewUserService(memory.NewUserRepository(), system.NewUUIDv7(), system.Clock{})
-	quiet := slog.New(slog.NewTextHandler(io.Discard, nil))
-	return &apiClient{t: t, h: httpapi.NewServer(svc, httpapi.Options{Logger: quiet, Ready: ready})}
+	return &apiClient{t: t, h: httpapi.NewServer(svc, opts)}
 }
 
 func (a *apiClient) do(method, path, body string) *httptest.ResponseRecorder {
@@ -55,6 +63,7 @@ func decode[T any](t *testing.T, rec *httptest.ResponseRecorder) T {
 
 type user struct {
 	ID, Email, Name string
+	Version         int64
 }
 
 type problem struct {
@@ -130,6 +139,7 @@ func TestErrorResponses(t *testing.T) {
 		{"unknown id", http.MethodGet, "/api/v1/users/0192f3a4-5b6c-7d8e-9f01-23456789abcd", "", http.StatusNotFound, 0},
 		{"garbage id", http.MethodGet, "/api/v1/users/not-a-uuid", "", http.StatusNotFound, 0},
 		{"bad limit", http.MethodGet, "/api/v1/users?limit=abc", "", http.StatusBadRequest, 0},
+		{"offset too deep", http.MethodGet, "/api/v1/users?offset=10001", "", http.StatusUnprocessableEntity, 1},
 		{"unknown route", http.MethodGet, "/nope", "", http.StatusNotFound, 0},
 		{"method not allowed", http.MethodPut, "/api/v1/users", `{}`, http.StatusMethodNotAllowed, 0},
 	}
@@ -157,4 +167,142 @@ func TestHealthAndReadiness(t *testing.T) {
 
 	down := newAPI(t, func(context.Context) error { return errors.New("db down") })
 	expectStatus(t, down.do(http.MethodGet, "/readyz", ""), http.StatusServiceUnavailable)
+}
+
+func TestClientCanceledRequest_Is499AndNotLoggedAsError(t *testing.T) {
+	var logs bytes.Buffer
+	api := newAPIWith(t, httpapi.Options{Logger: slog.New(slog.NewJSONHandler(&logs, nil))})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // client đã đóng kết nối
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/users", nil).WithContext(ctx)
+	rec := httptest.NewRecorder()
+	api.h.ServeHTTP(rec, req)
+
+	expectStatus(t, rec, httpapi.StatusClientClosedRequest)
+	if strings.Contains(logs.String(), `"level":"ERROR"`) {
+		t.Fatalf("client cancellation must not be logged as ERROR: %s", logs.String())
+	}
+}
+
+func TestProbesAreNotLogged(t *testing.T) {
+	var logs bytes.Buffer
+	api := newAPIWith(t, httpapi.Options{Logger: slog.New(slog.NewJSONHandler(&logs, nil))})
+	api.do(http.MethodGet, "/healthz", "")
+	api.do(http.MethodGet, "/readyz", "")
+	if logs.Len() != 0 {
+		t.Fatalf("probe requests were logged: %s", logs.String())
+	}
+	api.do(http.MethodGet, "/api/v1/users", "")
+	if !strings.Contains(logs.String(), "http_request") {
+		t.Fatal("API requests must still be logged")
+	}
+}
+
+func TestClientIP_TrustedProxies(t *testing.T) {
+	_, lb, _ := net.ParseCIDR("10.0.0.0/8")
+	tests := []struct {
+		name    string
+		trusted []*net.IPNet
+		remote  string
+		xff     string
+		want    string
+	}{
+		{"no proxy config ignores XFF", nil, "10.1.2.3:1234", "203.0.113.7", "10.1.2.3"},
+		{"trusted LB uses XFF", []*net.IPNet{lb}, "10.1.2.3:1234", "203.0.113.7", "203.0.113.7"},
+		{"spoofed hop before client is ignored", []*net.IPNet{lb}, "10.1.2.3:1234", "1.1.1.1, 203.0.113.7", "203.0.113.7"},
+		{"untrusted peer cannot spoof", []*net.IPNet{lb}, "192.168.5.5:1234", "203.0.113.7", "192.168.5.5"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var logs bytes.Buffer
+			api := newAPIWith(t, httpapi.Options{Logger: slog.New(slog.NewJSONHandler(&logs, nil)), TrustedProxies: tc.trusted})
+			req := httptest.NewRequest(http.MethodGet, "/api/v1/users", nil)
+			req.RemoteAddr = tc.remote
+			req.Header.Set("X-Forwarded-For", tc.xff)
+			api.h.ServeHTTP(httptest.NewRecorder(), req)
+			if want := `"remote_ip":"` + tc.want + `"`; !strings.Contains(logs.String(), want) {
+				t.Fatalf("want %s in log, got %s", want, logs.String())
+			}
+		})
+	}
+}
+
+func TestAPIMiddleware_AppliesToAPIOnly(t *testing.T) {
+	deny := func(next echo.HandlerFunc) echo.HandlerFunc {
+		return func(c *echo.Context) error { return echo.ErrUnauthorized }
+	}
+	api := newAPIWith(t, httpapi.Options{
+		Logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
+		APIMiddleware: []echo.MiddlewareFunc{deny},
+	})
+	expectStatus(t, api.do(http.MethodGet, "/api/v1/users", ""), http.StatusUnauthorized)
+	expectStatus(t, api.do(http.MethodGet, "/healthz", ""), http.StatusOK)
+}
+
+func (a *apiClient) doWithHeader(method, path, body, key, value string) *httptest.ResponseRecorder {
+	a.t.Helper()
+	req := httptest.NewRequest(method, path, strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(key, value)
+	rec := httptest.NewRecorder()
+	a.h.ServeHTTP(rec, req)
+	return rec
+}
+
+func TestETagAndIfMatch(t *testing.T) {
+	api := newAPI(t, nil)
+	rec := api.do(http.MethodPost, "/api/v1/users", `{"email":"e@example.com","name":"E"}`)
+	expectStatus(t, rec, http.StatusCreated)
+	created := decode[user](t, rec)
+	if rec.Header().Get("ETag") != `"1"` || created.Version != 1 {
+		t.Fatalf("ETag = %q, version = %d", rec.Header().Get("ETag"), created.Version)
+	}
+	path := "/api/v1/users/" + created.ID
+
+	if got := api.do(http.MethodGet, path, "").Header().Get("ETag"); got != `"1"` {
+		t.Fatalf("GET ETag = %q", got)
+	}
+
+	// Đúng version: thành công, ETag mới.
+	rec = api.doWithHeader(http.MethodPatch, path, `{"name":"E2"}`, "If-Match", `"1"`)
+	expectStatus(t, rec, http.StatusOK)
+	if rec.Header().Get("ETag") != `"2"` {
+		t.Fatalf("ETag after update = %q", rec.Header().Get("ETag"))
+	}
+
+	// Version cũ, weak ETag, rác: đều 412 và không ghi gì.
+	for _, ifMatch := range []string{`"1"`, `W/"2"`, `garbage`} {
+		rec = api.doWithHeader(http.MethodPatch, path, `{"name":"Lost"}`, "If-Match", ifMatch)
+		expectStatus(t, rec, http.StatusPreconditionFailed)
+		if p := decode[problem](t, rec); p.Status != http.StatusPreconditionFailed {
+			t.Fatalf("problem %+v", p)
+		}
+	}
+	if got := decode[user](t, api.do(http.MethodGet, path, "")); got.Name != "E2" || got.Version != 2 {
+		t.Fatalf("rejected update must not be applied: %+v", got)
+	}
+
+	// "*" và không có If-Match: không kiểm tra version.
+	expectStatus(t, api.doWithHeader(http.MethodPatch, path, `{"name":"E3"}`, "If-Match", "*"), http.StatusOK)
+	expectStatus(t, api.do(http.MethodPatch, path, `{"name":"E4"}`), http.StatusOK)
+}
+
+func TestRequestID_ClientValueIsSanitized(t *testing.T) {
+	api := newAPI(t, nil)
+	cases := map[string]bool{ // header gửi lên -> có được giữ nguyên không
+		"0b1c2d3e-trace.id_1":        true,
+		strings.Repeat("a", 129):     false,
+		"evil\"} injected {\"x\":\"": false,
+		"has space":                  false,
+	}
+	for in, keep := range cases {
+		got := api.doWithHeader(http.MethodGet, "/api/v1/users", "", "X-Request-Id", in).Header().Get("X-Request-Id")
+		if keep && got != in {
+			t.Errorf("valid id %q replaced by %q", in, got)
+		}
+		if !keep && (got == in || got == "") {
+			t.Errorf("invalid id %q not replaced (got %q)", in, got)
+		}
+	}
 }

@@ -1,7 +1,10 @@
 package httpapi
 
 import (
+	"errors"
 	"net/http"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/labstack/echo/v5"
@@ -29,6 +32,7 @@ type userResponse struct {
 	Name      string    `json:"name"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
+	Version   int64     `json:"version"`
 }
 
 type pageMeta struct {
@@ -45,11 +49,38 @@ type listUsersResponse struct {
 func toResponse(u domain.User) userResponse {
 	return userResponse{
 		ID:        u.ID.String(),
-		Email:     u.Email,
+		Email:     u.Email.String(),
 		Name:      u.Name,
 		CreatedAt: u.CreatedAt,
 		UpdatedAt: u.UpdatedAt,
+		Version:   u.Version,
 	}
+}
+
+// etag là strong ETag dựa trên version: cùng version thì cùng biểu diễn JSON.
+func etag(u domain.User) string { return `"` + strconv.FormatInt(u.Version, 10) + `"` }
+
+// parseIfMatch trả version client mong đợi; 0 nếu không có header hoặc là "*".
+// Header không phải một strong ETag dạng "N" thì không thể khớp => 412 theo RFC 9110.
+// (Weak ETag W/"N" cũng không bao giờ khớp vì If-Match dùng so sánh strong.)
+func parseIfMatch(c *echo.Context) (int64, error) {
+	raw := strings.TrimSpace(c.Request().Header.Get("If-Match"))
+	if raw == "" || raw == "*" {
+		return 0, nil
+	}
+	if len(raw) >= 3 && raw[0] == '"' && raw[len(raw)-1] == '"' {
+		if v, err := strconv.ParseInt(raw[1:len(raw)-1], 10, 64); err == nil && v > 0 {
+			return v, nil
+		}
+	}
+	return 0, errPreconditionFailed
+}
+
+var errPreconditionFailed = echo.NewHTTPError(http.StatusPreconditionFailed, "If-Match does not match the current version of the resource")
+
+func writeUser(c *echo.Context, status int, u domain.User) error {
+	c.Response().Header().Set("ETag", etag(u))
+	return c.JSON(status, toResponse(u))
 }
 
 // ---------- Handler ----------
@@ -68,7 +99,7 @@ func (h *userHandler) create(c *echo.Context) error {
 		return err
 	}
 	c.Response().Header().Set(echo.HeaderLocation, "/api/v1/users/"+u.ID.String())
-	return c.JSON(http.StatusCreated, toResponse(u))
+	return writeUser(c, http.StatusCreated, u)
 }
 
 func (h *userHandler) get(c *echo.Context) error {
@@ -76,7 +107,7 @@ func (h *userHandler) get(c *echo.Context) error {
 	if err != nil {
 		return err
 	}
-	return c.JSON(http.StatusOK, toResponse(u))
+	return writeUser(c, http.StatusOK, u)
 }
 
 func (h *userHandler) list(c *echo.Context) error {
@@ -103,18 +134,28 @@ func (h *userHandler) list(c *echo.Context) error {
 }
 
 func (h *userHandler) update(c *echo.Context) error {
+	expected, err := parseIfMatch(c)
+	if err != nil {
+		return err
+	}
 	var req updateUserRequest
 	if err := echo.BindBody(c, &req); err != nil {
 		return err
 	}
 	u, err := h.users.Update(c.Request().Context(), port.UpdateUserCmd{
-		ID:      domain.UserID(c.Param("id")),
-		Changes: domain.Changes{Email: req.Email, Name: req.Name},
+		ID:              domain.UserID(c.Param("id")),
+		Changes:         domain.Changes{Email: req.Email, Name: req.Name},
+		ExpectedVersion: expected,
 	})
 	if err != nil {
+		// Client đã gửi If-Match: xung đột version là điều kiện tiên quyết không thoả (412).
+		// Không có If-Match: service đã tự retry mà vẫn xung đột => 409 (xem toProblem).
+		if expected != 0 && errors.Is(err, domain.ErrVersionConflict) {
+			return errPreconditionFailed
+		}
 		return err
 	}
-	return c.JSON(http.StatusOK, toResponse(u))
+	return writeUser(c, http.StatusOK, u)
 }
 
 func (h *userHandler) delete(c *echo.Context) error {
