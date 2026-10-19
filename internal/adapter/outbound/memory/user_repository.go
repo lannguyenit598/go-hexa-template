@@ -14,7 +14,7 @@ import (
 type UserRepository struct {
 	mu      sync.RWMutex
 	byID    map[domain.UserID]domain.User
-	byEmail map[string]domain.UserID
+	byEmail map[domain.Email]domain.UserID
 }
 
 var _ port.UserRepository = (*UserRepository)(nil)
@@ -22,7 +22,7 @@ var _ port.UserRepository = (*UserRepository)(nil)
 func NewUserRepository() *UserRepository {
 	return &UserRepository{
 		byID:    make(map[domain.UserID]domain.User),
-		byEmail: make(map[string]domain.UserID),
+		byEmail: make(map[domain.Email]domain.UserID),
 	}
 }
 

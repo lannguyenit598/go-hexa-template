@@ -18,7 +18,7 @@ func TestNewUser_NormalizesInput(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if u.Email != "alice@example.com" {
+	if u.Email.String() != "alice@example.com" {
 		t.Errorf("email = %q", u.Email)
 	}
 	if u.Name != "Alice Nguyen" {
@@ -105,5 +105,25 @@ func TestUserID_Valid(t *testing.T) {
 		if got := id.Valid(); got != want {
 			t.Errorf("%q.Valid() = %v, want %v", id, got, want)
 		}
+	}
+}
+
+func TestParseEmail(t *testing.T) {
+	e, err := domain.ParseEmail("  Bob@Example.COM ")
+	if err != nil || e.String() != "bob@example.com" {
+		t.Fatalf("ParseEmail = %q, %v", e, err)
+	}
+	for _, bad := range []string{"", "nope", "Bob <bob@example.com>", strings.Repeat("a", 250) + "@x.io"} {
+		var ve *domain.ValidationError
+		if _, err := domain.ParseEmail(bad); !errors.As(err, &ve) || ve.Fields[0].Field != "email" {
+			t.Errorf("ParseEmail(%q) = %v, want email validation error", bad, err)
+		}
+	}
+}
+
+func TestEmailFromStore_DoesNotRevalidate(t *testing.T) {
+	// Dữ liệu cũ phải đọc được kể cả khi không còn hợp lệ theo quy tắc hiện tại.
+	if got := domain.EmailFromStore("legacy-value").String(); got != "legacy-value" {
+		t.Fatalf("got %q", got)
 	}
 }

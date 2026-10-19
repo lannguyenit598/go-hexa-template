@@ -3,6 +3,7 @@ module github.com/example/userapi
 go 1.25.0
 
 require (
+	github.com/google/uuid v1.6.0
 	github.com/jackc/pgx/v5 v5.11.0
 	github.com/labstack/echo/v5 v5.4.0
 	github.com/pressly/goose/v3 v3.27.0

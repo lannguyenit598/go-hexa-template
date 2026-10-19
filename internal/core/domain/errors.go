@@ -17,8 +17,8 @@ var (
 
 // FieldError mô tả một lỗi trên một trường dữ liệu.
 type FieldError struct {
-	Field   string `json:"field"`
-	Message string `json:"message"`
+	Field   string
+	Message string
 }
 
 // ValidationError gom tất cả lỗi kiểm tra dữ liệu để trả về một lần.

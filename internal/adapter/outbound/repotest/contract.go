@@ -29,6 +29,15 @@ func mkUser(t *testing.T, n int) domain.User {
 	return u
 }
 
+func mustEmail(t *testing.T, s string) domain.Email {
+	t.Helper()
+	e, err := domain.ParseEmail(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return e
+}
+
 func assertSameUser(t *testing.T, got, want domain.User) {
 	t.Helper()
 	if got.ID != want.ID || got.Email != want.Email || got.Name != want.Name ||
@@ -103,7 +112,7 @@ func Run(t *testing.T, newRepo Factory) {
 			t.Fatal(err)
 		}
 		oldEmail := u.Email
-		u.Email, u.Name, u.UpdatedAt, u.Version = "renamed@example.com", "Renamed", u.UpdatedAt.Add(time.Hour), 2
+		u.Email, u.Name, u.UpdatedAt, u.Version = mustEmail(t, "renamed@example.com"), "Renamed", u.UpdatedAt.Add(time.Hour), 2
 		if err := r.Update(ctx, u, 1); err != nil {
 			t.Fatal(err)
 		}
@@ -148,7 +157,7 @@ func Run(t *testing.T, newRepo Factory) {
 		}
 		// Ghi lần hai dựa trên bản đọc cũ (version 1) phải thất bại, không ghi đè "First".
 		stale := u
-		stale.Email, stale.Version = "stale@example.com", 2
+		stale.Email, stale.Version = mustEmail(t, "stale@example.com"), 2
 		if err := r.Update(ctx, stale, 1); !errors.Is(err, domain.ErrVersionConflict) {
 			t.Fatalf("want ErrVersionConflict, got %v", err)
 		}

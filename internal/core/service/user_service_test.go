@@ -40,7 +40,7 @@ func TestRegister(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if u.ID != "00000000-0000-7000-8000-000000000001" || u.Email != "a@example.com" || !u.CreatedAt.Equal(clock.now) {
+	if u.ID != "00000000-0000-7000-8000-000000000001" || u.Email.String() != "a@example.com" || !u.CreatedAt.Equal(clock.now) {
 		t.Fatalf("unexpected user %+v", u)
 	}
 
@@ -141,7 +141,7 @@ func (r *racingRepo) Update(ctx context.Context, u domain.User, expected int64) 
 		r.races--
 		cur, _ := r.GetByID(ctx, u.ID)
 		other := cur
-		other.Email, other.Version = fmt.Sprintf("other%d@example.com", cur.Version), cur.Version+1
+		other.Email, other.Version = domain.EmailFromStore(fmt.Sprintf("other%d@example.com", cur.Version)), cur.Version+1
 		if err := r.UserRepository.Update(ctx, other, cur.Version); err != nil {
 			return err
 		}
@@ -167,7 +167,7 @@ func TestUpdate_ConcurrentWriteIsNotLost(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Không có optimistic locking, email do request kia ghi sẽ bị ghi đè về "a@example.com".
-	if got.Name != "Renamed" || got.Email != "other1@example.com" || got.Version != 3 {
+	if got.Name != "Renamed" || got.Email.String() != "other1@example.com" || got.Version != 3 {
 		t.Fatalf("concurrent change lost: %+v", got)
 	}
 }

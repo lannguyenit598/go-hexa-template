@@ -130,7 +130,7 @@ Mọi lỗi trả về `Content-Type: application/problem+json`:
   "type": "about:blank",
   "title": "Unprocessable Entity",
   "status": 422,
-  "detail": "request body failed validation",
+  "detail": "request failed validation",
   "instance": "/api/v1/users",
   "errors": [
     {"field": "email", "message": "must be a valid email address"},
@@ -213,7 +213,11 @@ Contract test là thứ đảm bảo kiến trúc giữ đúng lời hứa: mộ
 
 **Id không hợp lệ trả 404 thay vì 400.** Service kiểm tra `UserID.Valid()` trước khi gọi repository. Cách này tránh gửi chuỗi rác xuống PostgreSQL (vốn sẽ gây lỗi `22P02`), và không tiết lộ định dạng id cho client.
 
-**UUIDv7 tự viết (khoảng 50 dòng).** ID tăng dần theo thời gian giúp index B-tree ít bị phân mảnh. Generator đứng sau port, nên muốn chuyển sang `google/uuid` chỉ cần viết một adapter mới.
+**UUIDv7 qua `google/uuid`.** ID tăng dần theo thời gian giúp index B-tree ít bị phân mảnh. Generator đứng sau port `IDGenerator`, nên đổi thuật toán chỉ cần viết một adapter mới.
+
+**`Email` là value object.** Chỉ tạo được qua `domain.ParseEmail` (đã chuẩn hoá và hợp lệ), nên không thể gán chuỗi rác vào `User.Email`. Adapter lưu trữ dựng lại bằng `domain.EmailFromStore`, hàm này **cố ý không validate lại**: nếu sau này quy tắc được thắt chặt, bản ghi cũ vẫn đọc được thay vì làm mọi request liên quan lỗi 500. Các field khác của `User` vẫn exported: trong Go, private hoá toàn bộ kèm getter tạo nhiều boilerplate mà lợi ích không tương xứng; chỉ những giá trị có invariant riêng mới cần kiểu riêng.
+
+**Domain không mang tag JSON.** `domain.FieldError` được map sang DTO `fieldError` trong `httpapi`; định dạng JSON thuộc về adapter.
 
 **`Clock` là một port.** Test của service hoàn toàn tất định. Đồng hồ thật làm tròn thời gian xuống micro giây để khớp độ chính xác của PostgreSQL, nhờ đó dữ liệu đọc lại bằng đúng dữ liệu đã ghi.
 
@@ -270,6 +274,22 @@ ALTER DEFAULT PRIVILEGES FOR ROLE userapi_migrator IN SCHEMA public
 **Thêm adapter lưu trữ mới** (ví dụ MySQL): tạo `internal/adapter/outbound/mysql`, hiện thực `port.UserRepository`, viết test gọi `repotest.Run`, rồi thêm một nhánh `case` trong `main.go`. Không cần sửa dòng nào trong `core`.
 
 **Thêm transport mới** (ví dụ gRPC): tạo `internal/adapter/inbound/grpcapi` nhận vào `port.UserService`, ánh xạ lỗi domain sang `codes.NotFound`, `codes.AlreadyExists`..., rồi khởi động song song trong `main.go`.
+
+**Use case ghi nhiều repository trong một transaction** (ví dụ tạo user và ghi outbox event): thêm port Unit of Work *tường minh*, trong đó transaction được truyền qua kiểu dữ liệu, không giấu trong `context`:
+
+```go
+// port
+type Repos struct {
+    Users  UserRepository
+    Outbox OutboxRepository
+}
+type UnitOfWork interface {
+    // Do chạy fn trong một transaction; fn trả lỗi thì rollback.
+    Do(ctx context.Context, fn func(ctx context.Context, r Repos) error) error
+}
+```
+
+Adapter postgres hiện thực `Do` bằng `pgx.BeginTxFunc` và dựng `Repos` trên `pgx.Tx`; adapter memory khoá mutex rồi gọi `fn`. Template chưa thêm port này vì chưa có use case nào cần (thêm abstraction không được dùng là nợ kỹ thuật). Không nên dùng cách giấu `pgx.Tx` trong `context`: repository quên lấy tx từ context sẽ âm thầm chạy ngoài transaction, và goroutine con có thể dùng tx sau khi đã commit.
 
 **Thêm use case** (ví dụ tìm theo email): thêm method vào `port.UserService` và `port.UserRepository`, hiện thực ở service, thêm test vào `repotest` để mọi adapter cùng bị kiểm tra, rồi thêm handler.
 

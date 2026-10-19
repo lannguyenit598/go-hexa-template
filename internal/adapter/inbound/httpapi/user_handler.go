@@ -49,7 +49,7 @@ type listUsersResponse struct {
 func toResponse(u domain.User) userResponse {
 	return userResponse{
 		ID:        u.ID.String(),
-		Email:     u.Email,
+		Email:     u.Email.String(),
 		Name:      u.Name,
 		CreatedAt: u.CreatedAt,
 		UpdatedAt: u.UpdatedAt,

@@ -93,7 +93,7 @@ type userRow struct {
 func (r userRow) toDomain() domain.User {
 	return domain.User{
 		ID:        domain.UserID(r.ID),
-		Email:     r.Email,
+		Email:     domain.EmailFromStore(r.Email),
 		Name:      r.Name,
 		CreatedAt: r.CreatedAt.UTC(),
 		UpdatedAt: r.UpdatedAt.UTC(),
@@ -106,7 +106,7 @@ const selectCols = `id::text AS id, email, name, created_at, updated_at, version
 func (r *UserRepository) Create(ctx context.Context, u domain.User) error {
 	_, err := r.pool.Exec(ctx,
 		`INSERT INTO users (id, email, name, created_at, updated_at, version) VALUES ($1, $2, $3, $4, $5, $6)`,
-		u.ID.String(), u.Email, u.Name, u.CreatedAt, u.UpdatedAt, u.Version)
+		u.ID.String(), u.Email.String(), u.Name, u.CreatedAt, u.UpdatedAt, u.Version)
 	return mapError(err)
 }
 
@@ -148,7 +148,7 @@ func (r *UserRepository) List(ctx context.Context, limit, offset int) ([]domain.
 func (r *UserRepository) Update(ctx context.Context, u domain.User, expectedVersion int64) error {
 	tag, err := r.pool.Exec(ctx,
 		`UPDATE users SET email = $2, name = $3, updated_at = $4, version = $5 WHERE id = $1 AND version = $6`,
-		u.ID.String(), u.Email, u.Name, u.UpdatedAt, u.Version, expectedVersion)
+		u.ID.String(), u.Email.String(), u.Name, u.UpdatedAt, u.Version, expectedVersion)
 	if err != nil {
 		return mapError(err)
 	}

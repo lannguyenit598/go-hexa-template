@@ -15,12 +15,26 @@ import (
 // problem là body lỗi theo RFC 9457 (application/problem+json),
 // mở rộng thêm "errors" cho lỗi validation theo từng trường.
 type problem struct {
-	Type     string              `json:"type"`
-	Title    string              `json:"title"`
-	Status   int                 `json:"status"`
-	Detail   string              `json:"detail,omitempty"`
-	Instance string              `json:"instance,omitempty"`
-	Errors   []domain.FieldError `json:"errors,omitempty"`
+	Type     string       `json:"type"`
+	Title    string       `json:"title"`
+	Status   int          `json:"status"`
+	Detail   string       `json:"detail,omitempty"`
+	Instance string       `json:"instance,omitempty"`
+	Errors   []fieldError `json:"errors,omitempty"`
+}
+
+// fieldError là DTO của domain.FieldError: định dạng JSON thuộc về adapter, không thuộc domain.
+type fieldError struct {
+	Field   string `json:"field"`
+	Message string `json:"message"`
+}
+
+func toFieldErrors(in []domain.FieldError) []fieldError {
+	out := make([]fieldError, len(in))
+	for i, f := range in {
+		out[i] = fieldError{Field: f.Field, Message: f.Message}
+	}
+	return out
 }
 
 const problemContentType = "application/problem+json"
@@ -42,7 +56,7 @@ func toProblem(err error) problem {
 	var ve *domain.ValidationError
 	switch {
 	case errors.As(err, &ve):
-		return problem{Status: http.StatusUnprocessableEntity, Detail: "request body failed validation", Errors: ve.Fields}
+		return problem{Status: http.StatusUnprocessableEntity, Detail: "request failed validation", Errors: toFieldErrors(ve.Fields)}
 	case errors.Is(err, domain.ErrUserNotFound):
 		return problem{Status: http.StatusNotFound, Detail: "user not found"}
 	case errors.Is(err, domain.ErrEmailAlreadyExists):
