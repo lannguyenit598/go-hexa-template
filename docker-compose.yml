@@ -15,6 +15,16 @@ services:
       timeout: 3s
       retries: 15
 
+  # Chạy migration một lần rồi thoát, giống một Job / initContainer trên Kubernetes.
+  migrate:
+    build: .
+    command: ["migrate"]
+    environment:
+      DATABASE_URL: postgres://userapi:userapi@db:5432/userapi?sslmode=disable
+    depends_on:
+      db:
+        condition: service_healthy
+
   api:
     build: .
     environment:
@@ -26,8 +36,8 @@ services:
     ports:
       - "8080:8080"
     depends_on:
-      db:
-        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
 
 volumes:
   pgdata:

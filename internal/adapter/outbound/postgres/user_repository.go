@@ -4,11 +4,8 @@ package postgres
 
 import (
 	"context"
-	"embed"
 	"errors"
 	"fmt"
-	"io/fs"
-	"sort"
 	"strconv"
 	"time"
 
@@ -19,9 +16,6 @@ import (
 	"github.com/example/userapi/internal/core/domain"
 	"github.com/example/userapi/internal/core/port"
 )
-
-//go:embed migrations/*.sql
-var migrationFS embed.FS
 
 const uniqueViolation = "23505"
 
@@ -84,27 +78,6 @@ func Connect(ctx context.Context, dsn string, opts PoolOptions) (*pgxpool.Pool, 
 		return nil, fmt.Errorf("ping database: %w", err)
 	}
 	return pool, nil
-}
-
-// Migrate chạy lần lượt các file migrations/*.sql theo thứ tự tên.
-// Các file viết theo kiểu idempotent nên chạy mỗi lần khởi động là an toàn.
-// Dự án thật nên chuyển sang công cụ có bảng version (golang-migrate, goose, atlas...).
-func Migrate(ctx context.Context, pool *pgxpool.Pool) error {
-	files, err := fs.Glob(migrationFS, "migrations/*.sql")
-	if err != nil {
-		return err
-	}
-	sort.Strings(files)
-	for _, f := range files {
-		sql, err := migrationFS.ReadFile(f)
-		if err != nil {
-			return err
-		}
-		if _, err := pool.Exec(ctx, string(sql)); err != nil {
-			return fmt.Errorf("migration %s: %w", f, err)
-		}
-	}
-	return nil
 }
 
 // userRow là "persistence model": tách khỏi domain.User để schema DB và domain tiến hoá độc lập.

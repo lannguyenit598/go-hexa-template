@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"log/slog"
 	"os"
 	"sync"
 	"sync/atomic"
@@ -29,13 +31,17 @@ func TestUserRepositoryContract(t *testing.T) {
 		t.Skip("TEST_DATABASE_URL not set; skipping PostgreSQL integration test")
 	}
 	ctx := context.Background()
+	quiet := slog.New(slog.NewTextHandler(io.Discard, nil))
+	if err := postgres.Migrate(ctx, dsn, quiet); err != nil {
+		t.Fatal(err)
+	}
 	pool, err := postgres.Connect(ctx, dsn, postgres.PoolOptions{MaxConns: 4, StatementTimeout: 5 * time.Second})
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(pool.Close)
-	if err := postgres.Migrate(ctx, pool); err != nil {
-		t.Fatal(err)
+	if pending, err := postgres.PendingMigrations(ctx, pool); err != nil || pending {
+		t.Fatalf("pending migrations after Migrate: %v %v", pending, err)
 	}
 
 	repotest.Run(t, func(t *testing.T) port.UserRepository {

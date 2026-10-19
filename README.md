@@ -15,7 +15,7 @@ Repo mẫu cho một REST API quản lý user, tổ chức theo kiến trúc Hex
 # 1. Không cần database: dữ liệu nằm trong RAM
 make run                      # hoặc: go run ./cmd/userapi
 
-# 2. Với PostgreSQL (cần Docker)
+# 2. Với PostgreSQL (cần Docker): khởi động DB, chạy migration, rồi chạy API
 make run-pg
 
 # 3. Toàn bộ stack trong container
@@ -82,7 +82,7 @@ internal/
   adapter/
     inbound/httpapi/        Echo v5: route, DTO, middleware, ánh xạ lỗi sang problem+json
     outbound/memory/        repository trong RAM (map + RWMutex)
-    outbound/postgres/      repository pgx, migration SQL nhúng bằng embed
+    outbound/postgres/      repository pgx, migration goose nhúng bằng embed
     outbound/repotest/      contract test dùng chung cho mọi repository
     outbound/system/        sinh UUIDv7, đồng hồ UTC
   config/          đọc cấu hình từ biến môi trường
@@ -172,6 +172,7 @@ Toàn bộ việc ánh xạ nằm trong một hàm duy nhất là `httpapi.toPro
 | `DB_MAX_CONN_LIFETIME` | `30m` | Tuổi thọ tối đa của một kết nối (giúp cân bằng lại sau failover) |
 | `DB_MAX_CONN_IDLE_TIME` | `5m` | Đóng kết nối rảnh quá lâu |
 | `DB_STATEMENT_TIMEOUT` | `5s` | `statement_timeout` phía PostgreSQL |
+| `MIGRATE_ON_START` | `false` | Chạy migration khi app khởi động. Tiện cho dev; production nên dùng `userapi migrate` |
 
 Cấu hình sai sẽ làm tiến trình dừng ngay khi khởi động, và mọi lỗi được báo cùng một lúc. Log ra stdout ở dạng JSON, mỗi request một dòng `http_request` (trừ `/healthz`, `/readyz`): 2xx/3xx ghi mức INFO, 4xx ghi mức WARN, 5xx ghi mức ERROR kèm lỗi gốc.
 
@@ -218,7 +219,41 @@ Contract test là thứ đảm bảo kiến trúc giữ đúng lời hứa: mộ
 
 **Optimistic locking thay vì `SELECT ... FOR UPDATE`.** Compare-and-set trên cột `version` chỉ cần một câu `UPDATE`, không giữ lock hay transaction giữa lúc đọc và ghi, và cùng cơ chế đó cung cấp luôn `ETag`. Đánh đổi: khi rất nhiều request cùng sửa *một* bản ghi, một phần sẽ nhận 409 và phải thử lại. Với dữ liệu kiểu hồ sơ user (tranh chấp thấp) đây là lựa chọn phù hợp.
 
-**Migration nhúng và idempotent.** Cách này đủ dùng cho repo mẫu. Dự án thật nên dùng công cụ có bảng version như golang-migrate, goose hoặc atlas.
+**Migration bằng goose, chạy tách khỏi app.** Xem mục "Migration" bên dưới.
+
+## Migration
+
+Migration là file SQL trong `internal/adapter/outbound/postgres/migrations`, nhúng vào binary và chạy bằng [goose](https://github.com/pressly/goose):
+
+```bash
+userapi migrate      # hoặc: make migrate
+```
+
+- Bảng `goose_db_version` ghi lại version đã chạy; mỗi file chạy đúng một lần, trong transaction riêng.
+- Advisory lock giữ trên một kết nối duy nhất, nên nhiều Job/replica chạy `migrate` cùng lúc vẫn an toàn (đã kiểm tra với 3 tiến trình song song).
+- Phiên migration dùng kết nối riêng với `statement_timeout = 0` (tạo index có thể lâu) và `lock_timeout = 5s`: nếu `ALTER TABLE` phải chờ lock, nó thất bại sớm thay vì làm mọi query khác trên bảng xếp hàng phía sau.
+- Khi khởi động, app kiểm tra còn migration chưa chạy không và **dừng ngay** với thông báo rõ ràng, thay vì chạy rồi lỗi `column does not exist`.
+
+**Trên Kubernetes:** chạy `userapi migrate` bằng một Job (Helm pre-upgrade hook, Argo CD PreSync) hoặc initContainer, dùng **cùng image** với app. Giữ `MIGRATE_ON_START=false`. `docker compose up` mô phỏng đúng mô hình này với service `migrate`.
+
+**Phân quyền.** Tách hai role: role migration sở hữu schema (DDL), role của app chỉ có DML. App bị lộ thông tin đăng nhập cũng không thể `DROP TABLE`.
+
+```sql
+CREATE ROLE userapi_migrator LOGIN PASSWORD '...';
+CREATE ROLE userapi_app      LOGIN PASSWORD '...';
+GRANT USAGE ON SCHEMA public TO userapi_app;
+ALTER DEFAULT PRIVILEGES FOR ROLE userapi_migrator IN SCHEMA public
+    GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO userapi_app;
+```
+
+**Viết migration an toàn khi rolling deploy (expand/contract).** Trong lúc deploy, pod cũ và pod mới cùng chạy trên schema mới, nên mọi migration phải tương thích ngược với code đang chạy:
+
+| Muốn | Làm |
+|---|---|
+| Thêm cột | Thêm cột nullable hoặc có `DEFAULT` (như `0002_add_users_version.sql`) |
+| Đổi tên / xoá cột | Thêm cột mới → deploy code ghi cả hai → backfill → deploy code chỉ đọc cột mới → xoá cột cũ ở lần deploy sau |
+| Tạo index trên bảng lớn | `CREATE INDEX CONCURRENTLY` trong file riêng có dòng `-- +goose NO TRANSACTION` (CONCURRENTLY không chạy được trong transaction) |
+| Thêm `NOT NULL` / foreign key | `ADD CONSTRAINT ... NOT VALID`, sau đó `VALIDATE CONSTRAINT` ở migration riêng |
 
 ## Ghi chú khi chuyển từ Echo v4 sang v5
 

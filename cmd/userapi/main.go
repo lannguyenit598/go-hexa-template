@@ -1,14 +1,21 @@
 // Command userapi là "composition root": nơi duy nhất biết TẤT CẢ các adapter
 // và lắp chúng vào core. Đổi storage, đổi transport... chỉ sửa ở đây.
+//
+// Cách dùng:
+//
+//	userapi           chạy HTTP API
+//	userapi migrate   áp dụng migration PostgreSQL rồi thoát (dùng cho Job / initContainer)
 package main
 
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -25,21 +32,38 @@ import (
 )
 
 func main() {
-	if err := run(); err != nil {
-		slog.Error("userapi stopped with error", "error", err)
+	cfg, err := config.FromEnv()
+	if err != nil {
+		slog.Error("invalid configuration", "error", err)
+		os.Exit(1)
+	}
+	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: cfg.LogLevel}))
+	slog.SetDefault(logger)
+
+	switch cmd := strings.Join(os.Args[1:], " "); cmd {
+	case "":
+		err = run(cfg, logger)
+	case "migrate":
+		err = migrate(cfg, logger)
+	default:
+		err = fmt.Errorf("unknown command %q (usage: userapi [migrate])", cmd)
+	}
+	if err != nil {
+		logger.Error("userapi stopped with error", "error", err)
 		os.Exit(1)
 	}
 }
 
-func run() error {
-	cfg, err := config.FromEnv()
-	if err != nil {
-		return err
+func migrate(cfg config.Config, logger *slog.Logger) error {
+	if cfg.DB.URL == "" {
+		return errors.New("DATABASE_URL is required for migrate")
 	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	return postgres.Migrate(ctx, cfg.DB.URL, logger)
+}
 
-	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: cfg.LogLevel}))
-	slog.SetDefault(logger)
-
+func run(cfg config.Config, logger *slog.Logger) error {
 	// sigCtx bị huỷ khi nhận SIGINT/SIGTERM; serverCtx bị huỷ SAU ShutdownDelay (xem shutdownOnSignal).
 	sigCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -67,8 +91,18 @@ func run() error {
 			return err
 		}
 		defer pool.Close()
-		if err := postgres.Migrate(sigCtx, pool); err != nil {
+		if cfg.DB.MigrateOnStart {
+			if err := postgres.Migrate(sigCtx, cfg.DB.URL, logger); err != nil {
+				return err
+			}
+		}
+		// Dừng sớm, rõ ràng, nếu schema cũ hơn code (Job migration chưa chạy / thất bại).
+		pending, err := postgres.PendingMigrations(sigCtx, pool)
+		if err != nil {
 			return err
+		}
+		if pending {
+			return errors.New("database has pending migrations: run `userapi migrate` first (or set MIGRATE_ON_START=true)")
 		}
 		repo = postgres.NewUserRepository(pool)
 		if cfg.ReadinessCheckDB {

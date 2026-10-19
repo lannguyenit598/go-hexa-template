@@ -48,6 +48,9 @@ type DB struct {
 	MaxConnLifetime  time.Duration
 	MaxConnIdleTime  time.Duration
 	StatementTimeout time.Duration
+	// MigrateOnStart: chạy migration khi app khởi động. Tiện cho dev; production nên chạy
+	// `userapi migrate` như một Job / initContainer riêng (xem README).
+	MigrateOnStart bool
 }
 
 // Load đọc env với lookup có thể thay thế (os.LookupEnv khi chạy thật, map khi test).
@@ -64,6 +67,7 @@ func Load(lookup func(string) (string, bool)) (Config, error) {
 			MaxConnLifetime:  p.duration("DB_MAX_CONN_LIFETIME", "30m"),
 			MaxConnIdleTime:  p.duration("DB_MAX_CONN_IDLE_TIME", "5m"),
 			StatementTimeout: p.duration("DB_STATEMENT_TIMEOUT", "5s"),
+			MigrateOnStart:   p.bool("MIGRATE_ON_START", false),
 		},
 		ShutdownDelay:    p.duration("SHUTDOWN_DELAY", "0s"),
 		ShutdownTimeout:  p.duration("SHUTDOWN_TIMEOUT", "10s"),
