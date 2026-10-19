@@ -4,7 +4,7 @@ Repo mẫu cho một REST API quản lý user, tổ chức theo kiến trúc Hex
 
 | Thành phần | Phiên bản |
 |---|---|
-| Go | 1.25 trở lên (đã kiểm tra với 1.26) |
+| Go | 1.26 trở lên (module `golang.org/x/net` có bản vá bảo mật HTTP/2 yêu cầu Go 1.26) |
 | Echo | `github.com/labstack/echo/v5` v5.4.0 |
 | PostgreSQL driver | `github.com/jackc/pgx/v5` v5.11.0 |
 | PostgreSQL | 16 |

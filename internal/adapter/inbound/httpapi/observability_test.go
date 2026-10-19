@@ -2,6 +2,7 @@ package httpapi_test
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -31,7 +32,7 @@ func TestTracingAndRequestScopedLogs(t *testing.T) {
 
 	serve := func(method, path string) *httptest.ResponseRecorder {
 		w := httptest.NewRecorder()
-		h.ServeHTTP(w, httptest.NewRequest(method, path, nil))
+		h.ServeHTTP(w, httptest.NewRequestWithContext(context.Background(), method, path, nil))
 		return w
 	}
 	serve(http.MethodGet, "/healthz")
