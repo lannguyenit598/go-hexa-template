@@ -287,3 +287,22 @@ func TestETagAndIfMatch(t *testing.T) {
 	expectStatus(t, api.doWithHeader(http.MethodPatch, path, `{"name":"E3"}`, "If-Match", "*"), http.StatusOK)
 	expectStatus(t, api.do(http.MethodPatch, path, `{"name":"E4"}`), http.StatusOK)
 }
+
+func TestRequestID_ClientValueIsSanitized(t *testing.T) {
+	api := newAPI(t, nil)
+	cases := map[string]bool{ // header gửi lên -> có được giữ nguyên không
+		"0b1c2d3e-trace.id_1":        true,
+		strings.Repeat("a", 129):     false,
+		"evil\"} injected {\"x\":\"": false,
+		"has space":                  false,
+	}
+	for in, keep := range cases {
+		got := api.doWithHeader(http.MethodGet, "/api/v1/users", "", "X-Request-Id", in).Header().Get("X-Request-Id")
+		if keep && got != in {
+			t.Errorf("valid id %q replaced by %q", in, got)
+		}
+		if !keep && (got == in || got == "") {
+			t.Errorf("invalid id %q not replaced (got %q)", in, got)
+		}
+	}
+}

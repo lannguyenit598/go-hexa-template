@@ -59,6 +59,7 @@ func NewServer(users port.UserService, opts Options) *echo.Echo {
 
 	// Thứ tự quan trọng: RequestID trước để logger có request_id; traceRoute đặt tên span theo
 	// route; Recover ngay sau logger để panic được chuyển thành lỗi 500 và vẫn được log.
+	e.Pre(dropInvalidRequestID)
 	e.Use(middleware.RequestIDWithConfig(middleware.RequestIDConfig{
 		// Gắn request_id vào ctx: mọi dòng log slog.*Context(ctx) ở bất kỳ tầng nào đều mang nó.
 		RequestIDHandler: func(c *echo.Context, id string) {
@@ -94,6 +95,31 @@ func NewServer(users port.UserService, opts Options) *echo.Echo {
 	v1.DELETE("/users/:id", h.delete)
 
 	return e
+}
+
+// dropInvalidRequestID bỏ X-Request-Id do client gửi nếu không hợp lệ, để middleware RequestID
+// sinh ID mới. ID được tin từ ingress / service gọi tới (để nối log xuyên service), nhưng vì nó
+// đi vào MỌI dòng log nên phải ngắn và chỉ gồm ký tự an toàn.
+func dropInvalidRequestID(next echo.HandlerFunc) echo.HandlerFunc {
+	return func(c *echo.Context) error {
+		if id := c.Request().Header.Get(echo.HeaderXRequestID); id != "" && !validRequestID(id) {
+			c.Request().Header.Del(echo.HeaderXRequestID)
+		}
+		return next(c)
+	}
+}
+
+func validRequestID(id string) bool {
+	if len(id) > 128 {
+		return false
+	}
+	for i := 0; i < len(id); i++ {
+		c := id[i]
+		if (c < 'a' || c > 'z') && (c < 'A' || c > 'Z') && (c < '0' || c > '9') && c != '-' && c != '_' && c != '.' {
+			return false
+		}
+	}
+	return true
 }
 
 // Instrument bọc Echo bằng OpenTelemetry ở tầng net/http (bên ngoài Echo), để span và metric

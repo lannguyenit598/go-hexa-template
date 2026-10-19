@@ -76,7 +76,7 @@ func run(cfg config.Config, logger *slog.Logger) error {
 	defer cancelServer()
 
 	var draining atomic.Bool
-	go shutdownOnSignal(sigCtx, stop, cancelServer, &draining, cfg.ShutdownDelay, logger)
+	go shutdownOnSignal(sigCtx, serverCtx, stop, cancelServer, &draining, cfg.ShutdownDelay, logger)
 
 	shutdownTelemetry, err := observability.Setup(sigCtx, version)
 	if err != nil {
@@ -182,9 +182,14 @@ func run(cfg config.Config, logger *slog.Logger) error {
 // Lý do phải chờ: trên Kubernetes, việc gỡ pod khỏi Endpoints và cập nhật kube-proxy /
 // ingress / LB diễn ra BẤT ĐỒNG BỘ với SIGTERM. Nếu đóng listener ngay, các request được
 // định tuyến tới trong vài giây đó sẽ nhận 502 / connection refused ở mỗi lần deploy.
-// Image distroless không có lệnh sleep cho preStop, nên việc chờ được làm trong app.
-func shutdownOnSignal(sigCtx context.Context, stopSignals func(), cancelServer func(), draining *atomic.Bool, delay time.Duration, logger *slog.Logger) {
-	<-sigCtx.Done()
+// Image distroless không có lệnh `sleep` cho preStop kiểu exec. Kubernetes 1.30+ có action
+// preStop.sleep dựng sẵn, nhưng chờ trong app thì chạy được trên mọi nền tảng (ECS, Nomad...).
+func shutdownOnSignal(sigCtx, serverCtx context.Context, stopSignals func(), cancelServer func(), draining *atomic.Bool, delay time.Duration, logger *slog.Logger) {
+	select {
+	case <-sigCtx.Done():
+	case <-serverCtx.Done():
+		return // run() đã kết thúc (ví dụ lỗi lúc khởi động): không có gì để drain
+	}
 	draining.Store(true)
 	// Bỏ đăng ký: tín hiệu thứ hai (Ctrl+C lần nữa) sẽ kết thúc tiến trình ngay.
 	stopSignals()
