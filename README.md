@@ -61,10 +61,10 @@ flowchart LR
     MEM -.hiện thực.-> OP
     PG -.hiện thực.-> OP
     SYS -.hiện thực.-> OP
-    MAIN["cmd/userapi/main.go<br/>composition root"] --> HTTP & SVC & MEM & PG & SYS
+    MAIN["cmd/userapi + internal/app<br/>composition root"] --> HTTP & SVC & MEM & PG & SYS
 ```
 
-**Quy tắc phụ thuộc** là quy tắc duy nhất phải giữ: mũi tên import luôn hướng vào trong. `domain` không import gì của dự án. `port` chỉ import `domain`. `service` chỉ import `domain` và `port`. Adapter import core, còn core không bao giờ import adapter. Chỉ `main.go` biết tất cả mọi thứ, vì đây là nơi lắp ráp.
+**Quy tắc phụ thuộc** là quy tắc duy nhất phải giữ: mũi tên import luôn hướng vào trong. `domain` không import gì của dự án. `port` chỉ import `domain`. `service` chỉ import `domain` và `port`. Adapter import core, còn core không bao giờ import adapter. Chỉ composition root (`cmd/userapi` + `internal/app`) biết tất cả mọi thứ, vì đây là nơi lắp ráp. `main.go` chỉ đọc config, tạo logger, bắt tín hiệu và gọi `app.Run`; phần lắp adapter và vòng đời server nằm ở `internal/app` để có test tự động.
 
 Quy tắc này được **CI thực thi tự động** bằng `depguard` trong `.golangci.yml`, không dựa vào việc review bằng mắt:
 
@@ -80,8 +80,9 @@ Test của core (`*_test.go`) được miễn, vì dùng repository in-memory l�
 ### Cấu trúc thư mục
 
 ```
-cmd/userapi/main.go                  composition root: config, chọn adapter, start/shutdown
+cmd/userapi/main.go                  điểm vào: config, logger, tín hiệu, chọn lệnh (chạy API / migrate)
 internal/
+  app/             composition root: lắp adapter vào core, readiness, drain khi tắt, timeout server
   core/
     domain/        entity User, value object Email, ValidationError, ErrEmailAlreadyExists
     port/          interface: inbound (UserService) và outbound (UserRepository, IDGenerator, Clock); lỗi kết quả use case (ErrNotFound, ErrVersionConflict)
@@ -228,6 +229,7 @@ make lint               # golangci-lint, gồm depguard
 | Contract | `adapter/outbound/repotest` | **Cùng một bộ test** chạy cho memory và postgres, gồm cả compare-and-set theo version |
 | Đồng thời | `adapter/outbound/postgres/*_test.go` | 20 goroutine cùng update một user trên PostgreSQL thật: version cuối = 1 + số lần ghi thành công |
 | HTTP | `adapter/inbound/httpapi/*_test.go` | Luồng CRUD, problem+json, ETag/If-Match, 499, IP qua proxy tin cậy, probe không bị log/trace, tên span theo route |
+| Lifecycle | `app/*_test.go` | Trong `SHUTDOWN_DELAY`: `/readyz` 503 nhưng API vẫn 200, sau đó listener đóng; cổng bị chiếm thì lỗi ngay; database còn migration chưa chạy (kể cả database trống) thì từ chối khởi động |
 | Observability | `observability/*_test.go` | `request_id`/`trace_id` được gắn vào log từ ctx |
 | Config | `config/*_test.go` | Giá trị mặc định và lỗi cấu hình |
 
@@ -305,9 +307,9 @@ ALTER DEFAULT PRIVILEGES FOR ROLE userapi_migrator IN SCHEMA public
 
 ## Mở rộng
 
-**Thêm adapter lưu trữ mới** (ví dụ MySQL): tạo `internal/adapter/outbound/mysql`, hiện thực `port.UserRepository`, viết test gọi `repotest.Run`, rồi thêm một nhánh `case` trong `main.go`. Không cần sửa dòng nào trong `core`.
+**Thêm adapter lưu trữ mới** (ví dụ MySQL): tạo `internal/adapter/outbound/mysql`, hiện thực `port.UserRepository`, viết test gọi `repotest.Run`, rồi thêm một nhánh trong `newRepository` (`internal/app/app.go`). Không cần sửa dòng nào trong `core`.
 
-**Thêm transport mới** (ví dụ gRPC): tạo `internal/adapter/inbound/grpcapi` nhận vào `port.UserService`, ánh xạ lỗi domain sang `codes.NotFound`, `codes.AlreadyExists`..., rồi khởi động song song trong `main.go`.
+**Thêm transport mới** (ví dụ gRPC): tạo `internal/adapter/inbound/grpcapi` nhận vào `port.UserService`, ánh xạ lỗi domain sang `codes.NotFound`, `codes.AlreadyExists`..., rồi khởi động song song trong `app.Run`.
 
 **Use case ghi nhiều repository trong một transaction** (ví dụ tạo user và ghi outbox event): thêm port Unit of Work *tường minh*, trong đó transaction được truyền qua kiểu dữ liệu, không giấu trong `context`:
 

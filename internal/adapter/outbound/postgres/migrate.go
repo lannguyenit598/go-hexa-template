@@ -71,7 +71,20 @@ func Migrate(ctx context.Context, dsn string, logger *slog.Logger) error {
 
 // PendingMigrations báo database còn migration chưa chạy hay không. Ứng dụng gọi hàm này lúc
 // khởi động để dừng sớm với thông báo rõ ràng, thay vì chạy rồi lỗi "column does not exist".
+//
+// Hàm này chỉ đọc. goose.HasPending tự tạo bảng goose_db_version nếu chưa có, tức là chạy DDL
+// bằng role của app; với role chỉ có quyền DML (khuyến nghị cho production) việc đó lỗi
+// "permission denied". Vì vậy database chưa từng được migrate được nhận diện trước, bằng
+// to_regclass (tôn trọng search_path), và coi là còn migration chưa chạy.
 func PendingMigrations(ctx context.Context, pool *pgxpool.Pool) (bool, error) {
+	var hasVersionTable bool
+	if err := pool.QueryRow(ctx, `SELECT to_regclass('goose_db_version') IS NOT NULL`).Scan(&hasVersionTable); err != nil {
+		return false, fmt.Errorf("check migration table: %w", err)
+	}
+	if !hasVersionTable {
+		return true, nil
+	}
+
 	db := stdlib.OpenDBFromPool(pool)
 	defer func() { _ = db.Close() }() // không đóng pool, chỉ đóng wrapper
 	provider, err := goose.NewProvider(goose.DialectPostgres, db, migrationsFS())
