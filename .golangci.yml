@@ -31,6 +31,9 @@ linters:
               desc: inbound adapters must only talk to the core through ports
             - pkg: github.com/jackc/pgx
               desc: inbound adapters must not know about the database
+            - pkg: github.com/example/userapi/internal/app
+              desc: only cmd may depend on the composition root
+        # Mỗi adapter outbound độc lập: không import adapter outbound khác hay bộ test dùng chung.
         outbound-adapters:
           files:
             - "**/internal/adapter/outbound/**"
@@ -40,6 +43,29 @@ linters:
               desc: outbound adapters must not depend on transports
             - pkg: github.com/labstack/echo
               desc: outbound adapters must not depend on the HTTP framework
+            - pkg: github.com/example/userapi/internal/adapter/outbound/memory
+              desc: outbound adapters must not depend on each other
+            - pkg: github.com/example/userapi/internal/adapter/outbound/postgres
+              desc: outbound adapters must not depend on each other
+            - pkg: github.com/example/userapi/internal/adapter/outbound/system
+              desc: outbound adapters must not depend on each other
+            - pkg: github.com/example/userapi/internal/adapter/outbound/repotest
+              desc: the shared contract test kit is for tests only
+            - pkg: github.com/example/userapi/internal/app
+              desc: only cmd may depend on the composition root
+        # Hạ tầng dùng chung (config, observability) không được biết core, adapter hay app.
+        platform:
+          files:
+            - "**/internal/observability/**"
+            - "**/internal/config/**"
+            - "!$test"
+          deny:
+            - pkg: github.com/example/userapi/internal/adapter
+              desc: platform packages must not depend on adapters
+            - pkg: github.com/example/userapi/internal/core
+              desc: platform packages must not depend on the core
+            - pkg: github.com/example/userapi/internal/app
+              desc: only cmd may depend on the composition root
     gosec:
       excludes:
         - G115 # chuyển đổi số nguyên có kiểm tra phạm vi ở nơi parse (config)

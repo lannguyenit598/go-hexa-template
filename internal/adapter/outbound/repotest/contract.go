@@ -65,7 +65,7 @@ func Run(t *testing.T, newRepo Factory) {
 	t.Run("get missing returns ErrUserNotFound", func(t *testing.T) {
 		r := newRepo(t)
 		_, err := r.GetByID(ctx, mkUser(t, 99).ID)
-		if !errors.Is(err, domain.ErrUserNotFound) {
+		if !errors.Is(err, port.ErrNotFound) {
 			t.Fatalf("got %v", err)
 		}
 	})
@@ -139,7 +139,7 @@ func Run(t *testing.T, newRepo Factory) {
 
 	t.Run("update missing", func(t *testing.T) {
 		r := newRepo(t)
-		if err := r.Update(ctx, mkUser(t, 1), 1); !errors.Is(err, domain.ErrUserNotFound) {
+		if err := r.Update(ctx, mkUser(t, 1), 1); !errors.Is(err, port.ErrNotFound) {
 			t.Fatalf("got %v", err)
 		}
 	})
@@ -158,7 +158,7 @@ func Run(t *testing.T, newRepo Factory) {
 		// Ghi lần hai dựa trên bản đọc cũ (version 1) phải thất bại, không ghi đè "First".
 		stale := u
 		stale.Email, stale.Version = mustEmail(t, "stale@example.com"), 2
-		if err := r.Update(ctx, stale, 1); !errors.Is(err, domain.ErrVersionConflict) {
+		if err := r.Update(ctx, stale, 1); !errors.Is(err, port.ErrVersionConflict) {
 			t.Fatalf("want ErrVersionConflict, got %v", err)
 		}
 		got, err := r.GetByID(ctx, u.ID)
@@ -175,10 +175,10 @@ func Run(t *testing.T, newRepo Factory) {
 		if err := r.Delete(ctx, u.ID); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := r.GetByID(ctx, u.ID); !errors.Is(err, domain.ErrUserNotFound) {
+		if _, err := r.GetByID(ctx, u.ID); !errors.Is(err, port.ErrNotFound) {
 			t.Fatalf("after delete: %v", err)
 		}
-		if err := r.Delete(ctx, u.ID); !errors.Is(err, domain.ErrUserNotFound) {
+		if err := r.Delete(ctx, u.ID); !errors.Is(err, port.ErrNotFound) {
 			t.Fatalf("second delete: %v", err)
 		}
 		if err := r.Create(ctx, u); err != nil {

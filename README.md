@@ -61,29 +61,31 @@ flowchart LR
     MEM -.hiện thực.-> OP
     PG -.hiện thực.-> OP
     SYS -.hiện thực.-> OP
-    MAIN["cmd/userapi/main.go<br/>composition root"] --> HTTP & SVC & MEM & PG & SYS
+    MAIN["cmd/userapi + internal/app<br/>composition root"] --> HTTP & SVC & MEM & PG & SYS
 ```
 
-**Quy tắc phụ thuộc** là quy tắc duy nhất phải giữ: mũi tên import luôn hướng vào trong. `domain` không import gì của dự án. `port` chỉ import `domain`. `service` chỉ import `domain` và `port`. Adapter import core, còn core không bao giờ import adapter. Chỉ `main.go` biết tất cả mọi thứ, vì đây là nơi lắp ráp.
+**Quy tắc phụ thuộc** là quy tắc duy nhất phải giữ: mũi tên import luôn hướng vào trong. `domain` không import gì của dự án. `port` chỉ import `domain`. `service` chỉ import `domain` và `port`. Adapter import core, còn core không bao giờ import adapter. Chỉ composition root (`cmd/userapi` + `internal/app`) biết tất cả mọi thứ, vì đây là nơi lắp ráp. `main.go` chỉ đọc config, tạo logger, bắt tín hiệu và gọi `app.Run`; phần lắp adapter và vòng đời server nằm ở `internal/app` để có test tự động.
 
 Quy tắc này được **CI thực thi tự động** bằng `depguard` trong `.golangci.yml`, không dựa vào việc review bằng mắt:
 
 | Rule | Ràng buộc |
 |---|---|
 | `core` | `internal/core/**` chỉ được import thư viện chuẩn và chính `internal/core` |
-| `inbound-adapters` | Không import adapter outbound hay driver database |
-| `outbound-adapters` | Không import adapter inbound hay Echo |
+| `inbound-adapters` | Không import adapter outbound, driver database hay `internal/app` |
+| `outbound-adapters` | Không import adapter inbound, Echo, adapter outbound khác, bộ test `repotest` hay `internal/app` |
+| `platform` | `internal/config`, `internal/observability` không import core, adapter hay `internal/app` |
 
 Test của core (`*_test.go`) được miễn, vì dùng repository in-memory làm test double là hợp lý. Chạy `make lint` để kiểm tra local.
 
 ### Cấu trúc thư mục
 
 ```
-cmd/userapi/main.go                  composition root: config, chọn adapter, start/shutdown
+cmd/userapi/main.go                  điểm vào: config, logger, tín hiệu, chọn lệnh (chạy API / migrate)
 internal/
+  app/             composition root: lắp adapter vào core, readiness, drain khi tắt, timeout server
   core/
-    domain/        entity User, chuẩn hoá và validate, ValidationError, ErrUserNotFound...
-    port/          interface: inbound (UserService) và outbound (UserRepository, IDGenerator, Clock)
+    domain/        entity User, value object Email, ValidationError, ErrEmailAlreadyExists
+    port/          interface: inbound (UserService) và outbound (UserRepository, IDGenerator, Clock); lỗi kết quả use case (ErrNotFound, ErrVersionConflict)
     service/       use case: Register, Get, List, Update (PATCH), Delete
   adapter/
     inbound/httpapi/        Echo v5: route, DTO, middleware, ánh xạ lỗi sang problem+json
@@ -149,9 +151,9 @@ Mọi lỗi trả về `Content-Type: application/problem+json`:
 | Lỗi | HTTP |
 |---|---|
 | `*domain.ValidationError` | 422, kèm danh sách lỗi theo từng trường |
-| `domain.ErrUserNotFound` (kể cả id không đúng định dạng UUID) | 404 |
+| `port.ErrNotFound` (kể cả id không đúng định dạng UUID) | 404 |
 | `domain.ErrEmailAlreadyExists` | 409 |
-| `domain.ErrVersionConflict` khi không có `If-Match` (đã retry 3 lần) | 409 |
+| `port.ErrVersionConflict` khi không có `If-Match` (đã retry 3 lần) | 409 |
 | `If-Match` không khớp version hiện tại | 412 |
 | JSON hỏng, `limit`/`offset` không phải số | 400 |
 | `offset` lớn hơn 10.000 | 422 |
@@ -227,6 +229,7 @@ make lint               # golangci-lint, gồm depguard
 | Contract | `adapter/outbound/repotest` | **Cùng một bộ test** chạy cho memory và postgres, gồm cả compare-and-set theo version |
 | Đồng thời | `adapter/outbound/postgres/*_test.go` | 20 goroutine cùng update một user trên PostgreSQL thật: version cuối = 1 + số lần ghi thành công |
 | HTTP | `adapter/inbound/httpapi/*_test.go` | Luồng CRUD, problem+json, ETag/If-Match, 499, IP qua proxy tin cậy, probe không bị log/trace, tên span theo route |
+| Lifecycle | `app/*_test.go` | Trong `SHUTDOWN_DELAY`: `/readyz` 503 nhưng API vẫn 200, sau đó listener đóng; cổng bị chiếm thì lỗi ngay; database còn migration chưa chạy (kể cả database trống) thì từ chối khởi động |
 | Observability | `observability/*_test.go` | `request_id`/`trace_id` được gắn vào log từ ctx |
 | Config | `config/*_test.go` | Giá trị mặc định và lỗi cấu hình |
 
@@ -247,6 +250,8 @@ Contract test là thứ đảm bảo kiến trúc giữ đúng lời hứa: mộ
 **UUIDv7 qua `google/uuid`.** ID tăng dần theo thời gian giúp index B-tree ít bị phân mảnh. Generator đứng sau port `IDGenerator`, nên đổi thuật toán chỉ cần viết một adapter mới.
 
 **`Email` là value object.** Chỉ tạo được qua `domain.ParseEmail` (đã chuẩn hoá và hợp lệ), nên không thể gán chuỗi rác vào `User.Email`. Adapter lưu trữ dựng lại bằng `domain.EmailFromStore`, hàm này **cố ý không validate lại**: nếu sau này quy tắc được thắt chặt, bản ghi cũ vẫn đọc được thay vì làm mọi request liên quan lỗi 500. Các field khác của `User` vẫn exported: trong Go, private hoá toàn bộ kèm getter tạo nhiều boilerplate mà lợi ích không tương xứng; chỉ những giá trị có invariant riêng mới cần kiểu riêng.
+
+**Inbound port chỉ nhận primitive.** `port.UpdateUserCmd` và tham số của `Get`/`Delete` là `string`, `*string`, `int64`, không phải `domain.UserID` hay `domain.Changes`. Mọi transport (HTTP hôm nay, gRPC hay consumer từ queue sau này) dùng chung một hợp đồng mà không phải tự dựng kiểu domain, và việc validate ID nằm ở một chỗ duy nhất trong core thay vì phụ thuộc vào việc mỗi adapter nhớ gọi `Valid()`. Kết quả trả về vẫn là `domain.User`; adapter được phép đọc kiểu domain.
 
 **Domain không mang tag JSON.** `domain.FieldError` được map sang DTO `fieldError` trong `httpapi`; định dạng JSON thuộc về adapter.
 
@@ -302,9 +307,9 @@ ALTER DEFAULT PRIVILEGES FOR ROLE userapi_migrator IN SCHEMA public
 
 ## Mở rộng
 
-**Thêm adapter lưu trữ mới** (ví dụ MySQL): tạo `internal/adapter/outbound/mysql`, hiện thực `port.UserRepository`, viết test gọi `repotest.Run`, rồi thêm một nhánh `case` trong `main.go`. Không cần sửa dòng nào trong `core`.
+**Thêm adapter lưu trữ mới** (ví dụ MySQL): tạo `internal/adapter/outbound/mysql`, hiện thực `port.UserRepository`, viết test gọi `repotest.Run`, rồi thêm một nhánh trong `newRepository` (`internal/app/app.go`). Không cần sửa dòng nào trong `core`.
 
-**Thêm transport mới** (ví dụ gRPC): tạo `internal/adapter/inbound/grpcapi` nhận vào `port.UserService`, ánh xạ lỗi domain sang `codes.NotFound`, `codes.AlreadyExists`..., rồi khởi động song song trong `main.go`.
+**Thêm transport mới** (ví dụ gRPC): tạo `internal/adapter/inbound/grpcapi` nhận vào `port.UserService`, ánh xạ lỗi domain sang `codes.NotFound`, `codes.AlreadyExists`..., rồi khởi động song song trong `app.Run`.
 
 **Use case ghi nhiều repository trong một transaction** (ví dụ tạo user và ghi outbox event): thêm port Unit of Work *tường minh*, trong đó transaction được truyền qua kiểu dữ liệu, không giấu trong `context`:
 

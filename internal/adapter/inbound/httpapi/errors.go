@@ -10,6 +10,7 @@ import (
 	"github.com/labstack/echo/v5"
 
 	"github.com/example/userapi/internal/core/domain"
+	"github.com/example/userapi/internal/core/port"
 )
 
 // problem là body lỗi theo RFC 9457 (application/problem+json),
@@ -57,11 +58,11 @@ func toProblem(err error) problem {
 	switch {
 	case errors.As(err, &ve):
 		return problem{Status: http.StatusUnprocessableEntity, Detail: "request failed validation", Errors: toFieldErrors(ve.Fields)}
-	case errors.Is(err, domain.ErrUserNotFound):
-		return problem{Status: http.StatusNotFound, Detail: "user not found"}
+	case errors.Is(err, port.ErrNotFound):
+		return problem{Status: http.StatusNotFound, Detail: "resource not found"}
 	case errors.Is(err, domain.ErrEmailAlreadyExists):
 		return problem{Status: http.StatusConflict, Detail: "a user with this email already exists"}
-	case errors.Is(err, domain.ErrVersionConflict):
+	case errors.Is(err, port.ErrVersionConflict):
 		return problem{Status: http.StatusConflict, Detail: "the user was modified concurrently, please retry"}
 	case errors.Is(err, context.DeadlineExceeded):
 		return problem{Status: http.StatusServiceUnavailable, Detail: "request timed out"}

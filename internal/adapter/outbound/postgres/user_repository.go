@@ -173,9 +173,9 @@ func (r *UserRepository) Update(ctx context.Context, u domain.User, expectedVers
 		return mapError(err)
 	}
 	if !exists {
-		return domain.ErrUserNotFound
+		return port.ErrNotFound
 	}
-	return domain.ErrVersionConflict
+	return port.ErrVersionConflict
 }
 
 func (r *UserRepository) Delete(ctx context.Context, id domain.UserID) error {
@@ -184,7 +184,7 @@ func (r *UserRepository) Delete(ctx context.Context, id domain.UserID) error {
 		return mapError(err)
 	}
 	if tag.RowsAffected() == 0 {
-		return domain.ErrUserNotFound
+		return port.ErrNotFound
 	}
 	return nil
 }
@@ -195,7 +195,7 @@ func mapError(err error) error {
 		return nil
 	}
 	if errors.Is(err, pgx.ErrNoRows) {
-		return domain.ErrUserNotFound
+		return port.ErrNotFound
 	}
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) && pgErr.Code == uniqueViolation && pgErr.ConstraintName == "users_email_key" {

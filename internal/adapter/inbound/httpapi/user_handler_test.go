@@ -33,7 +33,7 @@ func newAPI(t *testing.T, ready func(context.Context) error) *apiClient {
 
 func newAPIWith(t *testing.T, opts httpapi.Options) *apiClient {
 	t.Helper()
-	svc := service.NewUserService(memory.NewUserRepository(), system.NewUUIDv7(), system.Clock{})
+	svc := service.NewUserService(memory.NewUserRepository(), system.NewUUIDv7(), system.Clock{}, nil)
 	return &apiClient{t: t, h: httpapi.NewServer(svc, opts)}
 }
 
@@ -138,6 +138,8 @@ func TestErrorResponses(t *testing.T) {
 		{"malformed json", http.MethodPost, "/api/v1/users", `{"email":`, http.StatusBadRequest, 0},
 		{"unknown id", http.MethodGet, "/api/v1/users/0192f3a4-5b6c-7d8e-9f01-23456789abcd", "", http.StatusNotFound, 0},
 		{"garbage id", http.MethodGet, "/api/v1/users/not-a-uuid", "", http.StatusNotFound, 0},
+		{"patch garbage id", http.MethodPatch, "/api/v1/users/not-a-uuid", `{"name":"x"}`, http.StatusNotFound, 0},
+		{"delete garbage id", http.MethodDelete, "/api/v1/users/not-a-uuid", "", http.StatusNotFound, 0},
 		{"bad limit", http.MethodGet, "/api/v1/users?limit=abc", "", http.StatusBadRequest, 0},
 		{"offset too deep", http.MethodGet, "/api/v1/users?offset=10001", "", http.StatusUnprocessableEntity, 1},
 		{"unknown route", http.MethodGet, "/nope", "", http.StatusNotFound, 0},
