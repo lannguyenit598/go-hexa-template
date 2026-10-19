@@ -1,0 +1,29 @@
+### Dùng với REST Client (VS Code) hoặc HTTP Client (JetBrains)
+@base = http://localhost:8080
+
+### Tạo user
+POST {{base}}/api/v1/users
+Content-Type: application/json
+
+{"email": "lan@example.com", "name": "Lan Nguyen"}
+
+### Danh sách (phân trang)
+GET {{base}}/api/v1/users?limit=20&offset=0
+
+### Lấy 1 user (thay id)
+GET {{base}}/api/v1/users/REPLACE_WITH_ID
+
+### Cập nhật từng phần
+PATCH {{base}}/api/v1/users/REPLACE_WITH_ID
+Content-Type: application/json
+
+{"name": "Lan Pham"}
+
+### Xoá
+DELETE {{base}}/api/v1/users/REPLACE_WITH_ID
+
+### Health / readiness
+GET {{base}}/healthz
+
+###
+GET {{base}}/readyz

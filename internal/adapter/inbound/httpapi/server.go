@@ -1,0 +1,112 @@
+// Package httpapi là adapter inbound HTTP dùng Echo v5.
+// Nó chỉ phụ thuộc vào inbound port (port.UserService), không biết storage là gì.
+package httpapi
+
+import (
+	"context"
+	"log/slog"
+	"net/http"
+	"time"
+
+	"github.com/labstack/echo/v5"
+	"github.com/labstack/echo/v5/middleware"
+
+	"github.com/example/userapi/internal/core/port"
+)
+
+type Options struct {
+	Logger *slog.Logger
+	// Ready kiểm tra các phụ thuộc (ví dụ ping database). nil = luôn sẵn sàng.
+	Ready func(ctx context.Context) error
+	// RequestTimeout áp cho context của mỗi request. 0 = mặc định 10s.
+	RequestTimeout time.Duration
+	// BodyLimit tính bằng byte. 0 = mặc định 1 MiB.
+	BodyLimit int64
+}
+
+// NewServer dựng *echo.Echo với middleware, error handler và route.
+func NewServer(users port.UserService, opts Options) *echo.Echo {
+	if opts.Logger == nil {
+		opts.Logger = slog.Default()
+	}
+	if opts.RequestTimeout == 0 {
+		opts.RequestTimeout = 10 * time.Second
+	}
+	if opts.BodyLimit == 0 {
+		opts.BodyLimit = 1 << 20
+	}
+
+	e := echo.New()
+	e.Logger = opts.Logger
+	e.HTTPErrorHandler = newErrorHandler(opts.Logger)
+
+	// Thứ tự quan trọng: RequestID trước để logger có request_id; Recover ngay sau logger
+	// để panic được chuyển thành lỗi 500 và vẫn được log.
+	e.Use(middleware.RequestID())
+	e.Use(requestLogger(opts.Logger))
+	e.Use(middleware.Recover())
+	e.Use(middleware.BodyLimit(opts.BodyLimit))
+	e.Use(middleware.ContextTimeout(opts.RequestTimeout))
+
+	e.GET("/healthz", func(c *echo.Context) error {
+		return c.JSON(http.StatusOK, map[string]string{"status": "ok"})
+	})
+	e.GET("/readyz", func(c *echo.Context) error {
+		if opts.Ready != nil {
+			if err := opts.Ready(c.Request().Context()); err != nil {
+				opts.Logger.Warn("readiness check failed", "error", err)
+				return echo.ErrServiceUnavailable
+			}
+		}
+		return c.JSON(http.StatusOK, map[string]string{"status": "ready"})
+	})
+
+	h := &userHandler{users: users}
+	v1 := e.Group("/api/v1")
+	v1.POST("/users", h.create)
+	v1.GET("/users", h.list)
+	v1.GET("/users/:id", h.get)
+	v1.PATCH("/users/:id", h.update)
+	v1.DELETE("/users/:id", h.delete)
+
+	return e
+}
+
+// requestLogger ghi một dòng log cho mỗi request: 2xx/3xx = INFO, 4xx = WARN, 5xx = ERROR.
+// (Logger mặc định của Echo ghi mọi request có lỗi ở mức ERROR, kể cả 404/422.)
+func requestLogger(logger *slog.Logger) echo.MiddlewareFunc {
+	return middleware.RequestLoggerWithConfig(middleware.RequestLoggerConfig{
+		LogStatus:    true,
+		LogMethod:    true,
+		LogURI:       true,
+		LogRoutePath: true,
+		LogLatency:   true,
+		LogRemoteIP:  true,
+		LogRequestID: true,
+		// Chuyển lỗi cho HTTPErrorHandler trước khi log để biết status thật.
+		HandleError: true,
+		LogValuesFunc: func(c *echo.Context, v middleware.RequestLoggerValues) error {
+			level := slog.LevelInfo
+			switch {
+			case v.Status >= 500:
+				level = slog.LevelError
+			case v.Status >= 400:
+				level = slog.LevelWarn
+			}
+			attrs := []slog.Attr{
+				slog.String("method", v.Method),
+				slog.String("uri", v.URI),
+				slog.String("route", v.RoutePath),
+				slog.Int("status", v.Status),
+				slog.Duration("latency", v.Latency),
+				slog.String("remote_ip", v.RemoteIP),
+				slog.String("request_id", v.RequestID),
+			}
+			if v.Error != nil && v.Status >= 500 {
+				attrs = append(attrs, slog.String("error", v.Error.Error()))
+			}
+			logger.LogAttrs(c.Request().Context(), level, "http_request", attrs...)
+			return nil
+		},
+	})
+}

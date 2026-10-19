@@ -1,0 +1,41 @@
+.DEFAULT_GOAL := help
+DB_URL ?= postgres://userapi:userapi@localhost:5432/userapi?sslmode=disable
+
+.PHONY: help run run-pg test test-integration cover lint build db-up db-down up down
+
+help: ## Liệt kê các lệnh
+	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-18s %s\n", $$1, $$2}'
+
+run: ## Chạy API với storage in-memory
+	go run ./cmd/userapi
+
+run-pg: db-up ## Chạy API với PostgreSQL (khởi động DB bằng docker compose)
+	STORAGE=postgres DATABASE_URL="$(DB_URL)" go run ./cmd/userapi
+
+test: ## Unit test + test HTTP (không cần DB)
+	go test -race ./...
+
+test-integration: db-up ## Chạy thêm contract test trên PostgreSQL (sẽ TRUNCATE bảng users)
+	TEST_DATABASE_URL="$(DB_URL)" go test -race -count=1 ./...
+
+cover: ## Báo cáo coverage
+	go test -coverprofile=coverage.out ./... && go tool cover -func=coverage.out | tail -1
+
+lint: ## gofmt + go vet
+	@test -z "$$(gofmt -l .)" || (echo "Cần chạy gofmt:"; gofmt -l .; exit 1)
+	go vet ./...
+
+build: ## Build binary vào ./bin
+	CGO_ENABLED=0 go build -trimpath -o bin/userapi ./cmd/userapi
+
+db-up: ## Khởi động PostgreSQL
+	docker compose up -d --wait db
+
+db-down: ## Dừng PostgreSQL
+	docker compose stop db
+
+up: ## Chạy toàn bộ stack (API + DB) bằng docker compose
+	docker compose up --build
+
+down: ## Dừng và xoá container (giữ volume)
+	docker compose down

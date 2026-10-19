@@ -1,0 +1,32 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: userapi
+      POSTGRES_PASSWORD: userapi
+      POSTGRES_DB: userapi
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U userapi -d userapi"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+
+  api:
+    build: .
+    environment:
+      HTTP_ADDR: ":8080"
+      STORAGE: postgres
+      DATABASE_URL: postgres://userapi:userapi@db:5432/userapi?sslmode=disable
+      LOG_LEVEL: info
+    ports:
+      - "8080:8080"
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  pgdata:
