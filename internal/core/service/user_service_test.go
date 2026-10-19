@@ -1,9 +1,12 @@
 package service_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -29,7 +32,7 @@ func (g *seqIDs) NewID() domain.UserID {
 
 func newSUT() (*service.UserService, *fakeClock) {
 	clock := &fakeClock{now: time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC)}
-	return service.NewUserService(memory.NewUserRepository(), &seqIDs{}, clock), clock
+	return service.NewUserService(memory.NewUserRepository(), &seqIDs{}, clock, nil), clock
 }
 
 var ctx = context.Background()
@@ -149,15 +152,15 @@ func (r *racingRepo) Update(ctx context.Context, u domain.User, expected int64) 
 	return r.UserRepository.Update(ctx, u, expected)
 }
 
-func newRacingSUT(races int) (*service.UserService, *racingRepo) {
+func newRacingSUT(logger *slog.Logger) (*service.UserService, *racingRepo) {
 	repo := &racingRepo{UserRepository: memory.NewUserRepository()}
 	clock := &fakeClock{now: time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC)}
-	svc := service.NewUserService(repo, &seqIDs{}, clock)
+	svc := service.NewUserService(repo, &seqIDs{}, clock, logger)
 	return svc, repo
 }
 
 func TestUpdate_ConcurrentWriteIsNotLost(t *testing.T) {
-	svc, repo := newRacingSUT(0)
+	svc, repo := newRacingSUT(nil)
 	u, _ := svc.Register(ctx, port.RegisterUserCmd{Email: "a@example.com", Name: "A"})
 	repo.races = 1
 
@@ -173,7 +176,7 @@ func TestUpdate_ConcurrentWriteIsNotLost(t *testing.T) {
 }
 
 func TestUpdate_GivesUpAfterRepeatedConflicts(t *testing.T) {
-	svc, repo := newRacingSUT(0)
+	svc, repo := newRacingSUT(nil)
 	u, _ := svc.Register(ctx, port.RegisterUserCmd{Email: "a@example.com", Name: "A"})
 	repo.races = 100
 
@@ -188,7 +191,7 @@ func TestUpdate_GivesUpAfterRepeatedConflicts(t *testing.T) {
 }
 
 func TestUpdate_ExpectedVersion(t *testing.T) {
-	svc, repo := newRacingSUT(0)
+	svc, repo := newRacingSUT(nil)
 	u, _ := svc.Register(ctx, port.RegisterUserCmd{Email: "a@example.com", Name: "A"})
 	name := "Renamed"
 
@@ -207,6 +210,31 @@ func TestUpdate_ExpectedVersion(t *testing.T) {
 	got, err := svc.Update(ctx, port.UpdateUserCmd{ID: u.ID, Changes: domain.Changes{Name: &name}, ExpectedVersion: 2})
 	if err != nil || got.Version != 3 {
 		t.Fatalf("matching version: %+v %v", got, err)
+	}
+}
+
+func TestUpdate_LogsRetriesThroughInjectedLogger(t *testing.T) {
+	var buf bytes.Buffer
+	svc, repo := newRacingSUT(slog.New(slog.NewJSONHandler(&buf, nil)))
+	u, _ := svc.Register(ctx, port.RegisterUserCmd{Email: "a@example.com", Name: "A"})
+	repo.races = 1
+	name := "Renamed"
+	if _, err := svc.Update(ctx, port.UpdateUserCmd{ID: u.ID, Changes: domain.Changes{Name: &name}}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(buf.String(), `"msg":"user update hit a version conflict, retrying"`) ||
+		!strings.Contains(buf.String(), `"attempt":1`) {
+		t.Fatalf("retry not logged through injected logger: %s", buf.String())
+	}
+}
+
+func TestNewUserService_NilLoggerIsSafe(t *testing.T) {
+	svc, repo := newRacingSUT(nil)
+	u, _ := svc.Register(ctx, port.RegisterUserCmd{Email: "a@example.com", Name: "A"})
+	repo.races = 1 // buộc đi qua đường ghi log
+	name := "Renamed"
+	if _, err := svc.Update(ctx, port.UpdateUserCmd{ID: u.ID, Changes: domain.Changes{Name: &name}}); err != nil {
+		t.Fatal(err)
 	}
 }
 

@@ -21,16 +21,22 @@ const (
 )
 
 type UserService struct {
-	repo  port.UserRepository
-	ids   port.IDGenerator
-	clock port.Clock
+	repo   port.UserRepository
+	ids    port.IDGenerator
+	clock  port.Clock
+	logger *slog.Logger
 }
 
 // Kiểm tra lúc compile rằng UserService hiện thực đúng inbound port.
 var _ port.UserService = (*UserService)(nil)
 
-func NewUserService(repo port.UserRepository, ids port.IDGenerator, clock port.Clock) *UserService {
-	return &UserService{repo: repo, ids: ids, clock: clock}
+// NewUserService nhận logger qua tham số thay vì dùng logger toàn cục của slog, để test bắt được
+// log và mỗi instance có thể ghi log ra nơi khác nhau. logger nil = không ghi log.
+func NewUserService(repo port.UserRepository, ids port.IDGenerator, clock port.Clock, logger *slog.Logger) *UserService {
+	if logger == nil {
+		logger = slog.New(slog.DiscardHandler)
+	}
+	return &UserService{repo: repo, ids: ids, clock: clock, logger: logger}
 }
 
 func (s *UserService) Register(ctx context.Context, cmd port.RegisterUserCmd) (domain.User, error) {
@@ -104,7 +110,7 @@ func (s *UserService) Update(ctx context.Context, cmd port.UpdateUserCmd) (domai
 			return next, nil
 		case errors.Is(err, domain.ErrVersionConflict) && cmd.ExpectedVersion == 0 && attempt < maxUpdateAttempts:
 			// Ai đó vừa ghi giữa lúc đọc và ghi: đọc lại và áp dụng lại. Log để thấy được mức tranh chấp.
-			slog.InfoContext(ctx, "user update hit a version conflict, retrying", "user_id", cmd.ID.String(), "attempt", attempt)
+			s.logger.InfoContext(ctx, "user update hit a version conflict, retrying", "user_id", cmd.ID.String(), "attempt", attempt)
 			continue
 		default:
 			return domain.User{}, fmt.Errorf("update user: %w", err)

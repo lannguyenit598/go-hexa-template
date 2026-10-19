@@ -131,7 +131,7 @@ func run(cfg config.Config, logger *slog.Logger) error {
 	}
 
 	// ---- Core ----
-	users := service.NewUserService(repo, system.NewUUIDv7(), system.Clock{})
+	users := service.NewUserService(repo, system.NewUUIDv7(), system.Clock{}, logger)
 
 	// ---- Inbound adapter ----
 	e := httpapi.NewServer(users, httpapi.Options{

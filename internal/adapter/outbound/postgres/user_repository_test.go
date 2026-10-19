@@ -55,7 +55,7 @@ func TestUserRepositoryContract(t *testing.T) {
 		if _, err := pool.Exec(ctx, `TRUNCATE users`); err != nil {
 			t.Fatal(err)
 		}
-		svc := service.NewUserService(postgres.NewUserRepository(pool), system.NewUUIDv7(), system.Clock{})
+		svc := service.NewUserService(postgres.NewUserRepository(pool), system.NewUUIDv7(), system.Clock{}, nil)
 		u, err := svc.Register(ctx, port.RegisterUserCmd{Email: "race@example.com", Name: "Race"})
 		if err != nil {
 			t.Fatal(err)
