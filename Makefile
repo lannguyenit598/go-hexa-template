@@ -1,5 +1,6 @@
 .DEFAULT_GOAL := help
 DB_URL ?= postgres://userapi:userapi@localhost:5432/userapi?sslmode=disable
+VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 
 .PHONY: help run run-pg migrate test test-integration cover lint build db-up db-down up down
 
@@ -29,7 +30,7 @@ lint: ## gofmt + go vet
 	go vet ./...
 
 build: ## Build binary vào ./bin
-	CGO_ENABLED=0 go build -trimpath -o bin/userapi ./cmd/userapi
+	CGO_ENABLED=0 go build -trimpath -ldflags "-X main.version=$(VERSION)" -o bin/userapi ./cmd/userapi
 
 db-up: ## Khởi động PostgreSQL
 	docker compose up -d --wait db

@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 
 	"github.com/example/userapi/internal/core/domain"
 	"github.com/example/userapi/internal/core/port"
@@ -102,7 +103,9 @@ func (s *UserService) Update(ctx context.Context, cmd port.UpdateUserCmd) (domai
 		case err == nil:
 			return next, nil
 		case errors.Is(err, domain.ErrVersionConflict) && cmd.ExpectedVersion == 0 && attempt < maxUpdateAttempts:
-			continue // ai đó vừa ghi đè giữa lúc đọc và ghi: đọc lại và áp dụng lại
+			// Ai đó vừa ghi giữa lúc đọc và ghi: đọc lại và áp dụng lại. Log để thấy được mức tranh chấp.
+			slog.InfoContext(ctx, "user update hit a version conflict, retrying", "user_id", cmd.ID.String(), "attempt", attempt)
+			continue
 		default:
 			return domain.User{}, fmt.Errorf("update user: %w", err)
 		}

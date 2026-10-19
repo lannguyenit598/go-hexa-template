@@ -11,8 +11,12 @@ import (
 
 	"github.com/labstack/echo/v5"
 	"github.com/labstack/echo/v5/middleware"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/example/userapi/internal/core/port"
+	"github.com/example/userapi/internal/observability"
 )
 
 type Options struct {
@@ -53,9 +57,16 @@ func NewServer(users port.UserService, opts Options) *echo.Echo {
 	e.IPExtractor = ipExtractor(opts.TrustedProxies)
 	e.HTTPErrorHandler = newErrorHandler(opts.Logger)
 
-	// Thứ tự quan trọng: RequestID trước để logger có request_id; Recover ngay sau logger
-	// để panic được chuyển thành lỗi 500 và vẫn được log.
-	e.Use(middleware.RequestID())
+	// Thứ tự quan trọng: RequestID trước để logger có request_id; traceRoute đặt tên span theo
+	// route; Recover ngay sau logger để panic được chuyển thành lỗi 500 và vẫn được log.
+	e.Use(middleware.RequestIDWithConfig(middleware.RequestIDConfig{
+		// Gắn request_id vào ctx: mọi dòng log slog.*Context(ctx) ở bất kỳ tầng nào đều mang nó.
+		RequestIDHandler: func(c *echo.Context, id string) {
+			ctx := observability.WithLogAttrs(c.Request().Context(), slog.String("request_id", id))
+			c.SetRequest(c.Request().WithContext(ctx))
+		},
+	}))
+	e.Use(traceRoute)
 	e.Use(requestLogger(opts.Logger))
 	e.Use(middleware.Recover())
 	e.Use(middleware.BodyLimit(opts.BodyLimit))
@@ -85,6 +96,34 @@ func NewServer(users port.UserService, opts Options) *echo.Echo {
 	return e
 }
 
+// Instrument bọc Echo bằng OpenTelemetry ở tầng net/http (bên ngoài Echo), để span và metric
+// ghi nhận đúng status code của MỌI response, kể cả response lỗi do HTTPErrorHandler ghi.
+// Probe không được trace. Khi OpenTelemetry chưa được cấu hình, provider toàn cục là no-op.
+func Instrument(h http.Handler) http.Handler {
+	return otelhttp.NewHandler(h, "http.server",
+		otelhttp.WithFilter(func(r *http.Request) bool { return !probePaths[r.URL.Path] }),
+	)
+}
+
+// traceRoute đặt tên span là "METHOD /route/:param" và gắn http.route cho cả span lẫn metric.
+// Dùng route đã đăng ký (không phải URL thật) để giữ cardinality thấp.
+func traceRoute(next echo.HandlerFunc) echo.HandlerFunc {
+	return func(c *echo.Context) error {
+		route := c.Path()
+		if route == "" {
+			return next(c)
+		}
+		ctx := c.Request().Context()
+		span := trace.SpanFromContext(ctx)
+		span.SetName(c.Request().Method + " " + route)
+		span.SetAttributes(attribute.String("http.route", route))
+		if l, ok := otelhttp.LabelerFromContext(ctx); ok {
+			l.Add(attribute.String("http.route", route))
+		}
+		return next(c)
+	}
+}
+
 func ipExtractor(trusted []*net.IPNet) echo.IPExtractor {
 	if len(trusted) == 0 {
 		return echo.ExtractIPDirect()
@@ -111,7 +150,6 @@ func requestLogger(logger *slog.Logger) echo.MiddlewareFunc {
 		LogRoutePath: true,
 		LogLatency:   true,
 		LogRemoteIP:  true,
-		LogRequestID: true,
 		// Chuyển lỗi cho HTTPErrorHandler trước khi log để biết status thật.
 		HandleError: true,
 		LogValuesFunc: func(c *echo.Context, v middleware.RequestLoggerValues) error {
@@ -129,7 +167,7 @@ func requestLogger(logger *slog.Logger) echo.MiddlewareFunc {
 				slog.Int("status", v.Status),
 				slog.Duration("latency", v.Latency),
 				slog.String("remote_ip", v.RemoteIP),
-				slog.String("request_id", v.RequestID),
+				// request_id, trace_id do observability.ContextHandler thêm từ ctx.
 			}
 			if v.Error != nil && v.Status >= 500 {
 				attrs = append(attrs, slog.String("error", v.Error.Error()))

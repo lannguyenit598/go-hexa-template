@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/exaring/otelpgx"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -66,6 +67,11 @@ func Connect(ctx context.Context, dsn string, opts PoolOptions) (*pgxpool.Pool, 
 	if opts.StatementTimeout > 0 {
 		cfg.ConnConfig.RuntimeParams["statement_timeout"] = strconv.FormatInt(opts.StatementTimeout.Milliseconds(), 10)
 	}
+	cfg.ConnConfig.RuntimeParams["application_name"] = "userapi"
+	// Span cho mỗi query (chỉ câu SQL, KHÔNG kèm giá trị tham số để không lộ PII vào trace)
+	// và span chờ lấy kết nối từ pool: pool cạn kết nối hiện ra ngay trên trace.
+	// Dùng provider toàn cục, nên là no-op khi OpenTelemetry chưa được bật.
+	cfg.ConnConfig.Tracer = otelpgx.NewTracer(otelpgx.WithTrimSQLInSpanName())
 
 	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
@@ -76,6 +82,12 @@ func Connect(ctx context.Context, dsn string, opts PoolOptions) (*pgxpool.Pool, 
 	if err := pool.Ping(pingCtx); err != nil {
 		pool.Close()
 		return nil, fmt.Errorf("ping database: %w", err)
+	}
+	// Metric của pool (số kết nối đang dùng / rảnh, thời gian chờ acquire...): chỉ số đầu tiên
+	// cần xem khi latency tăng mà CPU database vẫn thấp.
+	if err := otelpgx.RecordStats(pool); err != nil {
+		pool.Close()
+		return nil, fmt.Errorf("record pool stats: %w", err)
 	}
 	return pool, nil
 }

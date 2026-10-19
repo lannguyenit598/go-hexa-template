@@ -29,6 +29,9 @@ type Config struct {
 	ShutdownDelay   time.Duration
 	ShutdownTimeout time.Duration
 	RequestTimeout  time.Duration
+	// HTTPIdleTimeout: thời gian giữ keep-alive connection rảnh. Phải lớn hơn idle timeout
+	// của load balancer phía trước (AWS ALB: 60s), nếu không sẽ có 502 lác đác.
+	HTTPIdleTimeout time.Duration
 
 	// TrustedProxies: các dải CIDR của proxy tin cậy. Rỗng = lấy IP từ kết nối TCP.
 	TrustedProxies []*net.IPNet
@@ -72,6 +75,7 @@ func Load(lookup func(string) (string, bool)) (Config, error) {
 		ShutdownDelay:    p.duration("SHUTDOWN_DELAY", "0s"),
 		ShutdownTimeout:  p.duration("SHUTDOWN_TIMEOUT", "10s"),
 		RequestTimeout:   p.duration("REQUEST_TIMEOUT", "10s"),
+		HTTPIdleTimeout:  p.duration("HTTP_IDLE_TIMEOUT", "75s"),
 		ReadinessCheckDB: p.bool("READINESS_CHECK_DB", false),
 		TrustedProxies:   p.cidrs("TRUSTED_PROXIES"),
 	}
@@ -98,6 +102,9 @@ func Load(lookup func(string) (string, bool)) (Config, error) {
 	}
 	if cfg.RequestTimeout <= 0 {
 		p.fail("REQUEST_TIMEOUT must be > 0")
+	}
+	if cfg.HTTPIdleTimeout <= 0 {
+		p.fail("HTTP_IDLE_TIMEOUT must be > 0")
 	}
 	if cfg.ShutdownDelay < 0 || cfg.ShutdownTimeout < 0 {
 		p.fail("SHUTDOWN_DELAY and SHUTDOWN_TIMEOUT must be >= 0")

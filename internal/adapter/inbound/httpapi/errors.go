@@ -105,7 +105,7 @@ func newErrorHandler(logger *slog.Logger) echo.HTTPErrorHandler {
 			return
 		}
 		if wErr := c.Blob(p.Status, problemContentType, body); wErr != nil {
-			logger.Error("failed to write error response", "error", wErr)
+			logger.ErrorContext(c.Request().Context(), "failed to write error response", "error", wErr)
 		}
 	}
 }

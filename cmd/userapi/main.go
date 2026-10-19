@@ -20,8 +20,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/labstack/echo/v5"
-
 	"github.com/example/userapi/internal/adapter/inbound/httpapi"
 	"github.com/example/userapi/internal/adapter/outbound/memory"
 	"github.com/example/userapi/internal/adapter/outbound/postgres"
@@ -29,7 +27,11 @@ import (
 	"github.com/example/userapi/internal/config"
 	"github.com/example/userapi/internal/core/port"
 	"github.com/example/userapi/internal/core/service"
+	"github.com/example/userapi/internal/observability"
 )
+
+// version được gán lúc build: go build -ldflags "-X main.version=$(git describe --tags)".
+var version = "dev"
 
 func main() {
 	cfg, err := config.FromEnv()
@@ -37,7 +39,10 @@ func main() {
 		slog.Error("invalid configuration", "error", err)
 		os.Exit(1)
 	}
-	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: cfg.LogLevel}))
+	// ContextHandler thêm request_id, trace_id, span_id từ ctx vào mọi dòng log *Context(ctx, ...).
+	logger := slog.New(observability.NewContextHandler(
+		slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: cfg.LogLevel}),
+	))
 	slog.SetDefault(logger)
 
 	switch cmd := strings.Join(os.Args[1:], " "); cmd {
@@ -72,6 +77,19 @@ func run(cfg config.Config, logger *slog.Logger) error {
 
 	var draining atomic.Bool
 	go shutdownOnSignal(sigCtx, stop, cancelServer, &draining, cfg.ShutdownDelay, logger)
+
+	shutdownTelemetry, err := observability.Setup(sigCtx, version)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		// Flush span/metric còn trong bộ đệm; dùng ctx mới vì sigCtx đã bị huỷ.
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := shutdownTelemetry(ctx); err != nil {
+			logger.Warn("telemetry shutdown failed", "error", err)
+		}
+	}()
 
 	// ---- Outbound adapters ----
 	var (
@@ -123,21 +141,43 @@ func run(cfg config.Config, logger *slog.Logger) error {
 		TrustedProxies: cfg.TrustedProxies,
 	})
 
-	logger.Info("starting userapi", "addr", cfg.HTTPAddr, "storage", cfg.Storage)
-	sc := echo.StartConfig{
-		Address:         cfg.HTTPAddr,
-		HideBanner:      true,
-		GracefulTimeout: cfg.ShutdownTimeout,
+	srv := &http.Server{
+		Addr:    cfg.HTTPAddr,
+		Handler: httpapi.Instrument(e),
+		// Chặn Slowloris: client phải gửi xong header trong 5s.
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		// Lớn hơn REQUEST_TIMEOUT để handler kịp trả lỗi timeout thay vì bị cắt kết nối giữa chừng.
+		WriteTimeout: cfg.RequestTimeout + 5*time.Second,
+		// Phải LỚN HƠN idle timeout của load balancer (AWS ALB mặc định 60s). Nếu nhỏ hơn, LB có
+		// thể gửi request vào một keep-alive connection mà server vừa đóng => 502 lác đác.
+		IdleTimeout: cfg.HTTPIdleTimeout,
+		ErrorLog:    slog.NewLogLogger(logger.Handler(), slog.LevelWarn),
 	}
-	if err := sc.Start(serverCtx, e); err != nil && !errors.Is(err, http.ErrServerClosed) {
-		return err
+
+	serveErr := make(chan error, 1)
+	go func() { serveErr <- srv.ListenAndServe() }()
+	logger.Info("starting userapi", "addr", cfg.HTTPAddr, "storage", cfg.Storage, "version", version,
+		"otel", observability.Enabled(os.Getenv))
+
+	select {
+	case err := <-serveErr:
+		return fmt.Errorf("http server: %w", err) // ví dụ cổng đã bị chiếm
+	case <-serverCtx.Done():
+	}
+
+	// Ngừng nhận kết nối mới, chờ request đang chạy xong (tối đa ShutdownTimeout).
+	ctx, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
+	defer cancel()
+	if err := srv.Shutdown(ctx); err != nil {
+		return fmt.Errorf("graceful shutdown: %w", err)
 	}
 	logger.Info("userapi stopped gracefully")
 	return nil
 }
 
 // shutdownOnSignal: khi nhận tín hiệu, đánh dấu draining (/readyz trả 503), chờ ShutdownDelay
-// rồi mới huỷ serverCtx để Echo ngừng nhận kết nối và drain request đang chạy.
+// rồi mới huỷ serverCtx để server ngừng nhận kết nối và drain request đang chạy.
 //
 // Lý do phải chờ: trên Kubernetes, việc gỡ pod khỏi Endpoints và cập nhật kube-proxy /
 // ingress / LB diễn ra BẤT ĐỒNG BỘ với SIGTERM. Nếu đóng listener ngay, các request được

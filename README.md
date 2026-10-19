@@ -86,11 +86,12 @@ internal/
     outbound/repotest/      contract test dùng chung cho mọi repository
     outbound/system/        sinh UUIDv7, đồng hồ UTC
   config/          đọc cấu hình từ biến môi trường
+  observability/   slog handler theo ngữ cảnh request, khởi tạo OpenTelemetry
 ```
 
 ### Luồng một request `POST /api/v1/users`
 
-1. Echo nhận request. Middleware chạy theo thứ tự: RequestID, request logger, Recover, BodyLimit (1 MiB), ContextTimeout (10s).
+1. `otelhttp` mở span, rồi Echo nhận request. Middleware chạy theo thứ tự: RequestID (gắn `request_id` vào ctx), đặt tên span theo route, request logger, Recover, BodyLimit (1 MiB), ContextTimeout (10s).
 2. `httpapi.userHandler.create` bind JSON vào DTO `createUserRequest`, sau đó gọi `port.UserService.Register`. Handler không chứa logic nghiệp vụ.
 3. `service.UserService.Register` lấy ID từ `IDGenerator` và thời gian từ `Clock`, rồi gọi `domain.NewUser` để chuẩn hoá và validate dữ liệu.
 4. `UserRepository.Create` lưu bản ghi. Adapter postgres dịch lỗi unique violation (`23505`) thành `domain.ErrEmailAlreadyExists`.
@@ -165,6 +166,7 @@ Toàn bộ việc ánh xạ nằm trong một hàm duy nhất là `httpapi.toPro
 | `SHUTDOWN_DELAY` | `0s` | Thời gian chờ sau SIGTERM trước khi ngừng nhận kết nối. Trên Kubernetes đặt 5s–10s |
 | `SHUTDOWN_TIMEOUT` | `10s` | Thời gian chờ các request đang chạy hoàn tất, tính sau `SHUTDOWN_DELAY` |
 | `REQUEST_TIMEOUT` | `10s` | Timeout của context cho mỗi request |
+| `HTTP_IDLE_TIMEOUT` | `75s` | Thời gian giữ keep-alive connection rảnh; phải lớn hơn idle timeout của LB |
 | `TRUSTED_PROXIES` | (trống) | CIDR của LB/ingress, phân tách bằng dấu phẩy. Khi có, IP client lấy từ `X-Forwarded-For` |
 | `READINESS_CHECK_DB` | `false` | `/readyz` có ping database hay không (timeout 500ms) |
 | `DB_MAX_CONNS` | `10` | Số kết nối tối đa **mỗi pod** |
@@ -172,11 +174,27 @@ Toàn bộ việc ánh xạ nằm trong một hàm duy nhất là `httpapi.toPro
 | `DB_MAX_CONN_LIFETIME` | `30m` | Tuổi thọ tối đa của một kết nối (giúp cân bằng lại sau failover) |
 | `DB_MAX_CONN_IDLE_TIME` | `5m` | Đóng kết nối rảnh quá lâu |
 | `DB_STATEMENT_TIMEOUT` | `5s` | `statement_timeout` phía PostgreSQL |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | (trống) | Endpoint OTLP/HTTP của collector. Trống = không export trace/metric. Các biến `OTEL_*` chuẩn khác (`OTEL_SERVICE_NAME`, `OTEL_TRACES_SAMPLER`...) đều được hỗ trợ |
 | `MIGRATE_ON_START` | `false` | Chạy migration khi app khởi động. Tiện cho dev; production nên dùng `userapi migrate` |
 
-Cấu hình sai sẽ làm tiến trình dừng ngay khi khởi động, và mọi lỗi được báo cùng một lúc. Log ra stdout ở dạng JSON, mỗi request một dòng `http_request` (trừ `/healthz`, `/readyz`): 2xx/3xx ghi mức INFO, 4xx ghi mức WARN, 5xx ghi mức ERROR kèm lỗi gốc.
+Cấu hình sai sẽ làm tiến trình dừng ngay khi khởi động, và mọi lỗi được báo cùng một lúc.
+
+## Observability
+
+**Log.** JSON ra stdout, mỗi request một dòng `http_request` (trừ `/healthz`, `/readyz`): 2xx/3xx ghi mức INFO, 4xx ghi mức WARN, 5xx ghi mức ERROR kèm lỗi gốc. `observability.ContextHandler` tự thêm `request_id`, `trace_id`, `span_id` vào **mọi** dòng log ghi bằng `slog.*Context(ctx, ...)` ở bất kỳ tầng nào, không cần truyền logger qua từng hàm. Ví dụ: service ghi log khi gặp xung đột version và phải retry, dòng log đó tự gắn với request và trace tương ứng.
+
+**Trace và metric (OpenTelemetry).** Bật bằng `OTEL_EXPORTER_OTLP_ENDPOINT`. Khi không đặt, provider là no-op: không tốn chi phí đáng kể và không có exporter nào cố kết nối rồi ghi log lỗi.
+
+| Nguồn | Thu được |
+|---|---|
+| `otelhttp` (bọc ngoài Echo) | Span mỗi request, tên theo route (`GET /api/v1/users/:id`, không theo URL thật để giữ cardinality thấp); metric `http.server.request.duration` có `http.route` |
+| `otelpgx` | Span mỗi query (chỉ câu SQL, **không** kèm giá trị tham số để không lộ PII) và span chờ lấy kết nối từ pool; metric của pool (kết nối đang dùng, thời gian chờ acquire) |
+
+Probe không bị trace. Trace context từ upstream (`traceparent`) luôn được chuyển tiếp. Khi tắt, app flush span/metric còn trong bộ đệm trước khi thoát. Version của build (`-ldflags "-X main.version=..."`) được ghi vào resource `service.version` và dòng log khởi động.
 
 ## Triển khai production
+
+**Timeout của HTTP server.** `ReadHeaderTimeout` 5s chặn Slowloris; `WriteTimeout` lớn hơn `REQUEST_TIMEOUT` để handler kịp trả lỗi timeout; `HTTP_IDLE_TIMEOUT` (75s) phải lớn hơn idle timeout của LB. Nếu server đóng keep-alive connection *trước* LB (ví dụ 30s so với 60s của AWS ALB), LB có thể gửi request vào đúng connection vừa bị đóng và trả 502 cho client, lỗi lác đác rất khó tìm nguyên nhân.
 
 **Shutdown không làm rơi request.** Khi nhận SIGTERM, app đánh dấu `/readyz` là 503, **vẫn phục vụ bình thường** trong `SHUTDOWN_DELAY`, rồi mới đóng listener và chờ tối đa `SHUTDOWN_TIMEOUT` cho request đang chạy. Lý do: Kubernetes gỡ pod khỏi Endpoints và cập nhật kube-proxy/ingress *bất đồng bộ* với SIGTERM; đóng listener ngay sẽ gây 502 ở mỗi lần rolling deploy. Image distroless không có `sleep` cho `preStop`, nên việc chờ được làm trong app. Đặt `terminationGracePeriodSeconds` lớn hơn `SHUTDOWN_DELAY + SHUTDOWN_TIMEOUT` (ví dụ 5s + 10s → 30s). Nhấn Ctrl+C lần hai để thoát ngay khi chạy local.
 
@@ -264,7 +282,7 @@ ALTER DEFAULT PRIVILEGES FOR ROLE userapi_migrator IN SCHEMA public
 | Echo v4 | Echo v5 (repo này dùng) |
 |---|---|
 | `func(c echo.Context) error` (interface) | `func(c *echo.Context) error` (struct) |
-| `e.Start(addr)` + `e.Shutdown(ctx)` thủ công | `echo.StartConfig{Address, GracefulTimeout}.Start(ctx, e)`, tự shutdown khi `ctx` bị huỷ |
+| `e.Start(addr)` + `e.Shutdown(ctx)` thủ công | `echo.StartConfig{Address, GracefulTimeout}.Start(ctx, e)`, tự shutdown khi `ctx` bị huỷ. Repo này vẫn tự dựng `http.Server` để đặt `ReadHeaderTimeout`/`IdleTimeout` và bọc `otelhttp` bên ngoài Echo |
 | `e.Logger` riêng của Echo | `e.Logger` là `*slog.Logger` |
 | `c.Bind` + `strconv` cho query | `echo.BindBody`, generic `echo.QueryParamOr[int](c, "limit", 0)` |
 | Kiểu lỗi chỉ có `*echo.HTTPError` | Thêm interface `HTTPStatusCoder`; dùng `echo.StatusCode(err)` để lấy status |

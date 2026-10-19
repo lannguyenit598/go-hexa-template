@@ -20,7 +20,7 @@ func TestLoad_Defaults(t *testing.T) {
 	if cfg.HTTPAddr != ":8080" || cfg.Storage != config.StorageMemory || cfg.LogLevel != slog.LevelInfo || cfg.ShutdownTimeout != 10*time.Second {
 		t.Fatalf("defaults: %+v", cfg)
 	}
-	if cfg.ShutdownDelay != 0 || cfg.ReadinessCheckDB || len(cfg.TrustedProxies) != 0 {
+	if cfg.ShutdownDelay != 0 || cfg.ReadinessCheckDB || len(cfg.TrustedProxies) != 0 || cfg.HTTPIdleTimeout != 75*time.Second {
 		t.Fatalf("defaults: %+v", cfg)
 	}
 	if cfg.DB.MaxConns != 10 || cfg.DB.StatementTimeout != 5*time.Second || cfg.DB.MigrateOnStart {
@@ -36,6 +36,7 @@ func TestLoad_Errors(t *testing.T) {
 		{"SHUTDOWN_TIMEOUT": "ten"},
 		{"SHUTDOWN_DELAY": "-1s"},
 		{"REQUEST_TIMEOUT": "0s"},
+		{"HTTP_IDLE_TIMEOUT": "0s"},
 		{"DB_MAX_CONNS": "0"},
 		{"DB_MAX_CONNS": "many"},
 		{"DB_MIN_CONNS": "20"},
