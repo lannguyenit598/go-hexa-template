@@ -1,35 +1,59 @@
-### Dùng với REST Client (VS Code) hoặc HTTP Client (JetBrains)
+### Dùng với REST Client (VS Code) hoặc HTTP Client (JetBrains).
+### Tài liệu đầy đủ: docs/api.md
 @base = http://localhost:8080
 
-### Tạo user
+### Tạo user. Response có Location (đường dẫn user mới) và ETag: "1"
 POST {{base}}/api/v1/users
 Content-Type: application/json
+X-Request-Id: demo-create-1
 
 {"email": "lan@example.com", "name": "Lan Nguyen"}
 
-### Danh sách (phân trang)
+### Danh sách (phân trang). limit > 100 được giới hạn thành 100; offset tối đa 10000
 GET {{base}}/api/v1/users?limit=20&offset=0
 
-### Lấy 1 user (thay id)
+### Lấy 1 user (thay id). Ghi lại header ETag để dùng cho If-Match bên dưới
 GET {{base}}/api/v1/users/REPLACE_WITH_ID
 
-### Cập nhật từng phần
+### Cập nhật từng phần: field không gửi (hoặc null) được giữ nguyên
 PATCH {{base}}/api/v1/users/REPLACE_WITH_ID
 Content-Type: application/json
 
 {"name": "Lan Pham"}
 
-### Cập nhật có kiểm tra version (lấy ETag từ response GET); sai version => 412
+### Cập nhật có kiểm tra version: thay "1" bằng ETag vừa GET. Sai version => 412
 PATCH {{base}}/api/v1/users/REPLACE_WITH_ID
 Content-Type: application/json
 If-Match: "1"
 
 {"name": "Lan Tran"}
 
-### Xoá
+### Xoá (DELETE không kiểm tra If-Match)
 DELETE {{base}}/api/v1/users/REPLACE_WITH_ID
 
-### Health / readiness
+### --- Ví dụ lỗi ---
+
+### 422: dữ liệu không hợp lệ, có danh sách lỗi theo từng field
+POST {{base}}/api/v1/users
+Content-Type: application/json
+
+{"email": "not-an-email", "name": ""}
+
+### 409: email đã tồn tại (chạy sau request "Tạo user" ở trên)
+POST {{base}}/api/v1/users
+Content-Type: application/json
+
+{"email": "LAN@example.com", "name": "Someone Else"}
+
+### 415: thiếu Content-Type
+POST {{base}}/api/v1/users
+
+{"email": "x@example.com", "name": "X"}
+
+### 404: ID sai định dạng cũng trả 404
+GET {{base}}/api/v1/users/not-a-uuid
+
+### --- Probe ---
 GET {{base}}/healthz
 
 ###
