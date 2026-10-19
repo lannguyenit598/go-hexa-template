@@ -2,7 +2,7 @@
 DB_URL ?= postgres://userapi:userapi@localhost:5432/userapi?sslmode=disable
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 
-.PHONY: help run run-pg migrate test test-integration cover lint build db-up db-down up down
+.PHONY: help run run-pg migrate test test-integration check cover lint build db-up db-down up down
 
 help: ## Liệt kê các lệnh
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-18s %s\n", $$1, $$2}'
@@ -21,6 +21,12 @@ test: ## Unit test + test HTTP (không cần DB)
 
 test-integration: db-up ## Chạy thêm contract test trên PostgreSQL (sẽ TRUNCATE bảng users)
 	TEST_DATABASE_URL="$(DB_URL)" go test -race -count=1 ./...
+
+check: ## Mọi kiểm tra phải xanh trước khi commit: gofmt, go mod tidy, lint, test -race (gồm test PostgreSQL nếu có TEST_DATABASE_URL)
+	@test -z "$$(gofmt -l .)" || (echo "Cần chạy gofmt -w trên:"; gofmt -l .; exit 1)
+	go mod tidy -diff
+	golangci-lint run ./...
+	go test -race -count=1 ./...
 
 cover: ## Báo cáo coverage
 	go test -coverprofile=coverage.out ./... && go tool cover -func=coverage.out | tail -1
