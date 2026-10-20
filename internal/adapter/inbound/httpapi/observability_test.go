@@ -67,3 +67,26 @@ func TestTracingAndRequestScopedLogs(t *testing.T) {
 		t.Errorf("request_id must appear exactly once: %s", logs.String())
 	}
 }
+
+func TestAccessLogOmitsQueryString(t *testing.T) {
+	var logs bytes.Buffer
+	api := newAPIWith(t, httpapi.Options{Logger: slog.New(slog.NewJSONHandler(&logs, nil))})
+
+	w := httptest.NewRecorder()
+	api.h.ServeHTTP(w, httptest.NewRequestWithContext(context.Background(), http.MethodGet,
+		"/api/v1/users?limit=1&email=alice@example.com&token=private-token", nil))
+	expectStatus(t, w, http.StatusOK)
+
+	for _, secret := range []string{"private-token", "alice@example.com"} {
+		if strings.Contains(logs.String(), secret) {
+			t.Errorf("access log leaks query value %q: %s", secret, logs.String())
+		}
+	}
+	var line map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(logs.Bytes()), &line); err != nil {
+		t.Fatalf("log: %v (%s)", err, logs.String())
+	}
+	if line["path"] != "/api/v1/users" || line["route"] != "/api/v1/users" {
+		t.Errorf("path = %v, route = %v; want /api/v1/users for both", line["path"], line["route"])
+	}
+}

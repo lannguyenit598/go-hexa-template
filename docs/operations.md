@@ -193,7 +193,7 @@ SELECT count(*) AS parked FROM outbox WHERE parked_at IS NOT NULL;
 
 ## Observability
 
-**Logs.** JSON to stdout except startup configuration errors ([Configuration](#configuration)). One http_request log per non-probe request: INFO for 2xx/3xx, WARN for 4xx, ERROR with the underlying error for 5xx; latency is nanoseconds. Failed readiness probes log WARN `readiness check failed`. slog.*Context logs at every layer include request_id; trace_id/span_id appear with active spans (OTel enabled or upstream traceparent). Find request logs using the response X-Request-Id.
+**Logs.** JSON to stdout except startup configuration errors ([Configuration](#configuration)). One http_request log per non-probe request: INFO for 2xx/3xx, WARN for 4xx, ERROR with the underlying error for 5xx; latency is nanoseconds; `path` omits the query string, which can carry tokens or PII. Failed readiness probes log WARN `readiness check failed`. slog.*Context logs at every layer include request_id; trace_id/span_id appear with active spans (OTel enabled or upstream traceparent). Find request logs using the response X-Request-Id.
 
 **Traces and metrics (OpenTelemetry).** Enable OTLP/HTTP via OTEL_EXPORTER_OTLP_ENDPOINT or signal-specific endpoints ([Configuration](#configuration)). Otherwise providers are no-ops. Export errors log INFO (`traces export: ...`) without stopping the app; final shutdown flush failure logs WARN `telemetry shutdown failed`.
 
