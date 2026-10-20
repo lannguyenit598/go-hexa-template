@@ -178,5 +178,5 @@ The postgres adapter uses `pgx.BeginTxFunc` and constructs Repos over `pgx.Tx`; 
 | `func(c echo.Context) error` (interface) | `func(c *echo.Context) error` (struct) |
 | Manual `e.Start(addr)` + `e.Shutdown(ctx)` | `echo.StartConfig{Address, GracefulTimeout}.Start(ctx, e)`. This repo still constructs `http.Server` to set ReadHeaderTimeout/IdleTimeout and wrap Echo in otelhttp |
 | Echo-specific `e.Logger` | `e.Logger` is `*slog.Logger` |
-| `c.Bind` + `strconv` cho query | `echo.BindBody`, generic `echo.QueryParamOr[int](c, "limit", 0)` |
+| `c.Bind` + `strconv` for query | `echo.BindBody`, generic `echo.QueryParamOr[int](c, "limit", 0)` |
 | Only `*echo.HTTPError` | Adds `HTTPStatusCoder`; use `echo.StatusCode(err)` |

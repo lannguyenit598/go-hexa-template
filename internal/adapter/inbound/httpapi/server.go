@@ -159,7 +159,7 @@ func requestLogger(logger *slog.Logger) echo.MiddlewareFunc {
 		},
 		LogStatus:    true,
 		LogMethod:    true,
-		LogURI:       true,
+		LogURIPath:   true, // Path only: query strings can carry tokens or PII.
 		LogRoutePath: true,
 		LogLatency:   true,
 		LogRemoteIP:  true,
@@ -175,7 +175,7 @@ func requestLogger(logger *slog.Logger) echo.MiddlewareFunc {
 			}
 			attrs := []slog.Attr{
 				slog.String("method", v.Method),
-				slog.String("uri", v.URI),
+				slog.String("path", v.URIPath),
 				slog.String("route", v.RoutePath),
 				slog.Int("status", v.Status),
 				slog.Duration("latency", v.Latency),

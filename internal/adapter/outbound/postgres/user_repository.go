@@ -202,7 +202,7 @@ func (r *UserRepository) Delete(ctx context.Context, id domain.UserID) error {
 	return mapError(r.write(ctx, func(q querier) error {
 		var version int64
 		if err := q.QueryRow(ctx, `DELETE FROM users WHERE id = $1 RETURNING version`, id.String()).Scan(&version); err != nil {
-			return err // pgx.ErrNoRows => port.ErrNotFound qua mapError
+			return err // pgx.ErrNoRows => port.ErrNotFound via mapError
 		}
 		// user.deleted uses the last version + 1: event versions strictly increase per user,
 		// letting consumers discard stale versions without losing deletion events.

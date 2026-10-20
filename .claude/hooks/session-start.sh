@@ -52,9 +52,9 @@ setup_postgres() {
 
   local psql=(psql -h /tmp -p "$PG_PORT" -U postgres -tAq)
   "${psql[@]}" -c "SELECT 1 FROM pg_roles WHERE rolname = 'userapi'" | grep -q 1 \
-    || "${psql[@]}" -c "CREATE ROLE userapi LOGIN SUPERUSER PASSWORD 'userapi'" || return 1
+    || "${psql[@]}" -c "CREATE ROLE \"userapi\" LOGIN SUPERUSER PASSWORD 'userapi'" || return 1
   "${psql[@]}" -c "SELECT 1 FROM pg_database WHERE datname = 'userapi'" | grep -q 1 \
-    || "${psql[@]}" -c "CREATE DATABASE userapi OWNER userapi" || return 1
+    || "${psql[@]}" -c "CREATE DATABASE \"userapi\" OWNER \"userapi\"" || return 1
 }
 
 if setup_postgres; then

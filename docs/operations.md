@@ -33,7 +33,7 @@ All configuration comes from environment variables. Invalid configuration exits 
 | `KAFKA_TLS` | `false` | Encrypt broker connections (TLS 1.2+, system CAs) | Boolean |
 | `KAFKA_TLS_CA_FILE` | (empty) | PEM broker CA file, replacing system CAs for private certificates | Requires KAFKA_TLS=true |
 | `KAFKA_SASL_MECHANISM` | (empty) | PLAIN, SCRAM-SHA-256, SCRAM-SHA-512; empty disables authentication | PLAIN requires KAFKA_TLS=true; case-insensitive |
-| `KAFKA_SASL_USERNAME`, `KAFKA_SASL_PASSWORD` | (empty) | Relay SASL credentials; put the password in a Secret, not the image | Required when KAFKA_SASL_MECHANISM is set |
+| `KAFKA_SASL_USERNAME`, `KAFKA_SASL_PASSWORD` | (empty) | Relay SASL credentials; put the password in a Secret, not the image. The password is used verbatim: a trailing newline (e.g. a Secret created from `echo pw > file`) breaks authentication | Required when KAFKA_SASL_MECHANISM is set |
 | `RELAY_HEALTH_ADDR` | `:8081` | userapi relay liveness HTTP address (GET /healthz) | |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | (empty) | OTLP/HTTP endpoint. OTel starts when this **or** OTEL_EXPORTER_OTLP_TRACES_ENDPOINT / OTEL_EXPORTER_OTLP_METRICS_ENDPOINT is set, unless OTEL_SDK_DISABLED=true. A traces-only endpoint still sends metrics to the SDK default localhost:4318 | Standard OTEL_* variables are supported, including OTEL_SERVICE_NAME, OTEL_TRACES_SAMPLER, OTEL_SDK_DISABLED |
 
@@ -128,8 +128,8 @@ Separate schema-owning migration (DDL) and app (DML-only) roles so leaked app cr
 ```sql
 CREATE ROLE userapi_migrator LOGIN PASSWORD '...';
 CREATE ROLE userapi_app      LOGIN PASSWORD '...';
-CREATE DATABASE userapi OWNER userapi_migrator;
-\connect userapi
+CREATE DATABASE "userapi" OWNER userapi_migrator;
+\connect "userapi"
 -- PostgreSQL 15+ no longer grants every role CREATE on the public schema.
 GRANT USAGE, CREATE ON SCHEMA public TO userapi_migrator;
 GRANT USAGE ON SCHEMA public TO userapi_app;
@@ -177,7 +177,7 @@ Enable EVENTS_SINK=kafka with STORAGE=postgres and KAFKA_BROKERS, configured **i
 - **Cleanup:** relay purges published rows older than OUTBOX_RETENTION at most hourly. Parked rows are retained.
 - **Permanent rejections** (oversized/invalid records): retry the record alone; if still rejected, set parked_at and last_error, log ERROR `outbox relay: parked messages the broker rejected permanently` with IDs, and continue. Network, missing-topic, and permission errors are **temporary** and keep retrying. Fix the cause (such as topic max.message.bytes), then requeue:
   ```sql
-  UPDATE outbox SET parked_at = NULL, last_error = NULL WHERE id = '<id trong log>';
+  UPDATE outbox SET parked_at = NULL, last_error = NULL WHERE id = '<id from the log>';
   ```
 
 **Required alerts:**
@@ -193,7 +193,7 @@ SELECT count(*) AS parked FROM outbox WHERE parked_at IS NOT NULL;
 
 ## Observability
 
-**Logs.** JSON to stdout except startup configuration errors ([Configuration](#configuration)). One http_request log per non-probe request: INFO for 2xx/3xx, WARN for 4xx, ERROR with the underlying error for 5xx; latency is nanoseconds. Failed readiness probes log WARN `readiness check failed`. slog.*Context logs at every layer include request_id; trace_id/span_id appear with active spans (OTel enabled or upstream traceparent). Find request logs using the response X-Request-Id.
+**Logs.** JSON to stdout except startup configuration errors ([Configuration](#configuration)). One http_request log per non-probe request: INFO for 2xx/3xx, WARN for 4xx, ERROR with the underlying error for 5xx; latency is nanoseconds; `path` omits the query string, which can carry tokens or PII. Failed readiness probes log WARN `readiness check failed`. slog.*Context logs at every layer include request_id; trace_id/span_id appear with active spans (OTel enabled or upstream traceparent). Find request logs using the response X-Request-Id.
 
 **Traces and metrics (OpenTelemetry).** Enable OTLP/HTTP via OTEL_EXPORTER_OTLP_ENDPOINT or signal-specific endpoints ([Configuration](#configuration)). Otherwise providers are no-ops. Export errors log INFO (`traces export: ...`) without stopping the app; final shutdown flush failure logs WARN `telemetry shutdown failed`.
 

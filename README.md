@@ -134,7 +134,7 @@ On a fresh clone of the template, rename the module path and the service in one 
 scripts/rename.sh orders github.com/acme/orders
 ```
 
-The script exists only in the template: it deletes itself after a successful rename.
+The script exists only in the template: it removes itself and this section when it runs.
 
 ## License
 

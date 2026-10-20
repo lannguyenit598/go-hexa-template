@@ -40,13 +40,13 @@ Compare against `docs/api.md`. Explicitly flag existing status, `detail`, or fie
 2. Implement:
    - parse/validate input before repository access (`parseUserID`);
    - wrap errors with `fmt.Errorf("...: %w", err)`;
-   - log qua `s.logger`.
+   - log through `s.logger`.
 
 ## 5. HTTP (`internal/adapter/inbound/httpapi`)
 
 1. Test success status/body and every error from step 0 in `user_handler_test.go`, including `Content-Type: application/problem+json`. Use `NewRequestWithContext`.
 2. Implement:
-   - route trong `server.go`;
+   - route in `server.go`;
    - handlers in `user_handler.go`: bind DTO → call port → map DTO;
    - map new core errors in `toProblem` in `errors.go`.
 

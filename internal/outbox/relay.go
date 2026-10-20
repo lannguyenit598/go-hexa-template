@@ -17,7 +17,7 @@ type Message struct {
 	ID      string // event_id (UUIDv7)
 	Key     string // Aggregate ID: broker partition key; see docs/events.md for ordering limits.
 	Type    string // For example, "user.updated".
-	Payload []byte // JSON, schema trong docs/events.md
+	Payload []byte // JSON; schema in docs/events.md
 	Headers map[string]string
 }
 
@@ -110,9 +110,7 @@ func (r *Relay) Run(ctx context.Context) error {
 		if ctx.Err() != nil {
 			return nil
 		}
-		if err == nil && res.Retry == 0 && res.Published+len(res.Parked) == r.BatchSize {
-			continue // Backlog remains: read the next batch immediately.
-		}
+		// Before the backlog check: a backlog that never drains must not postpone purging forever.
 		if time.Since(lastPurge) >= purgeEvery {
 			lastPurge = time.Now()
 			if deleted, err := r.Source.Purge(ctx, lastPurge.Add(-r.Retention)); err != nil {
@@ -120,6 +118,9 @@ func (r *Relay) Run(ctx context.Context) error {
 			} else if deleted > 0 {
 				r.Logger.InfoContext(ctx, "outbox relay: purged published messages", "count", deleted)
 			}
+		}
+		if err == nil && res.Retry == 0 && res.Published+len(res.Parked) == r.BatchSize {
+			continue // Backlog remains: read the next batch immediately.
 		}
 		select {
 		case <-ctx.Done():

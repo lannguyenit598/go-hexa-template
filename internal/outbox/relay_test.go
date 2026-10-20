@@ -206,6 +206,22 @@ func TestRelay_PurgesPublishedMessagesOlderThanRetention(t *testing.T) {
 	}
 }
 
+// endlessSource always reports a full, successful batch: a backlog that never drains.
+type endlessSource struct{ memSource }
+
+func (s *endlessSource) Process(_ context.Context, limit int, _ func(context.Context, []outbox.Message) []error) (outbox.Result, error) {
+	return outbox.Result{Published: limit}, nil
+}
+
+func TestRelay_PurgesWhileBacklogNeverDrains(t *testing.T) {
+	src := &endlessSource{}
+	stop := runRelay(newRelay(src, sinkFunc(func(_ context.Context, msgs []outbox.Message) []error { return each(msgs, nil) })))
+	waitFor(t, func() bool { _, _, purges := src.snapshot(); return len(purges) > 0 })
+	if err := stop(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // A permanent broker rejection (for example, an oversized message) is parked without blocking
 // later messages or resending successful messages in the same batch.
 func TestRelay_PermanentFailureIsParkedAndDoesNotBlockOthers(t *testing.T) {
