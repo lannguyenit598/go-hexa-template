@@ -50,9 +50,12 @@ jobs:
           expect 1 scripts/rename.sh ok github.com/acme/ok
           rm dirty
           git config --unset status.showUntrackedFiles
-          # Missing tools are an environment error, not bad arguments.
+          # Missing tools are an environment error, not bad arguments. The PATH holds only bash
+          # (for the shebang): the runner's /usr/bin ships go, so a system PATH cannot simulate this.
+          only_bash=$(mktemp -d)
+          ln -s "$(command -v bash)" "$only_bash/bash"
           rc=0
-          env PATH=/usr/bin:/bin scripts/rename.sh ok github.com/acme/ok 2> "$RUNNER_TEMP/err" || rc=$?
+          env PATH="$only_bash" scripts/rename.sh ok github.com/acme/ok 2> "$RUNNER_TEMP/err" || rc=$?
           test "$rc" = 1
           grep -q 'missing required tool' "$RUNNER_TEMP/err"
           git diff --quiet
