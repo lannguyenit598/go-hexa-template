@@ -70,11 +70,20 @@ type Events struct {
 	Sink         EventsSink
 	KafkaBrokers []string
 	KafkaTopic   string
+	// KafkaTLS mã hoá kết nối tới broker; KafkaTLSCAFile (PEM) thay CA của hệ thống khi broker dùng CA nội bộ.
+	KafkaTLS       bool
+	KafkaTLSCAFile string
+	// KafkaSASLMechanism: "" (không xác thực), PLAIN, SCRAM-SHA-256 hoặc SCRAM-SHA-512.
+	KafkaSASLMechanism string
+	KafkaSASLUsername  string
+	KafkaSASLPassword  string
 	// PollInterval: relay chờ bao lâu giữa hai lần đọc outbox khi không còn gì tồn đọng.
 	PollInterval time.Duration
 	BatchSize    int
 	// Retention: bản ghi outbox đã publish được giữ bao lâu trước khi relay xoá.
 	Retention time.Duration
+	// RelayHealthAddr: địa chỉ HTTP của `userapi relay` cho liveness probe (GET /healthz).
+	RelayHealthAddr string
 }
 
 // Load đọc env với lookup có thể thay thế (os.LookupEnv khi chạy thật, map khi test).
@@ -94,12 +103,18 @@ func Load(lookup func(string) (string, bool)) (Config, error) {
 			MigrateOnStart:   p.bool("MIGRATE_ON_START", false),
 		},
 		Events: Events{
-			Sink:         EventsSink(strings.ToLower(p.str("EVENTS_SINK", string(EventsSinkNone)))),
-			KafkaBrokers: p.list("KAFKA_BROKERS"),
-			KafkaTopic:   p.str("KAFKA_TOPIC", "users"),
-			PollInterval: p.duration("OUTBOX_POLL_INTERVAL", "1s"),
-			BatchSize:    int(p.int32("OUTBOX_BATCH_SIZE", 100)),
-			Retention:    p.duration("OUTBOX_RETENTION", "168h"),
+			Sink:               EventsSink(strings.ToLower(p.str("EVENTS_SINK", string(EventsSinkNone)))),
+			KafkaBrokers:       p.list("KAFKA_BROKERS"),
+			KafkaTopic:         p.str("KAFKA_TOPIC", "users"),
+			KafkaTLS:           p.bool("KAFKA_TLS", false),
+			KafkaTLSCAFile:     p.str("KAFKA_TLS_CA_FILE", ""),
+			KafkaSASLMechanism: strings.ToUpper(p.str("KAFKA_SASL_MECHANISM", "")),
+			KafkaSASLUsername:  p.str("KAFKA_SASL_USERNAME", ""),
+			KafkaSASLPassword:  p.str("KAFKA_SASL_PASSWORD", ""),
+			PollInterval:       p.duration("OUTBOX_POLL_INTERVAL", "1s"),
+			BatchSize:          int(p.int32("OUTBOX_BATCH_SIZE", 100)),
+			Retention:          p.duration("OUTBOX_RETENTION", "168h"),
+			RelayHealthAddr:    p.str("RELAY_HEALTH_ADDR", ":8081"),
 		},
 		ShutdownDelay:    p.duration("SHUTDOWN_DELAY", "0s"),
 		ShutdownTimeout:  p.duration("SHUTDOWN_TIMEOUT", "10s"),
@@ -154,6 +169,21 @@ func Load(lookup func(string) (string, bool)) (Config, error) {
 		}
 	default:
 		p.fail("EVENTS_SINK must be %q or %q, got %q", EventsSinkNone, EventsSinkKafka, cfg.Events.Sink)
+	}
+	switch ev := cfg.Events; ev.KafkaSASLMechanism {
+	case "":
+	case "PLAIN", "SCRAM-SHA-256", "SCRAM-SHA-512":
+		if ev.KafkaSASLUsername == "" || ev.KafkaSASLPassword == "" {
+			p.fail("KAFKA_SASL_USERNAME and KAFKA_SASL_PASSWORD are required when KAFKA_SASL_MECHANISM is set")
+		}
+		if ev.KafkaSASLMechanism == "PLAIN" && !ev.KafkaTLS {
+			p.fail("KAFKA_SASL_MECHANISM=PLAIN sends the password in clear text: set KAFKA_TLS=true")
+		}
+	default:
+		p.fail("KAFKA_SASL_MECHANISM must be PLAIN, SCRAM-SHA-256 or SCRAM-SHA-512, got %q", ev.KafkaSASLMechanism)
+	}
+	if cfg.Events.KafkaTLSCAFile != "" && !cfg.Events.KafkaTLS {
+		p.fail("KAFKA_TLS_CA_FILE requires KAFKA_TLS=true")
 	}
 	if cfg.Events.BatchSize < 1 || cfg.Events.BatchSize > 1000 {
 		p.fail("OUTBOX_BATCH_SIZE must be between 1 and 1000")

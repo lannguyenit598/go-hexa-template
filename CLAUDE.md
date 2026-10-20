@@ -1,6 +1,6 @@
 # userapi: hướng dẫn cho Claude
 
-REST API quản lý user viết bằng Go 1.26 + Echo v5, theo kiến trúc Hexagonal. Tài liệu đầy đủ: `docs/architecture.md` (cho người phát triển), `docs/api.md` (hợp đồng HTTP), `docs/events.md` (hợp đồng sự kiện), `docs/operations.md` (cấu hình, vận hành). Quy tắc riêng cho từng khu vực code nằm trong `.claude/rules/` và tự nạp khi bạn mở file tương ứng.
+REST API quản lý user viết bằng Go 1.26 + Echo v5, theo kiến trúc Hexagonal. Tài liệu đầy đủ: `docs/architecture.md` (cho người phát triển), `docs/api.md` (hợp đồng HTTP), `docs/events.md` (hợp đồng sự kiện), `docs/operations.md` (cấu hình, vận hành), `docs/new-project.md` (khởi tạo dự án từ template). Quy tắc riêng cho từng khu vực code nằm trong `.claude/rules/` và tự nạp khi bạn mở file tương ứng.
 
 ## Lệnh
 

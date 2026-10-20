@@ -271,3 +271,32 @@ func TestRelay_PartialTransientFailureOnlyRetriesTheFailedMessage(t *testing.T) 
 		t.Fatalf("deliveries %v, want each message exactly once", deliveries)
 	}
 }
+
+// Liveness: heartbeat tiến lên khi vòng lặp chạy; khi một lô bị treo, heartbeat đứng yên và relay
+// được coi là không khoẻ sau ngưỡng HealthThreshold (để Kubernetes khởi động lại pod).
+func TestRelay_HealthFollowsLoopProgress(t *testing.T) {
+	src := &memSource{pending: messages(1)}
+	entered, release := make(chan struct{}), make(chan struct{})
+	r := newRelay(src, sinkFunc(func(_ context.Context, msgs []outbox.Message) []error {
+		close(entered)
+		<-release // lô đầu tiên bị treo tới khi test cho chạy tiếp
+		return each(msgs, nil)
+	}))
+	if r.Healthy(time.Now()) {
+		t.Fatal("relay reported healthy before it started")
+	}
+	cancel, wait := startRelay(r)
+	defer func() { cancel(); _ = wait() }()
+	<-entered
+
+	stuckSince := r.LastActivity()
+	if !r.Healthy(stuckSince.Add(r.HealthThreshold() - time.Second)) {
+		t.Fatal("relay unhealthy before the threshold")
+	}
+	if r.Healthy(stuckSince.Add(r.HealthThreshold() + time.Second)) {
+		t.Fatal("relay still healthy after being stuck longer than the threshold")
+	}
+
+	close(release)
+	waitFor(t, func() bool { return r.LastActivity().After(stuckSince) })
+}

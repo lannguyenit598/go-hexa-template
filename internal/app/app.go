@@ -28,8 +28,10 @@ import (
 
 // Options cho Run. Giá trị zero dùng được cho production.
 type Options struct {
-	Version  string       // ghi vào log khởi động và service.version của OTel
-	Listener net.Listener // nil = tự listen trên cfg.HTTPAddr; test truyền listener 127.0.0.1:0
+	Version string // ghi vào log khởi động và service.version của OTel
+	// Listener: nil = tự listen trên cfg.HTTPAddr (Run) hoặc cfg.Events.RelayHealthAddr (RunRelay);
+	// test truyền listener 127.0.0.1:0.
+	Listener net.Listener
 }
 
 // Run khởi tạo adapter và phục vụ HTTP cho tới khi ctx bị huỷ. Sau đó: /readyz trả 503,

@@ -6,7 +6,7 @@ services:
       POSTGRES_PASSWORD: userapi
       POSTGRES_DB: userapi
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432" # chỉ máy local, không mở ra mạng
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -17,7 +17,10 @@ services:
 
   # Chạy migration một lần rồi thoát, giống một Job / initContainer trên Kubernetes.
   migrate:
-    build: .
+    build:
+      context: .
+      args:
+        VERSION: ${VERSION:-dev}
     command: ["migrate"]
     environment:
       DATABASE_URL: postgres://userapi:userapi@db:5432/userapi?sslmode=disable
@@ -26,7 +29,10 @@ services:
         condition: service_healthy
 
   api:
-    build: .
+    build:
+      context: .
+      args:
+        VERSION: ${VERSION:-dev}
     environment:
       HTTP_ADDR: ":8080"
       STORAGE: postgres
@@ -34,7 +40,7 @@ services:
       LOG_LEVEL: info
       DB_MAX_CONNS: "10"
     ports:
-      - "8080:8080"
+      - "127.0.0.1:8080:8080"
     depends_on:
       migrate:
         condition: service_completed_successfully

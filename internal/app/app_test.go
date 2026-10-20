@@ -333,3 +333,68 @@ func TestRunRelay_RejectsUnknownSink(t *testing.T) {
 		t.Fatalf("RunRelay = %v, want unsupported events sink", err)
 	}
 }
+
+// Cấu hình KAFKA_SASL_* phải tới được kafka client: với đúng mật khẩu, relay vượt qua bước kết nối
+// broker và chỉ dừng ở database (cố ý không tới được); sai mật khẩu thì dừng ở broker.
+func TestRunRelay_PassesSASLCredentialsToKafka(t *testing.T) {
+	cluster, err := kfake.NewCluster(kfake.NumBrokers(1), kfake.SeedTopics(1, "users"),
+		kfake.EnableSASL(), kfake.Superuser("SCRAM-SHA-256", "relay", "s3cret"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(cluster.Close)
+	for _, tc := range []struct{ password, wantErr string }{
+		{"s3cret", "ping database"},
+		{"wrong", "kafka ping"},
+	} {
+		cfg := mustConfig(t, map[string]string{
+			"STORAGE": "postgres", "DATABASE_URL": "postgres://127.0.0.1:1/db?connect_timeout=1",
+			"EVENTS_SINK": "kafka", "KAFKA_BROKERS": strings.Join(cluster.ListenAddrs(), ","),
+			"KAFKA_SASL_MECHANISM": "SCRAM-SHA-256", "KAFKA_SASL_USERNAME": "relay", "KAFKA_SASL_PASSWORD": tc.password,
+		})
+		err := app.RunRelay(context.Background(), cfg, quiet, app.Options{})
+		if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+			t.Fatalf("password %q: RunRelay = %v, want error containing %q", tc.password, err, tc.wantErr)
+		}
+	}
+}
+
+func TestRunRelay_ServesHealthWhileRunning(t *testing.T) {
+	dsn := pgtest.FreshSchemaDSN(t) // skip nếu không có TEST_DATABASE_URL
+	cluster, err := kfake.NewCluster(kfake.NumBrokers(1), kfake.SeedTopics(1, "users"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(cluster.Close)
+	cfg := mustConfig(t, map[string]string{
+		"STORAGE": "postgres", "DATABASE_URL": dsn, "MIGRATE_ON_START": "true",
+		"EVENTS_SINK": "kafka", "KAFKA_BROKERS": strings.Join(cluster.ListenAddrs(), ","),
+	})
+	health := listen(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- app.RunRelay(ctx, cfg, quiet, app.Options{Listener: health}) }()
+
+	url := "http://" + health.Addr().String() + "/healthz"
+	deadline := time.Now().Add(15 * time.Second) // MIGRATE_ON_START có thể chờ advisory lock của goose
+	for {
+		if resp, err := get(url); err == nil {
+			_ = resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				break
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("relay health endpoint never returned 200")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	cancel()
+	if err := waitDone(t, done, 5*time.Second); err != nil {
+		t.Fatal(err)
+	}
+	if resp, err := get(url); err == nil {
+		_ = resp.Body.Close()
+		t.Fatal("health endpoint still open after the relay stopped")
+	}
+}
