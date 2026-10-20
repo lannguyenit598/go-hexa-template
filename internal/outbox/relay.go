@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"sync/atomic"
 	"time"
 )
 
@@ -54,6 +55,8 @@ const (
 	// batchTimeout giới hạn một lô; lô đang chạy không bị huỷ theo tín hiệu tắt (xem Run).
 	batchTimeout = 30 * time.Second
 	purgeEvery   = time.Hour
+	// healthSlack: biên cho HealthThreshold, phủ purge và độ trễ lập lịch.
+	healthSlack = 30 * time.Second
 )
 
 // Relay đọc outbox theo lô và đẩy lên Sink cho tới khi ctx bị huỷ.
@@ -64,7 +67,31 @@ type Relay struct {
 	BatchSize    int
 	PollInterval time.Duration
 	Retention    time.Duration
+
+	lastActivity atomic.Int64 // UnixNano của lần vòng lặp tiến lên gần nhất; 0 = chưa chạy
 }
+
+// LastActivity là lần gần nhất vòng lặp tiến lên (bắt đầu hoặc xong một lô); zero nếu chưa chạy.
+func (r *Relay) LastActivity() time.Time {
+	if n := r.lastActivity.Load(); n != 0 {
+		return time.Unix(0, n)
+	}
+	return time.Time{}
+}
+
+// HealthThreshold là khoảng lặng dài nhất của một relay khoẻ: một lô dài nhất, một lần chờ poll
+// và một khoảng biên. Lặng lâu hơn nghĩa là vòng lặp bị treo.
+func (r *Relay) HealthThreshold() time.Duration {
+	return batchTimeout + r.PollInterval + healthSlack
+}
+
+// Healthy cho liveness probe: relay đang chạy và vòng lặp tiến lên trong HealthThreshold.
+func (r *Relay) Healthy(now time.Time) bool {
+	last := r.LastActivity()
+	return !last.IsZero() && now.Sub(last) <= r.HealthThreshold()
+}
+
+func (r *Relay) beat() { r.lastActivity.Store(time.Now().UnixNano()) }
 
 // Run chạy vòng lặp relay; trả nil khi ctx bị huỷ. Lỗi publish được log và thử lại ở lần poll
 // sau, nên Run không dừng vì broker tạm thời không tới được.
@@ -74,9 +101,11 @@ type Relay struct {
 func (r *Relay) Run(ctx context.Context) error {
 	var lastPurge time.Time
 	for {
+		r.beat()
 		batchCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), batchTimeout)
 		res, err := r.Source.Process(batchCtx, r.BatchSize, r.Sink.Publish)
 		cancel()
+		r.beat()
 		r.log(ctx, res, err)
 		if ctx.Err() != nil {
 			return nil

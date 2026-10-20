@@ -30,6 +30,11 @@ Mọi cấu hình đọc từ biến môi trường. Cấu hình sai làm tiến
 | `OUTBOX_POLL_INTERVAL` | `1s` | Relay chờ bao lâu giữa hai lần đọc outbox khi không còn tồn đọng | `> 0` |
 | `OUTBOX_BATCH_SIZE` | `100` | Số sự kiện tối đa mỗi lô relay gửi | `1`–`1000` |
 | `OUTBOX_RETENTION` | `168h` | Giữ bản ghi outbox đã gửi bao lâu trước khi relay xoá | `> 0` |
+| `KAFKA_TLS` | `false` | Mã hoá kết nối tới broker (TLS 1.2+, tin CA của hệ thống) | Boolean |
+| `KAFKA_TLS_CA_FILE` | (trống) | File PEM chứa CA của broker, khi broker dùng CA nội bộ; thay cho CA của hệ thống | Cần `KAFKA_TLS=true` |
+| `KAFKA_SASL_MECHANISM` | (trống) | Xác thực với broker: `PLAIN`, `SCRAM-SHA-256` hoặc `SCRAM-SHA-512`. Trống = không xác thực | `PLAIN` cần `KAFKA_TLS=true`; không phân biệt hoa thường |
+| `KAFKA_SASL_USERNAME`, `KAFKA_SASL_PASSWORD` | (trống) | Tài khoản SASL của relay. Đưa mật khẩu vào Secret, không vào image | Bắt buộc khi đặt `KAFKA_SASL_MECHANISM` |
+| `RELAY_HEALTH_ADDR` | `:8081` | Địa chỉ HTTP của `userapi relay` cho liveness probe (`GET /healthz`) | |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | (trống) | Endpoint OTLP/HTTP. OpenTelemetry bật khi biến này **hoặc** `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` / `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT` có giá trị (và `OTEL_SDK_DISABLED` khác `true`). Chỉ đặt endpoint cho trace thì metric vẫn được gửi tới endpoint mặc định của SDK (`localhost:4318`) | Các biến `OTEL_*` chuẩn khác cũng được hỗ trợ (`OTEL_SERVICE_NAME`, `OTEL_TRACES_SAMPLER`, `OTEL_SDK_DISABLED`…) |
 
 Giá trị thời gian dùng cú pháp Go: `500ms`, `10s`, `5m`, `1h30m`.
@@ -155,6 +160,14 @@ Bật bằng `EVENTS_SINK=kafka` (cùng `STORAGE=postgres`, `KAFKA_BROKERS`), đ
   STORAGE=postgres DATABASE_URL=postgres://... EVENTS_SINK=kafka KAFKA_BROKERS=kafka-0:9092 userapi relay
   ```
   Lúc khởi động, relay kiểm tra migration (như API) và kết nối broker; broker không tới được thì thoát ngay với code 1 (`kafka ping: unable to dial: ...`). Đang chạy mà broker sập thì relay ghi WARN `outbox relay: publish failed, will retry` và thử lại ở lần poll sau, không thoát. Mỗi lô chờ broker xác nhận tối đa 20s.
+- **Liveness probe:** relay mở `GET /healthz` tại `RELAY_HEALTH_ADDR`. Trả 200 `{"status":"ok"}` khi vòng lặp còn tiến lên, 503 `{"status":"stalled"}` khi một lô bị treo quá khoảng 1 phút (30s cho một lô, cộng `OUTBOX_POLL_INTERVAL` và biên 30s), để Kubernetes khởi động lại pod. Relay không có readiness probe vì không nhận traffic. Ví dụ:
+  ```yaml
+  livenessProbe:
+    httpGet: {path: /healthz, port: 8081}
+    periodSeconds: 10
+    failureThreshold: 3
+  ```
+- **Kafka có xác thực** (Amazon MSK, Confluent Cloud, Aiven, Redpanda Cloud): bật `KAFKA_TLS=true` và đặt `KAFKA_SASL_MECHANISM` cùng tài khoản. Amazon MSK: dùng SASL/SCRAM qua TLS (port 9096); xác thực bằng IAM chưa được hỗ trợ. Sai tài khoản thì relay thoát ngay lúc khởi động với lỗi `kafka ping: ...`.
 - **Số replica của relay:** 1 là đủ cho phần lớn tải và giữ đúng thứ tự sự kiện theo từng user. Nhiều replica chạy an toàn (`FOR UPDATE SKIP LOCKED`, không gửi trùng nhau), nhưng sự kiện của một user có thể lệch thứ tự; consumer theo [events.md](events.md#cam-kết-với-consumer) không bị ảnh hưởng.
 - **Tắt:** SIGTERM làm relay gửi nốt lô đang dở rồi thoát với code 0, log `outbox relay stopped`.
 - **Topic:** relay không tự tạo topic. Tạo trước với `cleanup.policy=delete`, retention 7 ngày (đủ cho consumer phục hồi sau sự cố qua cuối tuần; sự kiện không chứa dữ liệu cá nhân nên retention không bị ràng buộc bởi việc xoá dữ liệu), và số partition theo số consumer song song cần có.

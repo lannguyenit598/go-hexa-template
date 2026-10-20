@@ -28,7 +28,7 @@ func TestLoad_Defaults(t *testing.T) {
 	}
 	ev := cfg.Events
 	if ev.Sink != config.EventsSinkNone || ev.KafkaTopic != "users" || ev.PollInterval != time.Second ||
-		ev.BatchSize != 100 || ev.Retention != 7*24*time.Hour || len(ev.KafkaBrokers) != 0 {
+		ev.BatchSize != 100 || ev.Retention != 7*24*time.Hour || len(ev.KafkaBrokers) != 0 || ev.RelayHealthAddr != ":8081" {
 		t.Fatalf("events defaults: %+v", ev)
 	}
 }
@@ -57,6 +57,11 @@ func TestLoad_Errors(t *testing.T) {
 		{"OUTBOX_BATCH_SIZE": "1001"},
 		{"OUTBOX_POLL_INTERVAL": "0s"},
 		{"OUTBOX_RETENTION": "0s"},
+		{"KAFKA_SASL_MECHANISM": "GSSAPI"},
+		{"KAFKA_SASL_MECHANISM": "SCRAM-SHA-512"}, // thiếu username/password
+		{"KAFKA_SASL_MECHANISM": "PLAIN", "KAFKA_SASL_USERNAME": "u", "KAFKA_SASL_PASSWORD": "p"}, // PLAIN gửi mật khẩu dạng rõ: cần TLS
+		{"KAFKA_TLS_CA_FILE": "/etc/ca.pem"},                                                      // CA mà không bật TLS
+		{"KAFKA_TLS": "maybe"},
 	}
 	for _, c := range cases {
 		if _, err := config.Load(env(c)); err == nil {
@@ -103,5 +108,24 @@ func TestLoad_KafkaEvents(t *testing.T) {
 	}
 	if len(ev.KafkaBrokers) != 2 || ev.KafkaBrokers[0] != "kafka-0:9092" || ev.KafkaBrokers[1] != "kafka-1:9092" {
 		t.Fatalf("brokers = %q", ev.KafkaBrokers)
+	}
+	if ev.KafkaTLS || ev.KafkaSASLMechanism != "" {
+		t.Fatalf("TLS and SASL must default to off: %+v", ev)
+	}
+}
+
+func TestLoad_KafkaSecurity(t *testing.T) {
+	cfg, err := config.Load(env(map[string]string{
+		"STORAGE": "postgres", "DATABASE_URL": "postgres://x", "EVENTS_SINK": "kafka", "KAFKA_BROKERS": "b:9096",
+		"KAFKA_TLS": "true", "KAFKA_TLS_CA_FILE": "/etc/kafka/ca.pem",
+		"KAFKA_SASL_MECHANISM": "scram-sha-512", "KAFKA_SASL_USERNAME": "relay", "KAFKA_SASL_PASSWORD": "s3cret",
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ev := cfg.Events
+	if !ev.KafkaTLS || ev.KafkaTLSCAFile != "/etc/kafka/ca.pem" || ev.KafkaSASLMechanism != "SCRAM-SHA-512" ||
+		ev.KafkaSASLUsername != "relay" || ev.KafkaSASLPassword != "s3cret" {
+		t.Fatalf("%+v", ev)
 	}
 }

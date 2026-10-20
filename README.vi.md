@@ -31,6 +31,7 @@ Repo mẫu cho một REST API quản lý user, tổ chức theo kiến trúc Hex
 | Người triển khai, vận hành | [docs/operations.md](docs/operations.md): cấu hình, Kubernetes, migration và phân quyền database, observability, xử lý sự cố |
 | Người phát triển trên template | [docs/architecture.md](docs/architecture.md): quy tắc phụ thuộc, luồng request, quyết định thiết kế, cách mở rộng |
 | Service tiêu thụ sự kiện | [docs/events.md](docs/events.md): loại sự kiện, định dạng message, cam kết về giao nhận và thứ tự |
+| Bắt đầu dự án mới từ template | [docs/new-project.md](docs/new-project.md): đổi tên, bỏ phần không dùng, thiết lập GitHub, các quyết định trước khi lên production |
 
 `docs/superpowers/` chứa spec và plan của các lần thay đổi trước. Đây là tài liệu lịch sử, ghi lại đúng thời điểm viết (số dòng code trong đó có thể đã lệch); không dùng làm tài liệu tham chiếu.
 
@@ -104,6 +105,7 @@ api.http                     request mẫu
 make help               # liệt kê mọi lệnh
 make test               # unit + HTTP + lifecycle, không cần database
 make test-integration   # thêm test trên PostgreSQL thật (TRUNCATE bảng users và outbox trong DB của docker compose!)
+make migrate DB_URL=postgres://...   # mọi lệnh make cần PostgreSQL bỏ qua Docker khi truyền DB_URL
 make lint               # golangci-lint, gồm depguard kiểm tra quy tắc phụ thuộc
 make build              # build binary vào ./bin, kèm version từ git
 ```
@@ -123,6 +125,8 @@ make build              # build binary vào ./bin, kèm version từ git
 Test cần PostgreSQL chỉ chạy khi có `TEST_DATABASE_URL`, nếu không sẽ được skip. CI luôn đặt biến này với một PostgreSQL service container.
 
 ## Đổi module path
+
+Bắt đầu một service mới từ template thì làm theo [docs/new-project.md](docs/new-project.md): đổi cả module path lẫn tên service. Mục này chỉ nói về module path.
 
 Repo dùng module path giả là `github.com/example/userapi`. Để đổi sang path của bạn:
 

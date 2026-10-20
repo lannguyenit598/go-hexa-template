@@ -3,3 +3,7 @@ bin/
 coverage.out
 .env
 *.md
+.claude/
+.github/
+docs/
+api.http

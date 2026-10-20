@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
+	"net/http"
 	"time"
 
 	"github.com/example/userapi/internal/adapter/outbound/kafka"
@@ -48,9 +50,48 @@ func RunRelay(ctx context.Context, cfg config.Config, logger *slog.Logger, opts 
 		PollInterval: cfg.Events.PollInterval,
 		Retention:    cfg.Events.Retention,
 	}
+	stopHealth, err := serveRelayHealth(ctx, cfg, opts, relay, logger)
+	if err != nil {
+		return err
+	}
+	defer stopHealth()
+
 	err = relay.Run(ctx)
 	logger.Info("outbox relay stopped")
 	return err
+}
+
+// serveRelayHealth mở GET /healthz cho liveness probe của relay: 200 khi vòng lặp còn tiến lên,
+// 503 khi bị treo quá relay.HealthThreshold() (Kubernetes sẽ khởi động lại pod). Relay không có
+// readiness: nó không nhận traffic.
+func serveRelayHealth(ctx context.Context, cfg config.Config, opts Options, relay *outbox.Relay, logger *slog.Logger) (stop func(), err error) {
+	ln := opts.Listener
+	if ln == nil {
+		if ln, err = (&net.ListenConfig{}).Listen(ctx, "tcp", cfg.Events.RelayHealthAddr); err != nil {
+			return nil, fmt.Errorf("relay health listen: %w", err)
+		}
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if relay.Healthy(time.Now()) {
+			_, _ = w.Write([]byte(`{"status":"ok"}`))
+			return
+		}
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte(`{"status":"stalled"}`))
+	})
+	srv := &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second}
+	go func() {
+		if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			logger.Error("relay health server stopped", "error", err)
+		}
+	}()
+	return func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = srv.Shutdown(ctx)
+	}, nil
 }
 
 // newSink chọn adapter broker theo cấu hình, và kiểm tra kết nối ngay để cấu hình sai lộ ra lúc
@@ -58,7 +99,18 @@ func RunRelay(ctx context.Context, cfg config.Config, logger *slog.Logger, opts 
 func newSink(ctx context.Context, cfg config.Config) (outbox.Sink, func(), error) {
 	switch cfg.Events.Sink {
 	case config.EventsSinkKafka:
-		sink, err := kafka.NewSink(cfg.Events.KafkaBrokers, cfg.Events.KafkaTopic)
+		var opts []kafka.Option
+		if ev := cfg.Events; ev.KafkaTLS {
+			tlsCfg, err := kafka.TLSConfig(ev.KafkaTLSCAFile)
+			if err != nil {
+				return nil, nil, err
+			}
+			opts = append(opts, kafka.WithTLS(tlsCfg))
+		}
+		if ev := cfg.Events; ev.KafkaSASLMechanism != "" {
+			opts = append(opts, kafka.WithSASL(ev.KafkaSASLMechanism, ev.KafkaSASLUsername, ev.KafkaSASLPassword))
+		}
+		sink, err := kafka.NewSink(cfg.Events.KafkaBrokers, cfg.Events.KafkaTopic, opts...)
 		if err != nil {
 			return nil, nil, err
 		}
