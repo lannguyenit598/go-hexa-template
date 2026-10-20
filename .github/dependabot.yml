@@ -1,5 +1,5 @@
 # Automatic dependency updates. Dependabot PRs must pass CI like every other PR.
-# cooldown: propose releases at least 14 days old, following CLAUDE.md.
+# cooldown: propose releases at least 14 days old, following AGENTS.md.
 # Security updates are not held back by the cooldown.
 version: 2
 updates:

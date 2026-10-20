@@ -12,7 +12,7 @@ paths:
 - After changing `go.mod`, run `go mod tidy`; CI checks `go mod tidy -diff`.
 - Before upgrading a module, inspect the target version's `go.mod` Go directive. If it raises the repository's minimum version, also update:
   - both READMEs and CI;
-  - golangci-lint in `.github/workflows/ci.yml` and `CLAUDE.md`: it must be built with Go >= the repository's Go directive.
+  - golangci-lint in `.github/workflows/ci.yml` and `AGENTS.md`: it must be built with Go >= the repository's Go directive.
 - If govulncheck flags a module, upgrade to its reported "Fixed in" version and handle the consequences above.
 - `.golangci.yml`:
   - do not disable linters or add exclusions to bypass a specific error; fix the code;
