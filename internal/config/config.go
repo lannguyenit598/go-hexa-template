@@ -19,6 +19,14 @@ const (
 	StoragePostgres Storage = "postgres"
 )
 
+// EventsSink là nơi relay đẩy sự kiện từ outbox tới. "none" = không ghi outbox, không phát sự kiện.
+type EventsSink string
+
+const (
+	EventsSinkNone  EventsSink = "none"
+	EventsSinkKafka EventsSink = "kafka"
+)
+
 type Config struct {
 	HTTPAddr string
 	Storage  Storage
@@ -40,7 +48,8 @@ type Config struct {
 	// database ngắn không làm MỌI pod cùng lúc bị gỡ khỏi load balancer.
 	ReadinessCheckDB bool
 
-	DB DB
+	DB     DB
+	Events Events
 }
 
 // DB là cấu hình pool kết nối PostgreSQL.
@@ -54,6 +63,18 @@ type DB struct {
 	// MigrateOnStart: chạy migration khi app khởi động. Tiện cho dev; production nên chạy
 	// `userapi migrate` như một Job / initContainer riêng (xem docs/operations.md).
 	MigrateOnStart bool
+}
+
+// Events là cấu hình phát sự kiện qua transactional outbox (xem docs/events.md).
+type Events struct {
+	Sink         EventsSink
+	KafkaBrokers []string
+	KafkaTopic   string
+	// PollInterval: relay chờ bao lâu giữa hai lần đọc outbox khi không còn gì tồn đọng.
+	PollInterval time.Duration
+	BatchSize    int
+	// Retention: bản ghi outbox đã publish được giữ bao lâu trước khi relay xoá.
+	Retention time.Duration
 }
 
 // Load đọc env với lookup có thể thay thế (os.LookupEnv khi chạy thật, map khi test).
@@ -71,6 +92,14 @@ func Load(lookup func(string) (string, bool)) (Config, error) {
 			MaxConnIdleTime:  p.duration("DB_MAX_CONN_IDLE_TIME", "5m"),
 			StatementTimeout: p.duration("DB_STATEMENT_TIMEOUT", "5s"),
 			MigrateOnStart:   p.bool("MIGRATE_ON_START", false),
+		},
+		Events: Events{
+			Sink:         EventsSink(strings.ToLower(p.str("EVENTS_SINK", string(EventsSinkNone)))),
+			KafkaBrokers: p.list("KAFKA_BROKERS"),
+			KafkaTopic:   p.str("KAFKA_TOPIC", "users"),
+			PollInterval: p.duration("OUTBOX_POLL_INTERVAL", "1s"),
+			BatchSize:    int(p.int32("OUTBOX_BATCH_SIZE", 100)),
+			Retention:    p.duration("OUTBOX_RETENTION", "168h"),
 		},
 		ShutdownDelay:    p.duration("SHUTDOWN_DELAY", "0s"),
 		ShutdownTimeout:  p.duration("SHUTDOWN_TIMEOUT", "10s"),
@@ -108,6 +137,25 @@ func Load(lookup func(string) (string, bool)) (Config, error) {
 	}
 	if cfg.ShutdownDelay < 0 || cfg.ShutdownTimeout < 0 {
 		p.fail("SHUTDOWN_DELAY and SHUTDOWN_TIMEOUT must be >= 0")
+	}
+
+	switch cfg.Events.Sink {
+	case EventsSinkNone:
+	case EventsSinkKafka:
+		if len(cfg.Events.KafkaBrokers) == 0 {
+			p.fail("KAFKA_BROKERS is required when EVENTS_SINK=kafka")
+		}
+		if cfg.Storage != StoragePostgres {
+			p.fail("EVENTS_SINK=%s requires STORAGE=postgres (the outbox lives in PostgreSQL)", cfg.Events.Sink)
+		}
+	default:
+		p.fail("EVENTS_SINK must be %q or %q, got %q", EventsSinkNone, EventsSinkKafka, cfg.Events.Sink)
+	}
+	if cfg.Events.BatchSize < 1 || cfg.Events.BatchSize > 1000 {
+		p.fail("OUTBOX_BATCH_SIZE must be between 1 and 1000")
+	}
+	if cfg.Events.PollInterval <= 0 || cfg.Events.Retention <= 0 {
+		p.fail("OUTBOX_POLL_INTERVAL and OUTBOX_RETENTION must be > 0")
 	}
 
 	return cfg, errors.Join(p.errs...)
@@ -162,6 +210,17 @@ func (p *parser) bool(key string, def bool) bool {
 		p.fail("%s: %w", key, err)
 	}
 	return b
+}
+
+// list tách giá trị theo dấu phẩy, bỏ phần tử rỗng.
+func (p *parser) list(key string) []string {
+	var out []string
+	for _, part := range strings.Split(p.str(key, ""), ",") {
+		if part = strings.TrimSpace(part); part != "" {
+			out = append(out, part)
+		}
+	}
+	return out
 }
 
 func (p *parser) cidrs(key string) []*net.IPNet {

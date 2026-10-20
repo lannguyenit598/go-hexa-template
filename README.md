@@ -10,6 +10,7 @@ A production-ready template for a user-management REST API, organized as a Hexag
 - goose migrations;
 - Kubernetes-friendly graceful shutdown;
 - structured logging and OpenTelemetry;
+- domain events published to Kafka through a transactional outbox (off by default), with the core unchanged;
 - a dependency rule enforced automatically in CI.
 
 | Component | Version |
@@ -19,6 +20,7 @@ A production-ready template for a user-management REST API, organized as a Hexag
 | PostgreSQL driver | `github.com/jackc/pgx/v5` v5.11.0 |
 | Migrations | `github.com/pressly/goose/v3` v3.27.0 |
 | OpenTelemetry | `go.opentelemetry.io/otel` v1.46.0 |
+| Kafka client | `github.com/twmb/franz-go` v1.22.1 |
 | PostgreSQL | 16 |
 
 ## Documentation
@@ -30,6 +32,7 @@ The detailed documents are currently written in Vietnamese.
 | Calling the API | [docs/api.md](docs/api.md): endpoints, schema, headers, pagination, `ETag`/`If-Match`, full error table |
 | Deploying or operating the service | [docs/operations.md](docs/operations.md): configuration, Kubernetes, migrations and database roles, observability, troubleshooting |
 | Building on the template | [docs/architecture.md](docs/architecture.md): dependency rule, request flow, design decisions, how to extend |
+| Consuming the service's events | [docs/events.md](docs/events.md): event types, message format, delivery and ordering guarantees |
 
 `docs/superpowers/` holds the specs and plans of earlier changes. They are historical records, accurate as of when they were written (line numbers in them may be out of date); do not use them as reference documentation.
 
@@ -73,7 +76,7 @@ curl 'localhost:8080/api/v1/users?limit=10'
 The core (`domain`, `port`, `service`) does not depend on any framework or database. The inbound adapter (HTTP) calls the core through the inbound port; outbound adapters (PostgreSQL, in-memory, clock, ID generator) implement the outbound ports. Only the composition root (`cmd/userapi` + `internal/app`) knows about everything and wires it together. Diagram, details and the reasoning behind each decision: [docs/architecture.md](docs/architecture.md).
 
 ```
-cmd/userapi/main.go          entry point: config, logger, signals, command dispatch (serve / migrate)
+cmd/userapi/main.go          entry point: config, logger, signals, command dispatch (serve / migrate / relay)
 internal/
   app/                       composition root: wires adapters into the core, readiness, drain on shutdown, server timeouts
   core/
@@ -84,12 +87,14 @@ internal/
   adapter/
     inbound/httpapi/         Echo v5: routes, DTOs, middleware, mapping errors to problem+json
     outbound/memory/         in-memory repository (map + RWMutex)
-    outbound/postgres/       pgx repository; migrations/ (embedded SQL, run by goose)
+    outbound/postgres/       pgx repository + outbox; migrations/ (embedded SQL, run by goose)
     outbound/postgres/pgtest/  integration-test helper: an empty, isolated PostgreSQL schema per test
     outbound/repotest/       contract test suite shared by every repository
     outbound/system/         UUIDv7 generator, UTC clock
+    outbound/kafka/          sends outbox events to Kafka (franz-go)
   config/                    configuration from environment variables
   observability/             request-scoped slog handler, OpenTelemetry setup
+  outbox/                    relay loop moving events from the outbox to a broker (Source/Sink)
 docs/                        API, operations and architecture docs
 .github/workflows/ci.yml     CI: lint, tests (with PostgreSQL), migrations, govulncheck, Docker build
 api.http                     sample requests
@@ -112,7 +117,8 @@ make build              # build the binary into ./bin, stamped with the git vers
 | Contract | `adapter/outbound/repotest` | **The same suite** runs against memory and postgres, including compare-and-set on version |
 | PostgreSQL | `adapter/outbound/postgres/*_test.go` | 20 goroutines updating one user lose no writes; an empty database is detected as having pending migrations |
 | HTTP | `adapter/inbound/httpapi/*_test.go` | CRUD, problem+json, ETag/If-Match, 499, client IP via trusted proxies, `X-Request-Id`, probes are neither logged nor traced |
-| Lifecycle | `app/*_test.go` | Drain on shutdown, port already in use, pending migrations |
+| Lifecycle | `app/*_test.go` | Drain on shutdown, port already in use, pending migrations; an event written by the API reaches Kafka through the relay |
+| Events | `outbox/*_test.go`, `adapter/outbound/{postgres,kafka}/*_test.go` | One event per successful write, atomic with it; relays never share a message; retry after a broker failure; Kafka tests use the in-memory `kfake` cluster |
 | Observability | `observability/*_test.go` | `request_id`/`trace_id` are added to logs from the context |
 | Config | `config/*_test.go` | Defaults and configuration errors |
 

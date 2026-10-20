@@ -10,6 +10,7 @@ Repo mẫu cho một REST API quản lý user, tổ chức theo kiến trúc Hex
 - migration bằng goose;
 - graceful shutdown cho Kubernetes;
 - log có cấu trúc và OpenTelemetry;
+- phát sự kiện lên Kafka qua transactional outbox (tắt mặc định), không sửa core;
 - quy tắc phụ thuộc được CI kiểm tra tự động.
 
 | Thành phần | Phiên bản |
@@ -19,6 +20,7 @@ Repo mẫu cho một REST API quản lý user, tổ chức theo kiến trúc Hex
 | PostgreSQL driver | `github.com/jackc/pgx/v5` v5.11.0 |
 | Migration | `github.com/pressly/goose/v3` v3.27.0 |
 | OpenTelemetry | `go.opentelemetry.io/otel` v1.46.0 |
+| Kafka client | `github.com/twmb/franz-go` v1.22.1 |
 | PostgreSQL | 16 |
 
 ## Tài liệu
@@ -28,6 +30,7 @@ Repo mẫu cho một REST API quản lý user, tổ chức theo kiến trúc Hex
 | Người gọi API | [docs/api.md](docs/api.md): endpoint, schema, header, phân trang, `ETag`/`If-Match`, bảng lỗi đầy đủ |
 | Người triển khai, vận hành | [docs/operations.md](docs/operations.md): cấu hình, Kubernetes, migration và phân quyền database, observability, xử lý sự cố |
 | Người phát triển trên template | [docs/architecture.md](docs/architecture.md): quy tắc phụ thuộc, luồng request, quyết định thiết kế, cách mở rộng |
+| Service tiêu thụ sự kiện | [docs/events.md](docs/events.md): loại sự kiện, định dạng message, cam kết về giao nhận và thứ tự |
 
 `docs/superpowers/` chứa spec và plan của các lần thay đổi trước. Đây là tài liệu lịch sử, ghi lại đúng thời điểm viết (số dòng code trong đó có thể đã lệch); không dùng làm tài liệu tham chiếu.
 
@@ -71,7 +74,7 @@ File [`api.http`](api.http) có sẵn request mẫu cho REST Client (VS Code) ho
 Core (`domain`, `port`, `service`) không phụ thuộc framework hay database. Adapter inbound (HTTP) gọi vào core qua inbound port; adapter outbound (PostgreSQL, in-memory, đồng hồ, sinh ID) hiện thực các outbound port. Chỉ composition root (`cmd/userapi` + `internal/app`) biết tất cả và lắp chúng lại. Chi tiết, sơ đồ và lý do của từng quyết định: [docs/architecture.md](docs/architecture.md).
 
 ```
-cmd/userapi/main.go          điểm vào: config, logger, tín hiệu, chọn lệnh (chạy API / migrate)
+cmd/userapi/main.go          điểm vào: config, logger, tín hiệu, chọn lệnh (chạy API / migrate / relay)
 internal/
   app/                       composition root: lắp adapter vào core, readiness, drain khi tắt, timeout server
   core/
@@ -82,12 +85,14 @@ internal/
   adapter/
     inbound/httpapi/         Echo v5: route, DTO, middleware, ánh xạ lỗi sang problem+json
     outbound/memory/         repository trong RAM (map + RWMutex)
-    outbound/postgres/       repository pgx; migrations/ (SQL nhúng, chạy bằng goose)
+    outbound/postgres/       repository pgx + outbox; migrations/ (SQL nhúng, chạy bằng goose)
     outbound/postgres/pgtest/  helper integration test: schema PostgreSQL rỗng, riêng cho mỗi test
     outbound/repotest/       contract test dùng chung cho mọi repository
     outbound/system/         sinh UUIDv7, đồng hồ UTC
+    outbound/kafka/          gửi sự kiện từ outbox lên Kafka (franz-go)
   config/                    đọc cấu hình từ biến môi trường
   observability/             slog handler theo ngữ cảnh request, khởi tạo OpenTelemetry
+  outbox/                    vòng lặp relay chuyển sự kiện từ outbox lên broker (Source/Sink)
 docs/                        tài liệu API, vận hành, kiến trúc
 .github/workflows/ci.yml     CI: lint, test (kèm PostgreSQL), migration, govulncheck, Docker build
 api.http                     request mẫu
@@ -110,7 +115,8 @@ make build              # build binary vào ./bin, kèm version từ git
 | Contract | `adapter/outbound/repotest` | **Cùng một bộ test** chạy cho memory và postgres, gồm cả compare-and-set theo version |
 | PostgreSQL | `adapter/outbound/postgres/*_test.go` | 20 goroutine cùng update một user: không lần ghi nào bị mất; database trống được nhận diện là còn migration chưa chạy |
 | HTTP | `adapter/inbound/httpapi/*_test.go` | CRUD, problem+json, ETag/If-Match, 499, IP qua proxy tin cậy, `X-Request-Id`, probe không bị log/trace |
-| Lifecycle | `app/*_test.go` | Drain khi tắt, cổng bị chiếm, database còn migration chưa chạy |
+| Lifecycle | `app/*_test.go` | Drain khi tắt, cổng bị chiếm, database còn migration chưa chạy; sự kiện do API ghi tới được Kafka qua relay |
+| Sự kiện | `outbox/*_test.go`, `adapter/outbound/{postgres,kafka}/*_test.go` | Mỗi lần ghi thành công sinh đúng một sự kiện, cùng transaction; các relay không lấy trùng message; thử lại sau khi broker lỗi; test Kafka dùng cluster in-memory `kfake` |
 | Observability | `observability/*_test.go` | `request_id`/`trace_id` được gắn vào log từ ctx |
 | Config | `config/*_test.go` | Giá trị mặc định và lỗi cấu hình |
 

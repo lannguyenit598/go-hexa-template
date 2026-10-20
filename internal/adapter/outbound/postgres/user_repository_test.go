@@ -44,12 +44,20 @@ func TestUserRepositoryContract(t *testing.T) {
 		t.Fatalf("pending migrations after Migrate: %v %v", pending, err)
 	}
 
-	repotest.Run(t, func(t *testing.T) port.UserRepository {
-		if _, err := pool.Exec(ctx, `TRUNCATE users`); err != nil {
-			t.Fatal(err)
-		}
-		return postgres.NewUserRepository(pool)
-	})
+	// Ghi outbox trong cùng transaction không được làm đổi hợp đồng của repository.
+	for _, tc := range []struct {
+		name string
+		opts []postgres.Option
+	}{{"without outbox", nil}, {"with outbox", []postgres.Option{postgres.WithOutbox()}}} {
+		t.Run(tc.name, func(t *testing.T) {
+			repotest.Run(t, func(t *testing.T) port.UserRepository {
+				if _, err := pool.Exec(ctx, `TRUNCATE users, outbox`); err != nil {
+					t.Fatal(err)
+				}
+				return postgres.NewUserRepository(pool, tc.opts...)
+			})
+		})
+	}
 
 	t.Run("concurrent updates are never lost", func(t *testing.T) {
 		if _, err := pool.Exec(ctx, `TRUNCATE users`); err != nil {

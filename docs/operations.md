@@ -24,6 +24,12 @@ Mọi cấu hình đọc từ biến môi trường. Cấu hình sai làm tiến
 | `DB_MAX_CONN_IDLE_TIME` | `5m` | Đóng kết nối rảnh quá lâu | `≤ 0` = mặc định của pgx |
 | `DB_STATEMENT_TIMEOUT` | `5s` | `statement_timeout` phía PostgreSQL cho kết nối của app. Vượt quá thì request trả 503 | `≤ 0` = không đặt (dùng cấu hình của server) |
 | `MIGRATE_ON_START` | `false` | Chạy migration khi app khởi động. Tiện cho dev; production dùng `userapi migrate` | |
+| `EVENTS_SINK` | `none` | Nơi phát sự kiện: `none` (không ghi outbox) hoặc `kafka`. Xem [Phát sự kiện](#phát-sự-kiện) | `kafka` cần `STORAGE=postgres` và `KAFKA_BROKERS`; không phân biệt hoa thường |
+| `KAFKA_BROKERS` | (trống) | Địa chỉ broker Kafka (hoặc tương thích: Redpanda, MSK...), phân tách bằng dấu phẩy | Bắt buộc khi `EVENTS_SINK=kafka` |
+| `KAFKA_TOPIC` | `users` | Topic nhận sự kiện user | |
+| `OUTBOX_POLL_INTERVAL` | `1s` | Relay chờ bao lâu giữa hai lần đọc outbox khi không còn tồn đọng | `> 0` |
+| `OUTBOX_BATCH_SIZE` | `100` | Số sự kiện tối đa mỗi lô relay gửi | `1`–`1000` |
+| `OUTBOX_RETENTION` | `168h` | Giữ bản ghi outbox đã gửi bao lâu trước khi relay xoá | `> 0` |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | (trống) | Endpoint OTLP/HTTP. OpenTelemetry bật khi biến này **hoặc** `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` / `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT` có giá trị (và `OTEL_SDK_DISABLED` khác `true`). Chỉ đặt endpoint cho trace thì metric vẫn được gửi tới endpoint mặc định của SDK (`localhost:4318`) | Các biến `OTEL_*` chuẩn khác cũng được hỗ trợ (`OTEL_SERVICE_NAME`, `OTEL_TRACES_SAMPLER`, `OTEL_SDK_DISABLED`…) |
 
 Giá trị thời gian dùng cú pháp Go: `500ms`, `10s`, `5m`, `1h30m`.
@@ -137,6 +143,31 @@ Trong lúc deploy, pod cũ và pod mới cùng chạy trên schema mới, nên m
 | Tạo index trên bảng lớn | `CREATE INDEX CONCURRENTLY` trong file riêng có dòng `-- +goose NO TRANSACTION` (CONCURRENTLY không chạy được trong transaction) |
 | Thêm `NOT NULL` / foreign key | `ADD CONSTRAINT ... NOT VALID`, sau đó `VALIDATE CONSTRAINT` ở migration riêng |
 
+## Phát sự kiện
+
+`userapi` phát sự kiện `user.registered` / `user.updated` / `user.deleted` lên Kafka qua transactional outbox. Hợp đồng sự kiện cho consumer: [events.md](events.md).
+
+Bật bằng `EVENTS_SINK=kafka` (cùng `STORAGE=postgres`, `KAFKA_BROKERS`), đặt **giống nhau** cho API và relay:
+
+- **API** ghi thêm một bản ghi vào bảng `outbox` trong cùng transaction với mỗi lần tạo, sửa, xoá user. API không kết nối tới Kafka: broker sập không làm API lỗi.
+- **Relay** là lệnh `userapi relay`, chạy thành Deployment riêng từ **cùng image**:
+  ```bash
+  STORAGE=postgres DATABASE_URL=postgres://... EVENTS_SINK=kafka KAFKA_BROKERS=kafka-0:9092 userapi relay
+  ```
+  Lúc khởi động, relay kiểm tra migration (như API) và kết nối broker; broker không tới được thì thoát ngay với code 1 (`kafka ping: unable to dial: ...`). Đang chạy mà broker sập thì relay ghi WARN `outbox relay: publish failed, will retry` và thử lại ở lần poll sau, không thoát. Mỗi lô chờ broker xác nhận tối đa 20s.
+- **Số replica của relay:** 1 là đủ cho phần lớn tải và giữ đúng thứ tự sự kiện theo từng user. Nhiều replica chạy an toàn (`FOR UPDATE SKIP LOCKED`, không gửi trùng nhau), nhưng sự kiện của một user có thể lệch thứ tự; consumer theo [events.md](events.md#cam-kết-với-consumer) không bị ảnh hưởng.
+- **Tắt:** SIGTERM làm relay gửi nốt lô đang dở rồi thoát với code 0, log `outbox relay stopped`.
+- **Topic:** relay không tự tạo topic. Tạo trước với `cleanup.policy=delete`, retention 7 ngày (đủ cho consumer phục hồi sau sự cố qua cuối tuần; sự kiện không chứa dữ liệu cá nhân nên retention không bị ràng buộc bởi việc xoá dữ liệu), và số partition theo số consumer song song cần có.
+- **Quyền database:** relay dùng role của app; role đó cần `SELECT`, `UPDATE`, `DELETE` trên `outbox`, và đã có sẵn qua default privileges ở [Phân quyền database](#phân-quyền-database).
+- **Dọn outbox:** relay xoá bản ghi đã gửi quá `OUTBOX_RETENTION`, tối đa mỗi giờ một lần.
+
+**Cảnh báo cần có:** tuổi của bản ghi outbox chưa gửi cũ nhất. Giá trị tăng liên tục nghĩa là relay không chạy, không tới được broker, hoặc không theo kịp tải:
+
+```sql
+SELECT count(*) AS backlog, now() - min(created_at) AS oldest
+FROM outbox WHERE published_at IS NULL;
+```
+
 ## Observability
 
 **Log.** JSON ra stdout (trừ lỗi cấu hình lúc khởi động, xem [Cấu hình](#cấu-hình)). Mỗi request một dòng `http_request` (trừ `/healthz`, `/readyz`): 2xx/3xx ghi mức INFO, 4xx ghi WARN, 5xx ghi ERROR kèm lỗi gốc; `latency` tính bằng nano giây. `/readyz` trả 503 thì ghi một dòng WARN `readiness check failed` mỗi lần probe. Mọi dòng log ghi bằng `slog.*Context(ctx, ...)`, ở bất kỳ tầng nào, tự mang `request_id`; `trace_id` và `span_id` có khi request có span (OpenTelemetry bật, hoặc upstream gửi `traceparent`). Tìm log của một request bằng `X-Request-Id` trong response.
@@ -165,4 +196,6 @@ Probe không bị trace. Trace context từ upstream (`traceparent`) được ti
 | Nhiều 499 trong log | Client bỏ đi trước khi có response (thường do client timeout ngắn hơn latency) | Xem latency trên metric/trace; so với timeout phía client |
 | Nhiều 503 `request timed out` | Request vượt `REQUEST_TIMEOUT` hoặc câu SQL vượt `DB_STATEMENT_TIMEOUT` (log có `SQLSTATE 57014`), thường do database chậm, lock, hoặc pool cạn kết nối | Xem span chờ lấy kết nối của `otelpgx`, metric pool, và lock trong `pg_stat_activity` |
 | `remote_ip` trong log luôn là cùng một IP | Chưa đặt `TRUSTED_PROXIES` | Đặt bằng dải IP của LB/ingress |
+| `userapi relay` thoát ngay: `kafka ping: unable to dial` | Sai `KAFKA_BROKERS`, hoặc broker chưa sẵn sàng | Kiểm tra địa chỉ và mạng; Kubernetes sẽ khởi động lại pod |
+| Outbox tồn đọng tăng, log relay `outbox relay: publish failed, will retry` | Broker không tới được, topic chưa được tạo (`UNKNOWN_TOPIC_OR_PARTITION`), hoặc quyền ghi topic thiếu | Xem lỗi trong log; sự kiện không mất, sẽ được gửi khi nguyên nhân được xử lý |
 | Mọi pod cùng unready khi database chập chờn | Đã bật `READINESS_CHECK_DB` | Tắt, hoặc tăng `failureThreshold` (xem [Readiness](#readiness)) |

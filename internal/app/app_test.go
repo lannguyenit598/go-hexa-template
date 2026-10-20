@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/twmb/franz-go/pkg/kfake"
+	"github.com/twmb/franz-go/pkg/kgo"
 
 	"github.com/example/userapi/internal/adapter/outbound/postgres/pgtest"
 	"github.com/example/userapi/internal/app"
@@ -248,5 +250,75 @@ func TestRun_RefusesToStartWithPendingMigrations(t *testing.T) {
 	cancel()
 	if err := waitDone(t, done, 3*time.Second); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// Đường đi đầy đủ của một sự kiện: API ghi user + outbox trong một transaction, relay đọc
+// outbox và gửi lên Kafka (cluster in-memory kfake), key là ID của user.
+func TestRelay_DeliversEventsWrittenByTheAPI(t *testing.T) {
+	dsn := pgtest.FreshSchemaDSN(t) // skip nếu không có TEST_DATABASE_URL
+	cluster, err := kfake.NewCluster(kfake.NumBrokers(1), kfake.SeedTopics(1, "users"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(cluster.Close)
+	env := map[string]string{
+		"STORAGE": "postgres", "DATABASE_URL": dsn, "MIGRATE_ON_START": "true",
+		"EVENTS_SINK": "kafka", "KAFKA_BROKERS": strings.Join(cluster.ListenAddrs(), ","),
+		"OUTBOX_POLL_INTERVAL": "50ms",
+	}
+	base, _, _ := startApp(t, env, 15*time.Second)
+
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, base+"/api/v1/users",
+		strings.NewReader(`{"email":"relay@example.com","name":"Relay"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("POST = %d", resp.StatusCode)
+	}
+	userID := strings.TrimPrefix(resp.Header.Get("Location"), "/api/v1/users/")
+
+	relayCtx, stopRelay := context.WithCancel(context.Background())
+	relayDone := make(chan error, 1)
+	cfg := mustConfig(t, env)
+	go func() { relayDone <- app.RunRelay(relayCtx, cfg, quiet, app.Options{}) }()
+
+	consumer, err := kgo.NewClient(kgo.SeedBrokers(cluster.ListenAddrs()...), kgo.ConsumeTopics("users"),
+		kgo.ConsumeResetOffset(kgo.NewOffset().AtStart()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer consumer.Close()
+	pollCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	var rec *kgo.Record
+	for rec == nil {
+		fetches := consumer.PollFetches(pollCtx)
+		if pollCtx.Err() != nil {
+			t.Fatal("no event reached Kafka")
+		}
+		fetches.EachRecord(func(r *kgo.Record) { rec = r })
+	}
+	if string(rec.Key) != userID || !strings.Contains(string(rec.Value), `"event_type":"user.registered"`) {
+		t.Fatalf("record key %q value %s, want user.registered for %s", rec.Key, rec.Value, userID)
+	}
+
+	stopRelay()
+	if err := waitDone(t, relayDone, 5*time.Second); err != nil {
+		t.Fatalf("RunRelay = %v, want nil after cancel", err)
+	}
+}
+
+func TestRunRelay_RefusesWhenEventsAreDisabled(t *testing.T) {
+	err := app.RunRelay(context.Background(), mustConfig(t, nil), quiet, app.Options{})
+	if err == nil || !strings.Contains(err.Error(), "EVENTS_SINK") {
+		t.Fatalf("RunRelay = %v, want EVENTS_SINK error", err)
 	}
 }

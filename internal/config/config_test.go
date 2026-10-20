@@ -26,6 +26,11 @@ func TestLoad_Defaults(t *testing.T) {
 	if cfg.DB.MaxConns != 10 || cfg.DB.StatementTimeout != 5*time.Second || cfg.DB.MigrateOnStart {
 		t.Fatalf("db defaults: %+v", cfg.DB)
 	}
+	ev := cfg.Events
+	if ev.Sink != config.EventsSinkNone || ev.KafkaTopic != "users" || ev.PollInterval != time.Second ||
+		ev.BatchSize != 100 || ev.Retention != 7*24*time.Hour || len(ev.KafkaBrokers) != 0 {
+		t.Fatalf("events defaults: %+v", ev)
+	}
 }
 
 func TestLoad_Errors(t *testing.T) {
@@ -42,6 +47,14 @@ func TestLoad_Errors(t *testing.T) {
 		{"DB_MIN_CONNS": "20"},
 		{"READINESS_CHECK_DB": "maybe"},
 		{"TRUSTED_PROXIES": "10.0.0.0/8,not-a-cidr"},
+		{"EVENTS_SINK": "rabbitmq"},
+		// Outbox nằm trong PostgreSQL: phát sự kiện cần STORAGE=postgres.
+		{"EVENTS_SINK": "kafka", "KAFKA_BROKERS": "localhost:9092"},
+		{"EVENTS_SINK": "kafka", "STORAGE": "postgres", "DATABASE_URL": "postgres://x"},
+		{"OUTBOX_BATCH_SIZE": "0"},
+		{"OUTBOX_BATCH_SIZE": "1001"},
+		{"OUTBOX_POLL_INTERVAL": "0s"},
+		{"OUTBOX_RETENTION": "0s"},
 	}
 	for _, c := range cases {
 		if _, err := config.Load(env(c)); err == nil {
@@ -64,5 +77,29 @@ func TestLoad_Postgres(t *testing.T) {
 	}
 	if cfg.DB.MaxConns != 25 || !cfg.DB.MigrateOnStart || len(cfg.TrustedProxies) != 2 {
 		t.Fatalf("%+v", cfg)
+	}
+}
+
+func TestLoad_KafkaEvents(t *testing.T) {
+	cfg, err := config.Load(env(map[string]string{
+		"STORAGE":              "postgres",
+		"DATABASE_URL":         "postgres://x",
+		"EVENTS_SINK":          "Kafka",
+		"KAFKA_BROKERS":        "kafka-0:9092, kafka-1:9092",
+		"KAFKA_TOPIC":          "userapi.users",
+		"OUTBOX_POLL_INTERVAL": "250ms",
+		"OUTBOX_BATCH_SIZE":    "500",
+		"OUTBOX_RETENTION":     "72h",
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ev := cfg.Events
+	if ev.Sink != config.EventsSinkKafka || ev.KafkaTopic != "userapi.users" || ev.PollInterval != 250*time.Millisecond ||
+		ev.BatchSize != 500 || ev.Retention != 72*time.Hour {
+		t.Fatalf("%+v", ev)
+	}
+	if len(ev.KafkaBrokers) != 2 || ev.KafkaBrokers[0] != "kafka-0:9092" || ev.KafkaBrokers[1] != "kafka-1:9092" {
+		t.Fatalf("brokers = %q", ev.KafkaBrokers)
 	}
 }
