@@ -27,7 +27,7 @@ Each feature below can be disabled by configuration. Delete code only when certa
 
 | Feature | Disable with | Remove entirely |
 |---|---|---|
-| Events (outbox, relay, Kafka) | EVENTS_SINK=none (default) | internal/outbox, internal/adapter/outbound/kafka, internal/app/relay.go, postgres/outbox*.go, the outbox flag of postgres.NewUserRepository, cmd relay branch, docs/events.md, outbox/outbound-adapters-no-broker rules and franz-go entries in .golangci.yml, .claude/rules/messaging.md. Retain migrations 0003/0004 if applied; they may be removed for a new database |
+| Events (outbox, relay, Kafka) | EVENTS_SINK=none (default) | internal/outbox, internal/adapter/outbound/kafka, internal/app/relay.go, postgres/outbox*.go, the outbox flag of postgres.NewUserRepository, cmd relay branch, docs/events.md, outbox/outbound-adapters-no-broker rules and franz-go entries in .golangci.yml, .claude/rules/messaging.md and the messaging row in AGENTS.md's rules table. Retain migrations 0003/0004 if applied; they may be removed for a new database |
 | In-memory repository | STORAGE=postgres everywhere | Keep it: service and HTTP tests use it |
 
 ## 3. Configure GitHub

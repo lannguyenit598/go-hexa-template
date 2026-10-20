@@ -16,7 +16,7 @@ Tools: Go >= 1.26 and golangci-lint **v2.14.0**, built with Go >= the `go.mod` v
 
 ## Rules
 
-Before editing a file, read every rule whose paths match it (Claude Code loads these automatically).
+Before editing or creating a file, read every rule whose paths match it.
 
 | Editing | Read first |
 |---|---|
@@ -58,7 +58,7 @@ Before editing a file, read every rule whose paths match it (Claude Code loads t
 
 ## Skills
 
-Skills live in `.agents/skills/`; `.claude/skills/` holds symlinks to them (on Windows, clone with `git config core.symlinks true`).
+Skills live in `.agents/skills/`; `.claude/skills/` holds symlinks to them (on Windows, enable Developer Mode and clone with `git clone -c core.symlinks=true`).
 
 | When | Skill |
 |---|---|

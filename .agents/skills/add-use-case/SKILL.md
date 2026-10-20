@@ -31,7 +31,7 @@ Compare against `docs/api.md`. Explicitly flag existing status, `detail`, or fie
 
 1. Add a subtest to `internal/adapter/outbound/repotest/contract.go`.
 2. Observe failure: `go test ./internal/adapter/outbound/memory/`.
-3. Implement in `memory`, then `postgres` (parameterized SQL, `mapError`; use `/add-migration` for schema changes). New postgres **writes** use `r.write` and call `r.appendEvent` on success, with `outbox_test.go` coverage (see `.claude/rules/messaging.md`).
+3. Implement in `memory`, then `postgres` (parameterized SQL, `mapError`; use the `add-migration` skill for schema changes). New postgres **writes** use `r.write` and call `r.appendEvent` on success, with `outbox_test.go` coverage (see `.claude/rules/messaging.md`).
 4. Run both, including PostgreSQL: `TEST_DATABASE_URL=... go test ./internal/adapter/outbound/...`
 
 ## 4. Service (`internal/core/service`)
