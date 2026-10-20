@@ -177,7 +177,7 @@ Enable EVENTS_SINK=kafka with STORAGE=postgres and KAFKA_BROKERS, configured **i
 - **Cleanup:** relay purges published rows older than OUTBOX_RETENTION at most hourly. Parked rows are retained.
 - **Permanent rejections** (oversized/invalid records): retry the record alone; if still rejected, set parked_at and last_error, log ERROR `outbox relay: parked messages the broker rejected permanently` with IDs, and continue. Network, missing-topic, and permission errors are **temporary** and keep retrying. Fix the cause (such as topic max.message.bytes), then requeue:
   ```sql
-  UPDATE outbox SET parked_at = NULL, last_error = NULL WHERE id = '<id trong log>';
+  UPDATE outbox SET parked_at = NULL, last_error = NULL WHERE id = '<id from the log>';
   ```
 
 **Required alerts:**

@@ -16,7 +16,7 @@ import (
 	"github.com/example/userapi/internal/core/service"
 )
 
-// ---- test doubles cho outbound port ----
+// ---- test doubles for outbound ports ----
 
 type fakeClock struct{ now time.Time }
 

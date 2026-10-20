@@ -17,7 +17,7 @@ type Message struct {
 	ID      string // event_id (UUIDv7)
 	Key     string // Aggregate ID: broker partition key; see docs/events.md for ordering limits.
 	Type    string // For example, "user.updated".
-	Payload []byte // JSON, schema trong docs/events.md
+	Payload []byte // JSON; schema in docs/events.md
 	Headers map[string]string
 }
 
