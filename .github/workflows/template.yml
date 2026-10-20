@@ -1,0 +1,57 @@
+name: Template
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # Proves scripts/rename.sh still turns the template into a clean, passing project.
+  rename-smoke:
+    # Template repo only; scripts/rename.sh deletes this file in generated projects.
+    if: github.repository == 'lannguyenit598/go-hexa-template'
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - { name: orders, module: github.com/acme/orders }
+          # The module path contains "userapi": the name substitution must not mangle it.
+          - { name: billing, module: github.com/acme/userapi-billing }
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.26.x"
+          check-latest: true
+      - uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
+        with:
+          version: v2.14.0
+          install-only: true
+      - name: Rejects bad input without touching the tree
+        run: |
+          expect() { want=$1; shift; rc=0; "$@" || rc=$?; test "$rc" = "$want" || { echo "want exit $want, got $rc: $*"; exit 1; }; }
+          expect 2 scripts/rename.sh
+          expect 2 scripts/rename.sh Bad-Name github.com/acme/x
+          expect 2 scripts/rename.sh ok 'not a path'
+          git diff --quiet
+          touch dirty
+          expect 1 scripts/rename.sh ok github.com/acme/ok
+          rm dirty
+      - name: Rename
+        run: scripts/rename.sh "${{ matrix.name }}" "${{ matrix.module }}"
+      - name: Renamed completely
+        env:
+          NAME: ${{ matrix.name }}
+          MODULE: ${{ matrix.module }}
+        run: |
+          test "$(go list -m)" = "$MODULE"
+          test -d "cmd/$NAME" && test ! -e cmd/userapi
+          test ! -e scripts/rename.sh && test ! -e .github/workflows/template.yml
+          test -x .claude/hooks/session-start.sh
+          if git grep -n userapi -- ':!internal/adapter/outbound/postgres/migrations' | grep -vF "$MODULE"; then exit 1; fi
+      - name: Image builds
+        run: docker build -t "${{ matrix.name }}:ci" .
