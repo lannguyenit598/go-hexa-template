@@ -21,6 +21,8 @@ jobs:
           - { name: orders, module: github.com/acme/orders }
           # The module path contains "userapi": the name substitution must not mangle it.
           - { name: billing, module: github.com/acme/userapi-billing }
+          # Module path only: the service keeps its name.
+          - { name: userapi, module: github.com/acme/userapi }
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
@@ -41,6 +43,12 @@ jobs:
           touch dirty
           expect 1 scripts/rename.sh ok github.com/acme/ok
           rm dirty
+          # A copy without git (e.g. a ZIP download) is refused, and the repo in the cwd is not touched.
+          copy=$(mktemp -d)
+          git archive HEAD | tar -x -C "$copy"
+          expect 2 "$copy/scripts/rename.sh" ok github.com/acme/ok
+          git diff --quiet
+          grep -qx 'module github.com/example/userapi' "$copy/go.mod"
       - name: Rename
         run: scripts/rename.sh "${{ matrix.name }}" "${{ matrix.module }}"
       - name: Renamed completely
@@ -49,9 +57,12 @@ jobs:
           MODULE: ${{ matrix.module }}
         run: |
           test "$(go list -m)" = "$MODULE"
-          test -d "cmd/$NAME" && test ! -e cmd/userapi
+          test -d "cmd/$NAME"
           test ! -e scripts/rename.sh && test ! -e .github/workflows/template.yml
           test -x .claude/hooks/session-start.sh
-          if git grep -n userapi -- ':!internal/adapter/outbound/postgres/migrations' | grep -vF "$MODULE"; then exit 1; fi
+          if [ "$NAME" != userapi ]; then
+            test ! -e cmd/userapi
+            if git grep -n userapi -- ':!internal/adapter/outbound/postgres/migrations' | grep -vF "$MODULE"; then exit 1; fi
+          fi
       - name: Image builds
         run: docker build -t "${{ matrix.name }}:ci" .

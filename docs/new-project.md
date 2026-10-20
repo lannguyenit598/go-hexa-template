@@ -12,7 +12,7 @@ scripts/rename.sh orders github.com/acme/orders
 
 The script renames the module path (including depguard package paths in `.golangci.yml`), `cmd/userapi`, and every `userapi` string: binary, image, development database/role, PostgreSQL application_name, OpenTelemetry service.name, logs, documentation, and Claude Code configuration. Migrations stay unchanged (their comments do not affect behavior). It then deletes itself and the template-only `Template` workflow and runs `make check`. It does not commit: review `git status`, then commit.
 
-The name must match `^[a-z][a-z0-9_]*$`, because it also becomes an unquoted PostgreSQL role and database name and a Docker image tag. The script refuses a dirty working tree (exit 1) and invalid arguments (exit 2) before changing anything. It runs on macOS and Linux.
+The name must match `^[a-z][a-z0-9_]*$`, because it also becomes an unquoted PostgreSQL role and database name and a Docker image tag. The script refuses a dirty working tree (exit 1) and invalid arguments or a copy that is not a git clone, such as a ZIP download (exit 2), before changing anything. To change only the module path, keep the name: `scripts/rename.sh userapi github.com/acme/userapi`. It runs on macOS and Linux.
 
 If you are reading this inside a generated project, this step is already done.
 

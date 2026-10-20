@@ -2,7 +2,7 @@
 # Turns a fresh clone of the template into a new service. Usage: scripts/rename.sh <name> <module>
 # Renames the module path, cmd/userapi and every "userapi" string (except migrations), deletes the
 # template-only files including this script, then runs make check. It does not commit.
-# Exit codes: 0 renamed and checks pass; 1 dirty tree or make check failed; 2 invalid arguments.
+# Exit codes: 0 renamed and checks pass; 1 dirty tree or make check failed; 2 invalid arguments or not a git clone.
 set -euo pipefail
 
 if [ $# -ne 2 ]; then
@@ -18,7 +18,12 @@ if ! [[ $NAME =~ ^[a-z][a-z0-9_]*$ ]]; then
   exit 2
 fi
 
-cd "$(git rev-parse --show-toplevel)"
+# Work on the clone this script lives in, never on whatever repository contains the cwd.
+cd "$(dirname "$0")/.."
+if [ "$(git rev-parse --show-toplevel 2>/dev/null)" != "$(pwd -P)" ]; then
+  echo "not a git clone of the template: $(pwd -P)" >&2
+  exit 2
+fi
 
 if [ -n "$(git status --porcelain)" ]; then
   echo "working tree not clean; commit or stash first" >&2
@@ -38,7 +43,7 @@ git grep -lz userapi -- ':!go.mod' ':!go.sum' ':!internal/adapter/outbound/postg
   ':!scripts/rename.sh' ':!.github/workflows/template.yml' | replace userapi "$NAME"
 git grep -lz "github.com/example/$NAME" -- ':!go.mod' | replace "github.com/example/$NAME" "$MODULE"
 
-mv cmd/userapi "cmd/$NAME"
+[ "$NAME" = userapi ] || mv cmd/userapi "cmd/$NAME"
 # A name of a different length shifts aligned comments.
 gofmt -w .
 rm scripts/rename.sh .github/workflows/template.yml
