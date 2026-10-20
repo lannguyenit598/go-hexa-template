@@ -132,7 +132,7 @@ Trên bản clone mới của template, đổi module path và tên service bằ
 scripts/rename.sh orders github.com/acme/orders
 ```
 
-Script chỉ có trong template: nó tự xoá sau khi đổi tên thành công.
+Script chỉ có trong template: khi chạy, nó tự xoá chính nó và mục này.
 
 ## Giấy phép
 

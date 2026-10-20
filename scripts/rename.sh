@@ -2,7 +2,7 @@
 # Turns a fresh clone of the template into a new service. Usage: scripts/rename.sh <name> <module>
 # Renames the module path, cmd/userapi and every "userapi" string (except migrations), deletes the
 # template-only files including this script, then runs make check. It does not commit.
-# Exit codes: 0 renamed and checks pass; 1 dirty tree or make check failed; 2 invalid arguments or not a git clone.
+# Exit codes: 0 renamed and checks pass; 1 missing tools, dirty tree, or a failure after changes began; 2 invalid arguments or not a git clone.
 set -euo pipefail
 
 if [ $# -ne 2 ]; then
@@ -12,11 +12,18 @@ fi
 NAME=$1
 MODULE=$2
 
-# The name becomes a binary, a Docker image tag and an unquoted PostgreSQL role/database name.
+# The name becomes a binary, a Docker image tag and a PostgreSQL role/database name.
 if ! [[ $NAME =~ ^[a-z][a-z0-9_]*$ ]]; then
   echo "invalid name: lowercase letters, digits, underscore; must start with a letter" >&2
   exit 2
 fi
+
+for tool in git go gofmt perl make; do
+  if ! command -v "$tool" >/dev/null; then
+    echo "missing required tool: $tool" >&2
+    exit 1
+  fi
+done
 
 # Work on the clone this script lives in, never on whatever repository contains the cwd.
 cd "$(dirname "$0")/.."
@@ -25,13 +32,17 @@ if [ "$(git rev-parse --show-toplevel 2>/dev/null)" != "$(pwd -P)" ]; then
   exit 2
 fi
 
+# -print validates the module path without writing go.mod.
+go mod edit -module "$MODULE" -print >/dev/null || exit 2
+
 if [ -n "$(git status --porcelain)" ]; then
   echo "working tree not clean; commit or stash first" >&2
   exit 1
 fi
 
-# Validates the module path before anything else changes.
-go mod edit -module "$MODULE" || exit 2
+UNDO="git checkout -- . && git clean -fd"
+trap 'echo "rename failed partway; undo with: $UNDO" >&2' ERR
+go mod edit -module "$MODULE"
 
 # replace OLD NEW: literal replacement in the NUL-separated file list on stdin.
 replace() {
@@ -42,15 +53,22 @@ replace() {
 git grep -lz userapi -- ':!go.mod' ':!go.sum' ':!internal/adapter/outbound/postgres/migrations' \
   ':!scripts/rename.sh' ':!.github/workflows/template.yml' | replace userapi "$NAME"
 git grep -lz "github.com/example/$NAME" -- ':!go.mod' | replace "github.com/example/$NAME" "$MODULE"
+# A local .env copied from .env.example is gitignored, so git grep misses it.
+if [ -f .env ]; then
+  printf '.env\0' | replace userapi "$NAME"
+fi
 
 [ "$NAME" = userapi ] || mv cmd/userapi "cmd/$NAME"
 # A name of a different length shifts aligned comments.
 gofmt -w .
 rm scripts/rename.sh .github/workflows/template.yml
+# The READMEs' "start a new service" sections describe this script, which no longer exists.
+perl -0pi -e 's/^## Starting a new service\n.*?(?=^## )//ms' README.md
+perl -0pi -e 's/^## Bắt đầu service mới\n.*?(?=^## )//ms' README.vi.md
 
 echo "Renamed to $NAME ($MODULE). Running make check..."
 if ! make check; then
-  echo "rename applied but make check failed; inspect with git status" >&2
+  echo "rename applied but make check failed; fix the errors, or undo with: $UNDO" >&2
   exit 1
 fi
 

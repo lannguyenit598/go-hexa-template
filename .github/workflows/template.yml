@@ -42,15 +42,36 @@ jobs:
           git diff --quiet
           touch dirty
           expect 1 scripts/rename.sh ok github.com/acme/ok
+          expect 2 scripts/rename.sh ok 'not a path'
           rm dirty
+          # Missing tools are an environment error, not bad arguments.
+          expect 1 env PATH=/usr/bin:/bin scripts/rename.sh ok github.com/acme/ok
+          git diff --quiet
           # A copy without git (e.g. a ZIP download) is refused, and the repo in the cwd is not touched.
           copy=$(mktemp -d)
           git archive HEAD | tar -x -C "$copy"
           expect 2 "$copy/scripts/rename.sh" ok github.com/acme/ok
           git diff --quiet
           grep -qx 'module github.com/example/userapi' "$copy/go.mod"
+      - name: A failed rename prints a working undo command
+        run: |
+          # A failing tool mid-run (gofmt) and a failing make check both leave a half-renamed tree.
+          for tool in gofmt make; do
+            fake=$(mktemp -d)
+            printf '#!/bin/sh\nexit 1\n' > "$fake/$tool"
+            chmod +x "$fake/$tool"
+            rc=0
+            PATH="$fake:$PATH" scripts/rename.sh ok github.com/acme/ok 2> "$fake/err" || rc=$?
+            test "$rc" = 1 || { echo "$tool: want exit 1, got $rc"; exit 1; }
+            grep -F 'git checkout -- . && git clean -fd' "$fake/err" || { cat "$fake/err"; exit 1; }
+            git checkout -- . && git clean -fd
+            test -z "$(git status --porcelain)"
+          done
       - name: Rename
-        run: scripts/rename.sh "${{ matrix.name }}" "${{ matrix.module }}"
+        run: |
+          # A developer's local .env (gitignored) is renamed too.
+          cp .env.example .env
+          scripts/rename.sh "${{ matrix.name }}" "${{ matrix.module }}"
       - name: Renamed completely
         env:
           NAME: ${{ matrix.name }}
@@ -61,13 +82,19 @@ jobs:
           test ! -e scripts/rename.sh
           test ! -e .github/workflows/template.yml
           test -x .claude/hooks/session-start.sh
-          for s in add-use-case add-migration steward; do
+          for d in .agents/skills/*/; do
+            s=$(basename "$d")
             test -L ".claude/skills/$s" || exit 1
             test -f ".claude/skills/$s/SKILL.md" || exit 1
           done
+          # The generated READMEs must not point to the deleted script.
+          if grep -n 'scripts/rename.sh' README.md README.vi.md; then exit 1; fi
           if [ "$NAME" != userapi ]; then
             test ! -e cmd/userapi
-            if git grep -n userapi -- ':!internal/adapter/outbound/postgres/migrations' | grep -vF "$MODULE"; then exit 1; fi
+            # --untracked covers the moved cmd/<name>/; strip the module path so a stray "userapi" beside it still shows.
+            if git grep -n --untracked userapi -- ':!internal/adapter/outbound/postgres/migrations' \
+              | perl -pe 's/\Q$ENV{MODULE}\E//g' | grep userapi; then exit 1; fi
+            if grep -n userapi .env; then exit 1; fi
           fi
       - name: Image builds
         run: docker build -t "${{ matrix.name }}:ci" .
