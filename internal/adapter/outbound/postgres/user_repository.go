@@ -30,20 +30,11 @@ type UserRepository struct {
 
 var _ port.UserRepository = (*UserRepository)(nil)
 
-// Option configures UserRepository.
-type Option func(*UserRepository)
-
-// WithOutbox writes an event in the same transaction as each successful
+// NewUserRepository with outbox=true writes an event in the same transaction as each successful
 // Create/Update/Delete (transactional outbox; see docs/events.md). The
 // port.UserRepository contract stays unchanged; core knows nothing about events.
-func WithOutbox() Option { return func(r *UserRepository) { r.outbox = true } }
-
-func NewUserRepository(pool *pgxpool.Pool, opts ...Option) *UserRepository {
-	r := &UserRepository{pool: pool}
-	for _, opt := range opts {
-		opt(r)
-	}
-	return r
+func NewUserRepository(pool *pgxpool.Pool, outbox bool) *UserRepository {
+	return &UserRepository{pool: pool, outbox: outbox}
 }
 
 // PoolOptions configures the connection pool. Zero uses pgx defaults.

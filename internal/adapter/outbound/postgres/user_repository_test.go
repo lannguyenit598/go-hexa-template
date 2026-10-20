@@ -46,15 +46,15 @@ func TestUserRepositoryContract(t *testing.T) {
 
 	// Writing the outbox in the same transaction must not change the repository contract.
 	for _, tc := range []struct {
-		name string
-		opts []postgres.Option
-	}{{"without outbox", nil}, {"with outbox", []postgres.Option{postgres.WithOutbox()}}} {
+		name   string
+		outbox bool
+	}{{"without outbox", false}, {"with outbox", true}} {
 		t.Run(tc.name, func(t *testing.T) {
 			repotest.Run(t, func(t *testing.T) port.UserRepository {
 				if _, err := pool.Exec(ctx, `TRUNCATE users, outbox`); err != nil {
 					t.Fatal(err)
 				}
-				return postgres.NewUserRepository(pool, tc.opts...)
+				return postgres.NewUserRepository(pool, tc.outbox)
 			})
 		})
 	}
@@ -63,7 +63,7 @@ func TestUserRepositoryContract(t *testing.T) {
 		if _, err := pool.Exec(ctx, `TRUNCATE users`); err != nil {
 			t.Fatal(err)
 		}
-		svc := service.NewUserService(postgres.NewUserRepository(pool), system.NewUUIDv7(), system.Clock{}, nil)
+		svc := service.NewUserService(postgres.NewUserRepository(pool, false), system.UUIDv7{}, system.Clock{}, nil)
 		u, err := svc.Register(ctx, port.RegisterUserCmd{Email: "race@example.com", Name: "Race"})
 		if err != nil {
 			t.Fatal(err)
@@ -126,7 +126,7 @@ func TestStatementTimeout_IsDeadlineExceeded(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, _, err = postgres.NewUserRepository(pool).List(ctx, 10, 0)
+	_, _, err = postgres.NewUserRepository(pool, false).List(ctx, 10, 0)
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("List = %v, want context.DeadlineExceeded", err)
 	}

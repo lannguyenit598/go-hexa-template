@@ -10,4 +10,3 @@ paths:
 - All code comments, documentation, examples, configuration guidance, and agent instructions must be in English, except `README.vi.md`. Give each document a clear audience; link instead of duplicating content.
 - Verify behavioral claims (status codes, literal `detail`, headers, defaults, commands, SQL) by running them before documenting new behavior. Run user-facing scripts and SQL exactly as written.
 - After editing, verify all relative links and `#...` anchors.
-- `docs/superpowers/` contains historical records. Preserve historical decisions and behavior when translating; do not rewrite them as current specifications.

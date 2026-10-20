@@ -3,6 +3,7 @@
 package memory
 
 import (
+	"cmp"
 	"context"
 	"slices"
 	"sync"
@@ -65,16 +66,7 @@ func (r *UserRepository) List(ctx context.Context, limit, offset int) ([]domain.
 	r.mu.RUnlock()
 
 	slices.SortFunc(all, func(a, b domain.User) int {
-		if c := a.CreatedAt.Compare(b.CreatedAt); c != 0 {
-			return c
-		}
-		switch {
-		case a.ID < b.ID:
-			return -1
-		case a.ID > b.ID:
-			return 1
-		}
-		return 0
+		return cmp.Or(a.CreatedAt.Compare(b.CreatedAt), cmp.Compare(a.ID, b.ID))
 	})
 
 	total := len(all)

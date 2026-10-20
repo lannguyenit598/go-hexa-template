@@ -26,8 +26,6 @@ type UUIDv7 struct{}
 
 var _ port.IDGenerator = UUIDv7{}
 
-func NewUUIDv7() UUIDv7 { return UUIDv7{} }
-
 func (UUIDv7) NewID() domain.UserID {
 	// uuid.NewV7 only fails if crypto/rand fails, which Go guarantees will not happen.
 	return domain.UserID(uuid.Must(uuid.NewV7()).String())

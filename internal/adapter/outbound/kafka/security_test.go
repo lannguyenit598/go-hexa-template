@@ -43,7 +43,7 @@ func TestSink_AuthenticatesWithSASL(t *testing.T) {
 			}
 			t.Cleanup(c.Close)
 
-			sink, err := kafka.NewSink(c.ListenAddrs(), "users", kafka.WithSASL(mech, "relay", "s3cret"))
+			sink, err := kafka.NewSink(c.ListenAddrs(), "users", kafka.Options{SASLMechanism: mech, SASLUsername: "relay", SASLPassword: "s3cret"})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -52,7 +52,7 @@ func TestSink_AuthenticatesWithSASL(t *testing.T) {
 				t.Fatalf("publish with valid credentials: %v", err)
 			}
 
-			wrong, err := kafka.NewSink(c.ListenAddrs(), "users", kafka.WithSASL(mech, "relay", "wrong"))
+			wrong, err := kafka.NewSink(c.ListenAddrs(), "users", kafka.Options{SASLMechanism: mech, SASLUsername: "relay", SASLPassword: "wrong"})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -65,7 +65,7 @@ func TestSink_AuthenticatesWithSASL(t *testing.T) {
 }
 
 func TestNewSink_RejectsUnknownSASLMechanism(t *testing.T) {
-	if _, err := kafka.NewSink([]string{"127.0.0.1:1"}, "users", kafka.WithSASL("GSSAPI", "u", "p")); err == nil {
+	if _, err := kafka.NewSink([]string{"127.0.0.1:1"}, "users", kafka.Options{SASLMechanism: "GSSAPI", SASLUsername: "u", SASLPassword: "p"}); err == nil {
 		t.Fatal("unknown SASL mechanism accepted")
 	}
 }
@@ -84,7 +84,7 @@ func TestSink_ConnectsOverTLSWithACAFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sink, err := kafka.NewSink(c.ListenAddrs(), "users", kafka.WithTLS(tlsCfg))
+	sink, err := kafka.NewSink(c.ListenAddrs(), "users", kafka.Options{TLS: tlsCfg})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -97,7 +97,7 @@ func TestSink_ConnectsOverTLSWithACAFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	untrusted, err := kafka.NewSink(c.ListenAddrs(), "users", kafka.WithTLS(systemRoots))
+	untrusted, err := kafka.NewSink(c.ListenAddrs(), "users", kafka.Options{TLS: systemRoots})
 	if err != nil {
 		t.Fatal(err)
 	}

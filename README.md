@@ -35,8 +35,6 @@ All documentation is in English; README.vi.md is the Vietnamese overview.
 | Consuming the service's events | [docs/events.md](docs/events.md): event types, message format, delivery and ordering guarantees |
 | Starting a new project from this template | [docs/new-project.md](docs/new-project.md): renaming, removing what you don't need, GitHub setup, decisions to make before production |
 
-`docs/superpowers/` holds the specs and plans of earlier changes. They are historical records, accurate as of when they were written (line numbers in them may be out of date); do not use them as reference documentation.
-
 ## Requirements
 
 - Go 1.26 or later

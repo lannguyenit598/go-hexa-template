@@ -58,7 +58,7 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, opts Optio
 	defer closeRepo()
 
 	// ---- Core ----
-	users := service.NewUserService(repo, system.NewUUIDv7(), system.Clock{}, logger)
+	users := service.NewUserService(repo, system.UUIDv7{}, system.Clock{}, logger)
 
 	// ---- Inbound adapter ----
 	var draining atomic.Bool
@@ -137,26 +137,18 @@ func newRepository(ctx context.Context, cfg config.Config, logger *slog.Logger) 
 	case config.StorageMemory:
 		return memory.NewUserRepository(), nil, func() {}, nil
 	case config.StoragePostgres:
-		return newPostgresRepository(ctx, cfg, logger)
+		pool, err := connectPostgres(ctx, cfg, logger)
+		if err != nil {
+			return nil, nil, nil, err
+		}
+		if cfg.ReadinessCheckDB {
+			checkDB = pool.Ping
+		}
+		// With an events sink, the relay (`userapi relay`) forwards outbox events to the broker.
+		return postgres.NewUserRepository(pool, cfg.Events.Sink != config.EventsSinkNone), checkDB, pool.Close, nil
 	default:
 		return nil, nil, nil, fmt.Errorf("unsupported storage %q", cfg.Storage)
 	}
-}
-
-func newPostgresRepository(ctx context.Context, cfg config.Config, logger *slog.Logger) (port.UserRepository, func(context.Context) error, func(), error) {
-	pool, err := connectPostgres(ctx, cfg, logger)
-	if err != nil {
-		return nil, nil, nil, err
-	}
-	var checkDB func(context.Context) error
-	if cfg.ReadinessCheckDB {
-		checkDB = pool.Ping
-	}
-	var opts []postgres.Option
-	if cfg.Events.Sink != config.EventsSinkNone {
-		opts = append(opts, postgres.WithOutbox()) // The relay (`userapi relay`) forwards outbox events to the broker.
-	}
-	return postgres.NewUserRepository(pool, opts...), checkDB, pool.Close, nil
 }
 
 // connectPostgres opens a pool, migrates if MIGRATE_ON_START is enabled, and fails early if the

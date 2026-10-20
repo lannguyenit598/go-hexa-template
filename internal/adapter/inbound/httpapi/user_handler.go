@@ -77,25 +77,13 @@ func parseIfMatch(c *echo.Context) (int64, error) {
 	}
 	// Strong comparison matches the issued ETag ("<version>") character for character, accepting only:
 	// no sign, leading zeros, or whitespace ("+2" and "02" do not match "2").
-	if len(raw) >= 3 && raw[0] == '"' && raw[len(raw)-1] == '"' && isCanonicalVersion(raw[1:len(raw)-1]) {
-		if v, err := strconv.ParseInt(raw[1:len(raw)-1], 10, 64); err == nil {
+	if len(raw) >= 3 && raw[0] == '"' && raw[len(raw)-1] == '"' {
+		s := raw[1 : len(raw)-1]
+		if v, err := strconv.ParseInt(s, 10, 64); err == nil && v > 0 && strconv.FormatInt(v, 10) == s {
 			return v, nil
 		}
 	}
 	return 0, errPreconditionFailed
-}
-
-// isCanonicalVersion checks for a positive integer formatted as strconv.FormatInt would produce.
-func isCanonicalVersion(s string) bool {
-	if s == "" || s[0] < '1' || s[0] > '9' {
-		return false
-	}
-	for i := 1; i < len(s); i++ {
-		if s[i] < '0' || s[i] > '9' {
-			return false
-		}
-	}
-	return true
 }
 
 var errPreconditionFailed = echo.NewHTTPError(http.StatusPreconditionFailed, "If-Match does not match the current version of the resource")

@@ -33,8 +33,6 @@ Repo mẫu cho một REST API quản lý user, tổ chức theo kiến trúc Hex
 | Service tiêu thụ sự kiện | [docs/events.md](docs/events.md): loại sự kiện, định dạng message, cam kết về giao nhận và thứ tự |
 | Bắt đầu dự án mới từ template | [docs/new-project.md](docs/new-project.md): đổi tên, bỏ phần không dùng, thiết lập GitHub, các quyết định trước khi lên production |
 
-`docs/superpowers/` chứa spec và plan của các lần thay đổi trước. Đây là tài liệu lịch sử, ghi lại đúng thời điểm viết (số dòng code trong đó có thể đã lệch); không dùng làm tài liệu tham chiếu.
-
 ## Yêu cầu
 
 - Go 1.26 trở lên

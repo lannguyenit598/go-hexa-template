@@ -91,7 +91,7 @@ const (
 // drop versions no greater than the processed version without losing deletions.
 func TestOutbox_OneEventPerSuccessfulWrite(t *testing.T) {
 	pool := freshPool(t)
-	repo := postgres.NewUserRepository(pool, postgres.WithOutbox())
+	repo := postgres.NewUserRepository(pool, true)
 	ctx := context.Background()
 
 	u := newUser(t, userA, "a@example.com")
@@ -153,11 +153,11 @@ func TestOutbox_OneEventPerSuccessfulWrite(t *testing.T) {
 
 func TestOutbox_DisabledWritesNothing(t *testing.T) {
 	pool := freshPool(t)
-	if err := postgres.NewUserRepository(pool).Create(context.Background(), newUser(t, userA, "a@example.com")); err != nil {
+	if err := postgres.NewUserRepository(pool, false).Create(context.Background(), newUser(t, userA, "a@example.com")); err != nil {
 		t.Fatal(err)
 	}
 	if rows := outboxRows(t, pool); len(rows) != 0 {
-		t.Fatalf("outbox rows written without WithOutbox: %+v", rows)
+		t.Fatalf("outbox rows written with outbox disabled: %+v", rows)
 	}
 }
 
@@ -169,7 +169,7 @@ func TestOutbox_IsAtomicWithTheWrite(t *testing.T) {
 	if _, err := pool.Exec(ctx, `DROP TABLE outbox`); err != nil {
 		t.Fatal(err)
 	}
-	repo := postgres.NewUserRepository(pool, postgres.WithOutbox())
+	repo := postgres.NewUserRepository(pool, true)
 	if err := repo.Create(ctx, newUser(t, userA, "a@example.com")); err == nil {
 		t.Fatal("Create succeeded without an outbox table")
 	}
@@ -201,7 +201,7 @@ func TestOutbox_CarriesTraceContextButNotBaggage(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx = baggage.ContextWithBaggage(ctx, bag)
-	if err := postgres.NewUserRepository(pool, postgres.WithOutbox()).Create(ctx, newUser(t, userA, "a@example.com")); err != nil {
+	if err := postgres.NewUserRepository(pool, true).Create(ctx, newUser(t, userA, "a@example.com")); err != nil {
 		t.Fatal(err)
 	}
 	rows := outboxRows(t, pool)
@@ -216,7 +216,7 @@ func TestOutbox_CarriesTraceContextButNotBaggage(t *testing.T) {
 func TestOutboxSource_ProcessInOrderAndOnlyMarksOnSuccess(t *testing.T) {
 	pool := freshPool(t)
 	ctx := context.Background()
-	repo := postgres.NewUserRepository(pool, postgres.WithOutbox())
+	repo := postgres.NewUserRepository(pool, true)
 	for _, u := range []domain.User{newUser(t, userA, "a@example.com"), newUser(t, userB, "b@example.com")} {
 		if err := repo.Create(ctx, u); err != nil {
 			t.Fatal(err)
@@ -265,7 +265,7 @@ func TestOutboxSource_ProcessInOrderAndOnlyMarksOnSuccess(t *testing.T) {
 func TestOutboxSource_ConcurrentRelaysDoNotShareMessages(t *testing.T) {
 	pool := freshPool(t)
 	ctx := context.Background()
-	repo := postgres.NewUserRepository(pool, postgres.WithOutbox())
+	repo := postgres.NewUserRepository(pool, true)
 	for _, u := range []domain.User{newUser(t, userA, "a@example.com"), newUser(t, userB, "b@example.com")} {
 		if err := repo.Create(ctx, u); err != nil {
 			t.Fatal(err)
@@ -313,7 +313,7 @@ func TestOutboxSource_ConcurrentRelaysDoNotShareMessages(t *testing.T) {
 func TestOutboxSource_PurgeDeletesOnlyPublished(t *testing.T) {
 	pool := freshPool(t)
 	ctx := context.Background()
-	repo := postgres.NewUserRepository(pool, postgres.WithOutbox())
+	repo := postgres.NewUserRepository(pool, true)
 	if err := repo.Create(ctx, newUser(t, userA, "a@example.com")); err != nil {
 		t.Fatal(err)
 	}
@@ -351,7 +351,7 @@ func allErr(msgs []outbox.Message, err error) []error {
 func TestOutboxSource_MarksEachMessageByItsOwnResult(t *testing.T) {
 	pool := freshPool(t)
 	ctx := context.Background()
-	repo := postgres.NewUserRepository(pool, postgres.WithOutbox())
+	repo := postgres.NewUserRepository(pool, true)
 	const userC = "01a15359-aa28-7a00-a380-c47e52905709"
 	for _, u := range []domain.User{newUser(t, userA, "a@example.com"), newUser(t, userB, "b@example.com"), newUser(t, userC, "c@example.com")} {
 		if err := repo.Create(ctx, u); err != nil {
@@ -436,7 +436,7 @@ func TestOutbox_EventOrderFollowsCommitOrder(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(pool.Close)
-	repo := postgres.NewUserRepository(pool, postgres.WithOutbox())
+	repo := postgres.NewUserRepository(pool, true)
 
 	u := newUser(t, userA, "order@example.com")
 	if err := repo.Create(ctx, u); err != nil {
@@ -476,8 +476,8 @@ func TestOutbox_EventOrderFollowsCommitOrder(t *testing.T) {
 func TestOutbox_NoEventWhenNothingChanges(t *testing.T) {
 	pool := freshPool(t)
 	ctx := context.Background()
-	repo := postgres.NewUserRepository(pool, postgres.WithOutbox())
-	svc := service.NewUserService(repo, system.NewUUIDv7(), system.Clock{}, nil)
+	repo := postgres.NewUserRepository(pool, true)
+	svc := service.NewUserService(repo, system.UUIDv7{}, system.Clock{}, nil)
 	u, err := svc.Register(ctx, port.RegisterUserCmd{Email: "a@example.com", Name: "Same"})
 	if err != nil {
 		t.Fatal(err)
@@ -510,7 +510,7 @@ func TestOutbox_NoEventWhenNothingChanges(t *testing.T) {
 func TestOutbox_UpdateAndDeleteAreAtomicWithTheirEvents(t *testing.T) {
 	pool := freshPool(t)
 	ctx := context.Background()
-	repo := postgres.NewUserRepository(pool, postgres.WithOutbox())
+	repo := postgres.NewUserRepository(pool, true)
 	u := newUser(t, userA, "a@example.com")
 	if err := repo.Create(ctx, u); err != nil {
 		t.Fatal(err)

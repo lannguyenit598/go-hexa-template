@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"regexp"
 	"time"
 
 	"github.com/labstack/echo/v5"
@@ -26,8 +27,6 @@ type Options struct {
 	Ready func(ctx context.Context) error
 	// RequestTimeout applies to each request context. 0 = default 10s.
 	RequestTimeout time.Duration
-	// BodyLimit is in bytes. 0 = default 1 MiB.
-	BodyLimit int64
 	// TrustedProxies lists trusted reverse proxy / load balancer CIDRs. When set, the client IP
 	// comes from X-Forwarded-For (trusting only hops in these ranges). Empty = TCP connection IP.
 	TrustedProxies []*net.IPNet
@@ -40,6 +39,8 @@ type Options struct {
 // so logging them adds ingestion costs without useful information.
 var probePaths = map[string]bool{"/healthz": true, "/readyz": true}
 
+const bodyLimit = 1 << 20 // 1 MiB
+
 // NewServer builds an *echo.Echo with middleware, error handling, and routes.
 func NewServer(users port.UserService, opts Options) *echo.Echo {
 	if opts.Logger == nil {
@@ -47,9 +48,6 @@ func NewServer(users port.UserService, opts Options) *echo.Echo {
 	}
 	if opts.RequestTimeout == 0 {
 		opts.RequestTimeout = 10 * time.Second
-	}
-	if opts.BodyLimit == 0 {
-		opts.BodyLimit = 1 << 20
 	}
 
 	e := echo.New()
@@ -70,7 +68,7 @@ func NewServer(users port.UserService, opts Options) *echo.Echo {
 	e.Use(traceRoute)
 	e.Use(requestLogger(opts.Logger))
 	e.Use(middleware.Recover())
-	e.Use(middleware.BodyLimit(opts.BodyLimit))
+	e.Use(middleware.BodyLimit(bodyLimit))
 	e.Use(middleware.ContextTimeout(opts.RequestTimeout))
 
 	e.GET("/healthz", func(c *echo.Context) error {
@@ -109,18 +107,7 @@ func dropInvalidRequestID(next echo.HandlerFunc) echo.HandlerFunc {
 	}
 }
 
-func validRequestID(id string) bool {
-	if len(id) > 128 {
-		return false
-	}
-	for i := 0; i < len(id); i++ {
-		c := id[i]
-		if (c < 'a' || c > 'z') && (c < 'A' || c > 'Z') && (c < '0' || c > '9') && c != '-' && c != '_' && c != '.' {
-			return false
-		}
-	}
-	return true
-}
+var validRequestID = regexp.MustCompile(`^[A-Za-z0-9._-]{1,128}$`).MatchString
 
 // Instrument wraps Echo with OpenTelemetry at the net/http layer, outside Echo, so spans and
 // metrics record the actual status of EVERY response, including errors written by HTTPErrorHandler.

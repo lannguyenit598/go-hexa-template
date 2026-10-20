@@ -31,11 +31,11 @@ func mkUser(t *testing.T, n int) domain.User {
 
 func mustEmail(t *testing.T, s string) domain.Email {
 	t.Helper()
-	e, err := domain.ParseEmail(s)
+	u, err := domain.NewUser("", s, "Name", base)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return e
+	return u.Email
 }
 
 func assertSameUser(t *testing.T, got, want domain.User) {

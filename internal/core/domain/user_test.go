@@ -108,15 +108,15 @@ func TestUserID_Valid(t *testing.T) {
 	}
 }
 
-func TestParseEmail(t *testing.T) {
-	e, err := domain.ParseEmail("  Bob@Example.COM ")
-	if err != nil || e.String() != "bob@example.com" {
-		t.Fatalf("ParseEmail = %q, %v", e, err)
+func TestNewUser_Email(t *testing.T) {
+	u, err := domain.NewUser("id", "  Bob@Example.COM ", "Bob", time.Now())
+	if err != nil || u.Email.String() != "bob@example.com" {
+		t.Fatalf("NewUser email = %q, %v", u.Email, err)
 	}
 	for _, bad := range []string{"", "nope", "Bob <bob@example.com>", strings.Repeat("a", 250) + "@x.io"} {
 		var ve *domain.ValidationError
-		if _, err := domain.ParseEmail(bad); !errors.As(err, &ve) || ve.Fields[0].Field != "email" {
-			t.Errorf("ParseEmail(%q) = %v, want email validation error", bad, err)
+		if _, err := domain.NewUser("id", bad, "Bob", time.Now()); !errors.As(err, &ve) || ve.Fields[0].Field != "email" {
+			t.Errorf("NewUser(email %q) = %v, want email validation error", bad, err)
 		}
 	}
 }
