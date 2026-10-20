@@ -48,5 +48,3 @@ Tools: Go >= 1.26 and golangci-lint **v2.14.0**, built with Go >= the `go.mod` v
 | Add/change a use case or endpoint | `/add-use-case` |
 | Add migration or change schema | `/add-migration` |
 | Monitor/fix CI and address PR reviews | `steward` (loaded for PR work) |
-
-`docs/superpowers/` contains historical specs and plans, not the current source of truth. Translations must preserve that historical meaning.

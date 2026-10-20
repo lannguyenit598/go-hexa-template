@@ -34,7 +34,7 @@ func newAPI(t *testing.T, ready func(context.Context) error) *apiClient {
 
 func newAPIWith(t *testing.T, opts httpapi.Options) *apiClient {
 	t.Helper()
-	svc := service.NewUserService(memory.NewUserRepository(), system.NewUUIDv7(), system.Clock{}, nil)
+	svc := service.NewUserService(memory.NewUserRepository(), system.UUIDv7{}, system.Clock{}, nil)
 	return &apiClient{t: t, h: httpapi.NewServer(svc, opts)}
 }
 

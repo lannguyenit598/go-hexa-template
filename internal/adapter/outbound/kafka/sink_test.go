@@ -57,7 +57,7 @@ func header(r *kgo.Record, key string) string {
 
 func TestSink_PublishesWithKeyAndHeaders(t *testing.T) {
 	brokers := fakeCluster(t, "users")
-	sink, err := kafka.NewSink(brokers, "users")
+	sink, err := kafka.NewSink(brokers, "users", kafka.Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -114,7 +114,7 @@ func TestSink_PublishesWithKeyAndHeaders(t *testing.T) {
 
 // An unreachable broker must make Publish return within the context deadline, not hang indefinitely.
 func TestSink_PublishFailsWhenBrokerIsDown(t *testing.T) {
-	sink, err := kafka.NewSink([]string{"127.0.0.1:1"}, "users") // Nothing is listening here.
+	sink, err := kafka.NewSink([]string{"127.0.0.1:1"}, "users", kafka.Options{}) // Nothing is listening here.
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -140,7 +140,7 @@ func TestSink_ClassifiesRejectedRecordsAsPermanent(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(c.Close)
-	sink, err := kafka.NewSink(c.ListenAddrs(), "users")
+	sink, err := kafka.NewSink(c.ListenAddrs(), "users", kafka.Options{})
 	if err != nil {
 		t.Fatal(err)
 	}

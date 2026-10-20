@@ -7,7 +7,7 @@ paths:
 
 - Import only the standard library and `internal/core/...`. For external capabilities (time, IDs, storage, email...), define an interface in `port` and implement it in an adapter.
 - `domain`:
-  - Preserve invariants through constructors and methods (`NewUser`, `Apply`, `ParseEmail`). Use value objects such as `Email` for values with their own rules.
+  - Preserve invariants through constructors and methods (`NewUser`, `Apply`). Use value objects such as `Email` for values with their own rules.
   - Storage reconstruction (`EmailFromStore`) must **not** revalidate, so tighter rules do not break reads of legacy data.
   - `Apply` is pure: return a copy, changing `Version`/`UpdatedAt` only when data changes.
   - No JSON/DB tags.

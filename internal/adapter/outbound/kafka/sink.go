@@ -9,15 +9,14 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
-	"sort"
-	"strings"
+	"slices"
 	"time"
 
 	"github.com/twmb/franz-go/pkg/kerr"
 	"github.com/twmb/franz-go/pkg/kgo"
-	"github.com/twmb/franz-go/pkg/sasl"
 	"github.com/twmb/franz-go/pkg/sasl/plain"
 	"github.com/twmb/franz-go/pkg/sasl/scram"
 
@@ -35,35 +34,14 @@ type Sink struct {
 
 var _ outbox.Sink = (*Sink)(nil)
 
-// Option configures the broker connection.
-type Option func(*options) error
-
-type options struct {
-	tls  *tls.Config
-	sasl sasl.Mechanism
-}
-
-// WithTLS encrypts connections using cfg (see TLSConfig).
-func WithTLS(cfg *tls.Config) Option {
-	return func(o *options) error { o.tls = cfg; return nil }
-}
-
-// WithSASL authenticates to the broker using PLAIN, SCRAM-SHA-256, or SCRAM-SHA-512 (Amazon MSK,
-// Confluent Cloud, Aiven... support at least one SCRAM mechanism or PLAIN over TLS).
-func WithSASL(mechanism, username, password string) Option {
-	return func(o *options) error {
-		switch strings.ToUpper(mechanism) {
-		case "PLAIN":
-			o.sasl = plain.Auth{User: username, Pass: password}.AsMechanism()
-		case "SCRAM-SHA-256":
-			o.sasl = scram.Auth{User: username, Pass: password}.AsSha256Mechanism()
-		case "SCRAM-SHA-512":
-			o.sasl = scram.Auth{User: username, Pass: password}.AsSha512Mechanism()
-		default:
-			return fmt.Errorf("unsupported SASL mechanism %q", mechanism)
-		}
-		return nil
-	}
+// Options configures the broker connection. The zero value connects in plaintext without authentication.
+type Options struct {
+	TLS *tls.Config // Encrypts connections when set (see TLSConfig).
+	// SASLMechanism authenticates to the broker: "" (none), PLAIN, SCRAM-SHA-256, or SCRAM-SHA-512
+	// (Amazon MSK, Confluent Cloud, Aiven... support at least one SCRAM mechanism or PLAIN over TLS).
+	SASLMechanism string
+	SASLUsername  string
+	SASLPassword  string
 }
 
 // TLSConfig creates a TLS 1.2+ client config trusting system CAs, or only CAs in
@@ -87,23 +65,26 @@ func TLSConfig(caFile string) (*tls.Config, error) {
 
 // NewSink creates a topic producer. franz-go enables idempotent production and acks=all by default:
 // producer retries do not duplicate broker records, and partition ordering is preserved.
-func NewSink(brokers []string, topic string, opts ...Option) (*Sink, error) {
-	var o options
-	for _, opt := range opts {
-		if err := opt(&o); err != nil {
-			return nil, err
-		}
-	}
+func NewSink(brokers []string, topic string, opts Options) (*Sink, error) {
 	kopts := []kgo.Opt{
 		kgo.SeedBrokers(brokers...),
 		kgo.DefaultProduceTopic(topic),
 		kgo.RecordDeliveryTimeout(deliveryTimeout),
 	}
-	if o.tls != nil {
-		kopts = append(kopts, kgo.DialTLSConfig(o.tls))
+	if opts.TLS != nil {
+		kopts = append(kopts, kgo.DialTLSConfig(opts.TLS))
 	}
-	if o.sasl != nil {
-		kopts = append(kopts, kgo.SASL(o.sasl))
+	user, pass := opts.SASLUsername, opts.SASLPassword
+	switch opts.SASLMechanism {
+	case "":
+	case "PLAIN":
+		kopts = append(kopts, kgo.SASL(plain.Auth{User: user, Pass: pass}.AsMechanism()))
+	case "SCRAM-SHA-256":
+		kopts = append(kopts, kgo.SASL(scram.Auth{User: user, Pass: pass}.AsSha256Mechanism()))
+	case "SCRAM-SHA-512":
+		kopts = append(kopts, kgo.SASL(scram.Auth{User: user, Pass: pass}.AsSha512Mechanism()))
+	default:
+		return nil, fmt.Errorf("unsupported SASL mechanism %q", opts.SASLMechanism)
 	}
 	client, err := kgo.NewClient(kopts...)
 	if err != nil {
@@ -132,12 +113,7 @@ func (s *Sink) Publish(ctx context.Context, msgs []outbox.Message) []error {
 			{Key: "event_id", Value: []byte(m.ID)},
 			{Key: "event_type", Value: []byte(m.Type)},
 		}
-		keys := make([]string, 0, len(m.Headers))
-		for k := range m.Headers {
-			keys = append(keys, k)
-		}
-		sort.Strings(keys) // Keep header order stable across sends.
-		for _, k := range keys {
+		for _, k := range slices.Sorted(maps.Keys(m.Headers)) { // Keep header order stable across sends.
 			headers = append(headers, kgo.RecordHeader{Key: k, Value: []byte(m.Headers[k])})
 		}
 		records[i] = &kgo.Record{Key: []byte(m.Key), Value: m.Payload, Headers: headers}

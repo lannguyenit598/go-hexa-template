@@ -100,7 +100,7 @@ Repositories return bare sentinels; services wrap context (`fmt.Errorf("get user
 
 **Malformed IDs return 404 rather than 400.** Service validation keeps malformed strings out of PostgreSQL (which would return `22P02`) and avoids exposing ID-format validation to clients.
 
-**`Email` is a value object.** Its private field blocks direct arbitrary string assignment. Use `domain.ParseEmail` for normalized, validated input and `domain.EmailFromStore` for persisted values; the zero value remains empty and unvalidated. `EmailFromStore` **intentionally does not revalidate**, so stricter future rules do not make legacy reads fail with 500. Other `User` fields stay exported: making every field private with getters adds disproportionate boilerplate.
+**`Email` is a value object.** Its private field blocks direct arbitrary string assignment. `NewUser` and `Apply` normalize and validate input; `domain.EmailFromStore` restores persisted values; the zero value remains empty and unvalidated. `EmailFromStore` **intentionally does not revalidate**, so stricter future rules do not make legacy reads fail with 500. Other `User` fields stay exported: making every field private with getters adds disproportionate boilerplate.
 
 **`Clock` and `IDGenerator` are ports.** Service tests are deterministic. The real clock truncates to microseconds for PostgreSQL precision. UUIDv7 from `google/uuid` is time-ordered to reduce B-tree fragmentation.
 
@@ -116,7 +116,7 @@ Repositories return bare sentinels; services wrap context (`fmt.Errorf("get user
 
 Events `user.registered` / `user.updated` / `user.deleted` ([contract](events.md)) were added **without changing `internal/core`**:
 
-1. With `postgres.WithOutbox()`, each successful Create/Update/Delete writes one outbox row in the same transaction. `port.UserRepository` stays unchanged; `repotest` runs in both modes.
+1. With `postgres.NewUserRepository(pool, true)`, each successful Create/Update/Delete writes one outbox row in the same transaction. `port.UserRepository` stays unchanged; `repotest` runs in both modes.
 2. `internal/outbox` defines Source, Sink, and the Relay loop without PostgreSQL/Kafka knowledge. `postgres.OutboxSource` implements Source with FOR UPDATE SKIP LOCKED; `kafka.Sink` implements Sink. Results are per message: mark success, park permanent rejections (`parked_at`) without blocking the queue, retry temporary failures.
 3. `internal/app` wires `userapi relay` as a separate process.
 

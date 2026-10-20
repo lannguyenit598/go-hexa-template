@@ -99,18 +99,16 @@ func serveRelayHealth(ctx context.Context, cfg config.Config, opts Options, rela
 func newSink(ctx context.Context, cfg config.Config) (outbox.Sink, func(), error) {
 	switch cfg.Events.Sink {
 	case config.EventsSinkKafka:
-		var opts []kafka.Option
-		if ev := cfg.Events; ev.KafkaTLS {
+		ev := cfg.Events
+		opts := kafka.Options{SASLMechanism: ev.KafkaSASLMechanism, SASLUsername: ev.KafkaSASLUsername, SASLPassword: ev.KafkaSASLPassword}
+		if ev.KafkaTLS {
 			tlsCfg, err := kafka.TLSConfig(ev.KafkaTLSCAFile)
 			if err != nil {
 				return nil, nil, err
 			}
-			opts = append(opts, kafka.WithTLS(tlsCfg))
+			opts.TLS = tlsCfg
 		}
-		if ev := cfg.Events; ev.KafkaSASLMechanism != "" {
-			opts = append(opts, kafka.WithSASL(ev.KafkaSASLMechanism, ev.KafkaSASLUsername, ev.KafkaSASLPassword))
-		}
-		sink, err := kafka.NewSink(cfg.Events.KafkaBrokers, cfg.Events.KafkaTopic, opts...)
+		sink, err := kafka.NewSink(ev.KafkaBrokers, ev.KafkaTopic, opts)
 		if err != nil {
 			return nil, nil, err
 		}

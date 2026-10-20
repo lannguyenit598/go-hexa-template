@@ -22,7 +22,7 @@ func TestClock_IsUTCWithMicrosecondPrecision(t *testing.T) {
 }
 
 func TestUUIDv7_FormatUniqueAndMonotonic(t *testing.T) {
-	g := system.NewUUIDv7()
+	g := system.UUIDv7{}
 	seen := make(map[string]struct{}, 10000)
 	prev := ""
 	for i := 0; i < 10000; i++ {

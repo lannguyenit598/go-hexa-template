@@ -17,21 +17,20 @@ grep -rl github.com/example/userapi --include='*.go' --include='.golangci.yml' .
 
 # Rename the command directory, binary, image, development database/role, PostgreSQL application_name,
 # OpenTelemetry service.name, logs, documentation, and Claude Code configuration.
-# Leave migrations (their comments do not affect behavior) and historical documents unchanged.
+# Leave migrations unchanged (their comments do not affect behavior).
 git mv cmd/userapi cmd/$NAME
-git grep -l userapi -- ':!docs/superpowers' ':!go.sum' ':!internal/adapter/outbound/postgres/migrations' \
+git grep -l userapi -- ':!go.sum' ':!internal/adapter/outbound/postgres/migrations' \
   | xargs sed -i "s/userapi/$NAME/g"
 
 make check
 ```
 
-On macOS, use `sed -i ''` instead of `sed -i`. This procedure was previously tested with build, lint (including depguard enforcement under the new path), and tests passing; `userapi` remained only in migrations and docs/superpowers/.
+On macOS, use `sed -i ''` instead of `sed -i`. This procedure was previously tested with build, lint (including depguard enforcement under the new path), and tests passing; `userapi` remained only in migrations.
 
 Then update manually:
 - `LICENSE`: owner and year.
 - Title and introduction in both README.md and README.vi.md.
 - KAFKA_TOPIC defaults to users; change its default in internal/config/config.go, .env.example, and docs/operations.md if the service publishes elsewhere.
-- Remove docs/superpowers/: it records the template's history, not the new project's.
 
 ## 2. Remove unused features
 
@@ -39,7 +38,7 @@ Each feature below can be disabled by configuration. Delete code only when certa
 
 | Feature | Disable with | Remove entirely |
 |---|---|---|
-| Events (outbox, relay, Kafka) | EVENTS_SINK=none (default) | internal/outbox, internal/adapter/outbound/kafka, internal/app/relay.go, postgres/outbox*.go, WithOutbox, cmd relay branch, docs/events.md, outbox/outbound-adapters-no-broker rules and franz-go entries in .golangci.yml, .claude/rules/messaging.md. Retain migrations 0003/0004 if applied; they may be removed for a new database |
+| Events (outbox, relay, Kafka) | EVENTS_SINK=none (default) | internal/outbox, internal/adapter/outbound/kafka, internal/app/relay.go, postgres/outbox*.go, the outbox flag of postgres.NewUserRepository, cmd relay branch, docs/events.md, outbox/outbound-adapters-no-broker rules and franz-go entries in .golangci.yml, .claude/rules/messaging.md. Retain migrations 0003/0004 if applied; they may be removed for a new database |
 | In-memory repository | STORAGE=postgres everywhere | Keep it: service and HTTP tests use it |
 
 ## 3. Configure GitHub
