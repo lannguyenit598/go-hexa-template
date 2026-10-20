@@ -3,6 +3,8 @@ version: "2"
 linters:
   enable:
     - depguard # thực thi quy tắc phụ thuộc của kiến trúc hexagonal (xem rules bên dưới)
+    - forbidigo # core không dùng đồng hồ/logger toàn cục (chỉ áp dụng cho internal/core, xem exclusions)
+    - gochecknoglobals # core không có state toàn cục (chỉ áp dụng cho internal/core, xem exclusions)
     - errorlint # so sánh lỗi bằng errors.Is/As, wrap bằng %w
     - bodyclose
     - noctx # không gọi I/O mạng mà thiếu context
@@ -12,7 +14,8 @@ linters:
   settings:
     depguard:
       rules:
-        # Core (domain, port, service) chỉ được phụ thuộc thư viện chuẩn và chính nó.
+        # Core (domain, port, service) chỉ được phụ thuộc thư viện chuẩn và chính nó, trừ những
+        # package thư viện chuẩn thuộc về adapter (HTTP, SQL) hoặc composition root (môi trường).
         # Test của core được phép dùng adapter (ví dụ repository in-memory) nên loại trừ $test.
         core:
           files:
@@ -20,7 +23,14 @@ linters:
             - "!$test"
           allow:
             - $gostd
-            - github.com/example/userapi/internal/core
+            - github.com/example/userapi/internal/core/
+          deny:
+            - pkg: net/http
+              desc: the core must not know about HTTP; map errors in the inbound adapter
+            - pkg: database/sql
+              desc: the core must not know about the database; declare a port instead
+            - pkg: os
+              desc: configuration and the environment belong to the composition root
         # Adapter inbound không được biết storage; adapter outbound không được biết transport.
         inbound-adapters:
           files:
@@ -30,6 +40,12 @@ linters:
             - pkg: github.com/example/userapi/internal/adapter/outbound
               desc: inbound adapters must only talk to the core through ports
             - pkg: github.com/jackc/pgx
+              desc: inbound adapters must not know about the database
+            - pkg: database/sql
+              desc: inbound adapters must not know about the database
+            - pkg: github.com/pressly/goose
+              desc: inbound adapters must not know about the database
+            - pkg: github.com/exaring/otelpgx
               desc: inbound adapters must not know about the database
             - pkg: github.com/example/userapi/internal/app
               desc: only cmd may depend on the composition root
@@ -66,12 +82,63 @@ linters:
               desc: platform packages must not depend on the core
             - pkg: github.com/example/userapi/internal/app
               desc: only cmd may depend on the composition root
+        # cmd chỉ đọc config, tạo logger, bắt tín hiệu và gọi internal/app; adapter được lắp trong internal/app.
+        cmd:
+          files:
+            - "**/cmd/**"
+            - "!$test"
+          deny:
+            - pkg: github.com/example/userapi/internal/adapter
+              desc: adapters are wired in internal/app, not in cmd
+            - pkg: github.com/example/userapi/internal/core
+              desc: the core is wired in internal/app, not in cmd
+            - pkg: github.com/jackc/pgx
+              desc: adapters are wired in internal/app, not in cmd
+            - pkg: github.com/labstack/echo
+              desc: adapters are wired in internal/app, not in cmd
+        # Mọi package khác (kể cả package mới như internal/worker): chỉ composition root được biết adapter.
+        # Thêm một loại package mới có quyền import adapter thì phải thêm rule riêng cho nó.
+        everything-else:
+          files:
+            - $all
+            - "!**/internal/app/**"
+            - "!**/internal/adapter/**"
+            - "!**/cmd/**"
+            - "!$test"
+          deny:
+            - pkg: github.com/example/userapi/internal/adapter
+              desc: only the composition root (internal/app) may depend on adapters
+            - pkg: github.com/example/userapi/internal/app
+              desc: only cmd may depend on the composition root
+            - pkg: github.com/jackc/pgx
+              desc: only the postgres adapter may use the database driver
+            - pkg: github.com/pressly/goose
+              desc: only the postgres adapter may run migrations
+            - pkg: github.com/labstack/echo
+              desc: only the HTTP adapter may use the HTTP framework
+    forbidigo:
+      forbid:
+        - pattern: ^time\.Now$
+          msg: inject port.Clock instead of reading the wall clock in the core
+        - pattern: ^slog\.(Debug|Info|Warn|Error|Log|Default|SetDefault)(Context)?$
+          msg: use the injected *slog.Logger instead of the global logger
     gosec:
       excludes:
         - G115 # chuyển đổi số nguyên có kiểm tra phạm vi ở nơi parse (config)
   exclusions:
     presets:
       - std-error-handling
+    rules:
+      # Hai linter này thực thi quy tắc riêng của core; ngoài core (adapter, composition root, test)
+      # đọc đồng hồ thật hay có biến package-level là hợp lệ.
+      - path-except: internal/core/
+        linters:
+          - forbidigo
+          - gochecknoglobals
+      - path: _test\.go
+        linters:
+          - forbidigo
+          - gochecknoglobals
 
 formatters:
   enable:

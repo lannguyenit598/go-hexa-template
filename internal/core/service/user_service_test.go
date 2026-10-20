@@ -258,8 +258,37 @@ func TestUpdate_EmptyPatchIsNoOp(t *testing.T) {
 	}
 }
 
+// spyRepo đếm số lần các method nhận ID của repository bị gọi.
+type spyRepo struct {
+	port.UserRepository
+	calls int
+}
+
+func (r *spyRepo) GetByID(ctx context.Context, id domain.UserID) (domain.User, error) {
+	r.calls++
+	return r.UserRepository.GetByID(ctx, id)
+}
+
+func (r *spyRepo) Update(ctx context.Context, u domain.User, expected int64) error {
+	r.calls++
+	return r.UserRepository.Update(ctx, u, expected)
+}
+
+func (r *spyRepo) Delete(ctx context.Context, id domain.UserID) error {
+	r.calls++
+	return r.UserRepository.Delete(ctx, id)
+}
+
+// ID không hợp lệ phải bị chặn ở service, trước khi tới repository: PostgreSQL sẽ báo lỗi
+// 22P02 (thành 500) thay vì "không tìm thấy" nếu nhận chuỗi rác.
 func TestInvalidIDsAreNotFoundForEveryUseCase(t *testing.T) {
-	svc, _ := newSUT()
+	repo := &spyRepo{UserRepository: memory.NewUserRepository()}
+	svc := service.NewUserService(repo, &seqIDs{}, &fakeClock{}, nil)
+	t.Cleanup(func() {
+		if repo.calls != 0 {
+			t.Errorf("repository was called %d times with invalid IDs", repo.calls)
+		}
+	})
 	name := "x"
 	for _, id := range []string{"not-a-uuid", "", "0192F3A4-5B6C-7D8E-9F01-23456789ABCD"} {
 		if _, err := svc.Get(ctx, id); !errors.Is(err, port.ErrNotFound) {

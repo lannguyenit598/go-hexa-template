@@ -2,9 +2,24 @@ package system_test
 
 import (
 	"testing"
+	"time"
 
 	"github.com/example/userapi/internal/adapter/outbound/system"
 )
+
+// PostgreSQL lưu timestamptz tới micro giây: đồng hồ phải làm tròn sẵn, nếu không giá trị
+// trả về lúc tạo sẽ khác giá trị đọc lại từ database (ETag/so sánh thời gian lệch nhau).
+func TestClock_IsUTCWithMicrosecondPrecision(t *testing.T) {
+	for range 1000 {
+		now := system.Clock{}.Now()
+		if now.Location() != time.UTC {
+			t.Fatalf("location = %v, want UTC", now.Location())
+		}
+		if now.Nanosecond()%1000 != 0 {
+			t.Fatalf("%v has sub-microsecond precision", now)
+		}
+	}
+}
 
 func TestUUIDv7_FormatUniqueAndMonotonic(t *testing.T) {
 	g := system.NewUUIDv7()

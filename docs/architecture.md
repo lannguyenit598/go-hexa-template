@@ -44,12 +44,18 @@ Quy tắc được **CI thực thi tự động** bằng `depguard` (`.golangci.
 
 | Rule | Ràng buộc |
 |---|---|
-| `core` | `internal/core/**` chỉ được import thư viện chuẩn và chính `internal/core` |
-| `inbound-adapters` | Không import adapter outbound, driver database hay `internal/app` |
+| `core` | `internal/core/**` chỉ được import thư viện chuẩn và chính `internal/core/...`, trừ `net/http`, `database/sql` và `os` (HTTP, SQL và biến môi trường thuộc về adapter và composition root) |
+| `inbound-adapters` | Không import adapter outbound, `internal/app`, hay bất kỳ package database nào (`pgx`, `database/sql`, `goose`, `otelpgx`) |
 | `outbound-adapters` | Không import adapter inbound, Echo, adapter outbound khác, bộ test `repotest` hay `internal/app` |
 | `platform` | `internal/config`, `internal/observability` không import core, adapter hay `internal/app` |
+| `cmd` | `cmd/**` không import adapter, core, `pgx` hay Echo: việc lắp ráp nằm trong `internal/app` |
+| `everything-else` | Mọi package còn lại, kể cả package mới (ví dụ `internal/worker`), không import adapter, `internal/app`, `pgx`, `goose` hay Echo. Package mới cần quyền đó thì phải có rule riêng |
 
-Mọi rule đều bỏ qua file `*_test.go`, vì test được phép dùng adapter làm test double (ví dụ test của service dùng repository in-memory).
+Mọi rule đều bỏ qua file `*_test.go`, vì test được phép dùng adapter làm test double (ví dụ test của service dùng repository in-memory). Hướng import *bên trong* core (`domain` ← `port` ← `service`) không cần rule: import ngược sẽ tạo vòng import, và Go từ chối biên dịch.
+
+Ngoài depguard, hai linter chỉ áp dụng cho `internal/core` (trừ test) giữ quy tắc "core không có state toàn cục":
+- `forbidigo` cấm `time.Now` (dùng `port.Clock`) và logger toàn cục `slog.Info`/`slog.Default`... (dùng `*slog.Logger` được inject);
+- `gochecknoglobals` cấm biến package-level, trừ sentinel error (`ErrXxx`) và `var _ Interface = ...`.
 
 ## Luồng một request `POST /api/v1/users`
 
