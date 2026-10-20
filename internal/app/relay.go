@@ -26,17 +26,18 @@ func RunRelay(ctx context.Context, cfg config.Config, logger *slog.Logger, opts 
 	}
 	defer flushTelemetry()
 
-	pool, err := connectPostgres(ctx, cfg, logger)
-	if err != nil {
-		return err
-	}
-	defer pool.Close()
-
+	// Broker trước database: cấu hình sink sai (kể cả quên nhánh trong newSink) lộ ra ngay.
 	sink, closeSink, err := newSink(ctx, cfg)
 	if err != nil {
 		return err
 	}
 	defer closeSink()
+
+	pool, err := connectPostgres(ctx, cfg, logger)
+	if err != nil {
+		return err
+	}
+	defer pool.Close()
 
 	logger.Info("starting outbox relay", "sink", cfg.Events.Sink, "version", opts.Version)
 	relay := &outbox.Relay{

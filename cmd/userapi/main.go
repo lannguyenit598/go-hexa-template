@@ -5,6 +5,7 @@
 //
 //	userapi           chạy HTTP API
 //	userapi migrate   áp dụng migration PostgreSQL rồi thoát (dùng cho Job / initContainer)
+//	userapi relay     chuyển sự kiện từ outbox lên broker (EVENTS_SINK), chạy như Deployment riêng
 package main
 
 import (

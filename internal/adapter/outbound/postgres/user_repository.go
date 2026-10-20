@@ -209,12 +209,13 @@ func (r *UserRepository) Update(ctx context.Context, u domain.User, expectedVers
 
 func (r *UserRepository) Delete(ctx context.Context, id domain.UserID) error {
 	return mapError(r.write(ctx, func(q querier) error {
-		// version cuối cùng đi kèm sự kiện user.deleted, để consumer xếp nó sau mọi bản cập nhật.
 		var version int64
 		if err := q.QueryRow(ctx, `DELETE FROM users WHERE id = $1 RETURNING version`, id.String()).Scan(&version); err != nil {
 			return err // pgx.ErrNoRows => port.ErrNotFound qua mapError
 		}
-		return r.appendEvent(ctx, q, eventUserDeleted, id, version, time.Now().UTC().Truncate(time.Microsecond))
+		// user.deleted mang version cuối + 1: version của mọi sự kiện của một user tăng ngặt, nên
+		// consumer bỏ bản cũ theo version mà không bỏ mất lệnh xoá.
+		return r.appendEvent(ctx, q, eventUserDeleted, id, version+1, time.Now().UTC().Truncate(time.Microsecond))
 	}))
 }
 

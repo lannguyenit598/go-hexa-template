@@ -105,7 +105,7 @@ api.http                     sample requests
 ```bash
 make help               # list all commands
 make test               # unit + HTTP + lifecycle tests, no database needed
-make test-integration   # adds tests against a real PostgreSQL (TRUNCATEs the users table in the docker compose DB!)
+make test-integration   # adds tests against a real PostgreSQL (TRUNCATEs the users and outbox tables in the docker compose DB!)
 make lint               # golangci-lint, including depguard for the dependency rule
 make build              # build the binary into ./bin, stamped with the git version
 ```
@@ -132,7 +132,7 @@ The repo uses the placeholder module path `github.com/example/userapi`. To switc
 NEW=github.com/<you>/userapi
 go mod edit -module $NEW
 # .golangci.yml contains package paths in its depguard rules: if you skip it, lint
-# stays green but the architecture's dependency rule silently stops being checked.
+# reports false errors in the core and the rules that block wrong imports silently stop working.
 grep -rl github.com/example/userapi --include='*.go' --include='.golangci.yml' . \
   | xargs sed -i "s#github.com/example/userapi#$NEW#g"
 go build ./... && go test ./... && golangci-lint run ./...

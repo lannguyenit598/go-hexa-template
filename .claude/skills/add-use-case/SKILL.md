@@ -32,7 +32,7 @@ So với hợp đồng hiện tại trong `docs/api.md`. Nếu đổi hành vi �
 
 1. Thêm subtest vào `internal/adapter/outbound/repotest/contract.go`.
 2. Chạy và thấy fail: `go test ./internal/adapter/outbound/memory/`.
-3. Hiện thực trong `memory`, rồi `postgres` (SQL có tham số, dịch lỗi qua `mapError`; cần đổi schema thì dùng `/add-migration`).
+3. Hiện thực trong `memory`, rồi `postgres` (SQL có tham số, dịch lỗi qua `mapError`; cần đổi schema thì dùng `/add-migration`). Lệnh **ghi** mới trong `postgres` đi qua `r.write` và gọi `r.appendEvent` khi thành công, kèm test trong `outbox_test.go` (xem `.claude/rules/messaging.md`).
 4. Chạy cả hai, kèm PostgreSQL: `TEST_DATABASE_URL=... go test ./internal/adapter/outbound/...`
 
 ## 4. Service (`internal/core/service`)
@@ -56,6 +56,7 @@ So với hợp đồng hiện tại trong `docs/api.md`. Nếu đổi hành vi �
 - `docs/api.md`: endpoint, request/response, thêm dòng vào bảng lỗi kèm nguyên văn `detail`.
 - `api.http`: một request mẫu.
 - Thêm port/adapter mới thì cập nhật `docs/architecture.md`.
+- Lệnh ghi mới sinh loại sự kiện mới, hoặc đổi field của sự kiện, thì cập nhật `docs/events.md`.
 - Kiểm chứng bằng server thật: `go run ./cmd/userapi`, gọi bằng `curl` từng tình huống ở bước 0, so status và body với những gì vừa ghi.
 
 ## 7. Hoàn tất

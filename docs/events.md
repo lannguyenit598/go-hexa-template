@@ -18,7 +18,7 @@ Lần ghi không đổi dữ liệu (PATCH với giá trị như cũ) hoặc th�
 |---|---|---|
 | `user.registered` | `POST /api/v1/users` thành công | 1 |
 | `user.updated` | `PATCH` làm thay đổi dữ liệu | Version mới sau thay đổi |
-| `user.deleted` | `DELETE` thành công | Version cuối cùng trước khi xoá |
+| `user.deleted` | `DELETE` thành công | Version cuối cùng trước khi xoá + 1 |
 
 ## Message trên Kafka
 
@@ -28,7 +28,7 @@ Lần ghi không đổi dữ liệu (PATCH với giá trị như cũ) hoặc th�
 | Key | `user_id`: mọi sự kiện của một user nằm trên cùng partition |
 | Header `event_id` | Như `event_id` trong value |
 | Header `event_type` | Như `event_type` trong value |
-| Header `traceparent`, `tracestate`, `baggage` | Trace context (W3C) của request HTTP đã gây ra sự kiện, nếu có. Consumer dùng nó để nối trace |
+| Header `traceparent`, `tracestate` | Trace context (W3C) của request HTTP đã gây ra sự kiện, nếu có. Consumer dùng nó để nối trace. Header `baggage` của request **không** được chuyển tiếp, vì client tự đặt được giá trị tuỳ ý trong đó |
 | Value | JSON, schema bên dưới |
 
 ```json
@@ -55,8 +55,12 @@ Lần ghi không đổi dữ liệu (PATCH với giá trị như cũ) hoặc th�
 
 ## Cam kết với consumer
 
-- **Giao ít nhất một lần.** Relay có thể gửi lại một sự kiện, ví dụ khi tiến trình chết sau khi Kafka đã nhận nhưng trước khi đánh dấu outbox. Bỏ qua bản trùng theo `event_id`, hoặc theo `version`: sự kiện có `version` không lớn hơn version đã xử lý của user đó là cũ.
-- **Thứ tự theo từng user** khi chạy một relay. Nhiều relay song song không bao giờ gửi trùng nhau, nhưng có thể gửi sự kiện của cùng một user lệch thứ tự; consumer dựa vào `version` thì không bị ảnh hưởng. `user.deleted` mang version cuối cùng, nên một `user.updated` đến muộn có version không lớn hơn sẽ bị bỏ qua.
+- **`version` tăng đúng 1 qua mỗi sự kiện của một user:** `user.registered` là 1, mỗi `user.updated` tăng 1, `user.deleted` là version cuối + 1. Consumer nên dựa vào nó:
+  - `version` không lớn hơn version đã xử lý của user đó: bản trùng hoặc bản cũ, bỏ qua;
+  - `version` lớn hơn version đã xử lý + 1: có sự kiện ở giữa chưa tới (đến lệch thứ tự, hoặc bị tách riêng, xem dưới). Gọi `GET /api/v1/users/{user_id}` để lấy trạng thái hiện tại.
+- **Giao ít nhất một lần.** Relay có thể gửi lại một sự kiện, ví dụ khi tiến trình chết sau khi Kafka đã nhận nhưng trước khi đánh dấu outbox. Bỏ trùng theo `version` như trên, hoặc theo `event_id`.
+- **Thứ tự theo từng user.** Với một relay, sự kiện của một user được gửi theo thứ tự commit. Có hai trường hợp hiếm làm lệch thứ tự: chạy nhiều relay song song, và một lô bị broker từ chối một phần rồi được gửi lại. Consumer dựa vào `version` không bị ảnh hưởng: sự kiện đến muộn có version nhỏ hơn bị bỏ qua.
+- **Sự kiện bị broker từ chối vĩnh viễn** (ví dụ lớn hơn giới hạn của topic) được tách riêng thay vì chặn mọi sự kiện phía sau. Consumer sẽ không nhận sự kiện đó cho tới khi người vận hành xử lý (xem [operations.md](operations.md#phát-sự-kiện)); nhờ `version`, consumer thấy được khoảng trống.
 - **Tương thích ngược trong cùng `schema_version`.** Chỉ *thêm* field; không đổi tên, không đổi kiểu, không xoá field. Consumer phải bỏ qua field không biết. Thay đổi không tương thích sẽ tăng `schema_version`.
 
 ## Thêm loại sự kiện

@@ -31,7 +31,7 @@ flowchart LR
     SYS -.hiện thực.-> OP
     PG -.đọc outbox.-> RELAY
     RELAY --> KAFKA
-    ROOT["cmd/userapi + internal/app<br/>composition root"] --> HTTP & SVC & MEM & PG & SYS & RELAY
+    ROOT["cmd/userapi + internal/app<br/>composition root"] --> HTTP & SVC & MEM & PG & SYS & RELAY & KAFKA
 ```
 
 ## Quy tắc phụ thuộc
@@ -49,10 +49,12 @@ Quy tắc được **CI thực thi tự động** bằng `depguard` (`.golangci.
 | Rule | Ràng buộc |
 |---|---|
 | `core` | `internal/core/**` chỉ được import thư viện chuẩn và chính `internal/core/...`, trừ `net/http`, `database/sql` và `os` (HTTP, SQL và biến môi trường thuộc về adapter và composition root) |
-| `inbound-adapters` | Không import adapter outbound, `internal/app`, bất kỳ package database nào (`pgx`, `database/sql`, `goose`, `otelpgx`), hay client Kafka (`franz-go`) |
+| `inbound-adapters` | Không import adapter outbound, `internal/app`, bất kỳ package database nào (`pgx`, `database/sql`, `goose`, `otelpgx`), client Kafka (`franz-go`) hay `internal/outbox` |
 | `outbound-adapters` | Không import adapter inbound, Echo, adapter outbound khác, bộ test `repotest` hay `internal/app` |
-| `platform` | `internal/config`, `internal/observability` không import core, adapter hay `internal/app` |
-| `cmd` | `cmd/**` không import adapter, core, `pgx`, Echo hay `franz-go`: việc lắp ráp nằm trong `internal/app` |
+| `outbound-adapters-no-broker` | Adapter outbound, trừ `kafka`, không import `franz-go`: sự kiện đi qua outbox, không publish thẳng |
+| `outbox` | `internal/outbox` chỉ dùng thư viện chuẩn: không biết database, broker hay domain |
+| `platform` | `internal/config`, `internal/observability` không import core, adapter, `internal/outbox` hay `internal/app` |
+| `cmd` | `cmd/**` không import adapter, core, `pgx`, `goose`, Echo hay `franz-go`: việc lắp ráp nằm trong `internal/app` |
 | `everything-else` | Mọi package còn lại, kể cả `internal/outbox` và package mới (ví dụ `internal/worker`), không import adapter, `internal/app`, `pgx`, `goose`, Echo hay `franz-go`. Package mới cần quyền đó thì phải có rule riêng |
 
 Mọi rule đều bỏ qua file `*_test.go`, vì test được phép dùng adapter làm test double (ví dụ test của service dùng repository in-memory). Hướng import *bên trong* core (`domain` ← `port` ← `service`) không cần rule: import ngược sẽ tạo vòng import, và Go từ chối biên dịch.
@@ -115,7 +117,7 @@ Repository trả sentinel trần; service wrap kèm ngữ cảnh (`fmt.Errorf("g
 Sự kiện `user.registered` / `user.updated` / `user.deleted` (hợp đồng: [events.md](events.md)) được thêm **mà không sửa dòng nào trong `internal/core`**:
 
 1. Adapter postgres, khi được lắp với `postgres.WithOutbox()`, ghi một bản ghi vào bảng `outbox` trong cùng transaction với mỗi lần `Create`/`Update`/`Delete` thành công. Hợp đồng của `port.UserRepository` không đổi; `repotest` chạy cho cả hai chế độ.
-2. `internal/outbox` định nghĩa `Source` và `Sink` cùng vòng lặp `Relay`, không biết PostgreSQL hay Kafka. `postgres.OutboxSource` hiện thực `Source` (`FOR UPDATE SKIP LOCKED`); `kafka.Sink` hiện thực `Sink`.
+2. `internal/outbox` định nghĩa `Source` và `Sink` cùng vòng lặp `Relay`, không biết PostgreSQL hay Kafka. `postgres.OutboxSource` hiện thực `Source` (`FOR UPDATE SKIP LOCKED`); `kafka.Sink` hiện thực `Sink`. Kết quả được xử lý theo từng message: thành công thì đánh dấu đã gửi, bị broker từ chối vĩnh viễn thì tách riêng (`parked_at`) để không chặn hàng đợi, lỗi tạm thời thì thử lại.
 3. `internal/app` lắp chúng thành lệnh `userapi relay`, chạy như một tiến trình riêng.
 
 Vì sao sinh sự kiện trong adapter mà không phải trong domain: mỗi lần repository ghi thành công tương ứng đúng một thay đổi nghiệp vụ (service không gọi `Update` khi dữ liệu không đổi, và lần ghi gặp xung đột version không ghi gì), nên adapter có đủ thông tin cho "loại thao tác + user + version". Sự kiện là **sự kiện mỏng**, không có email hay tên, để xoá user không kéo theo việc xoá dữ liệu trên broker.
@@ -140,7 +142,7 @@ Không cần sửa dòng nào trong `internal/core`.
 
 **Thêm transport mới** (ví dụ gRPC): tạo `internal/adapter/inbound/grpcapi` nhận vào `port.UserService`, ánh xạ lỗi của core (`port.ErrNotFound` → `codes.NotFound`, `domain.ErrEmailAlreadyExists` → `codes.AlreadyExists`, `port.ErrVersionConflict` → `codes.Aborted`, `domain.ValidationError` → `codes.InvalidArgument`), rồi khởi động song song trong `app.Run`.
 
-**Thêm broker khác** (ví dụ RabbitMQ, SQS): tạo adapter hiện thực `outbox.Sink`, thêm hằng vào `EventsSink` trong `internal/config/config.go` cùng nhánh validate, thêm nhánh trong `newSink` (`internal/app/relay.go`; quên thì relay từ chối khởi động với `unsupported events sink`), và thêm đường dẫn package vào rule `outbound-adapters`. Payload và header được chuyển nguyên vẹn, nên adapter không cần biết schema sự kiện.
+**Thêm broker khác** (ví dụ RabbitMQ, SQS): tạo adapter hiện thực `outbox.Sink`, thêm hằng vào `EventsSink` trong `internal/config/config.go` cùng nhánh validate, thêm nhánh trong `newSink` (`internal/app/relay.go`; quên thì relay từ chối khởi động với `unsupported events sink`), và thêm đường dẫn package vào rule `outbound-adapters` cùng ngoại lệ trong rule `outbound-adapters-no-broker`. Nhánh validate của sink mới phải yêu cầu `STORAGE=postgres` như nhánh `kafka`: outbox nằm trong PostgreSQL, thiếu điều kiện này thì `STORAGE=memory` lọt qua và API âm thầm không ghi sự kiện. Sink trả lỗi theo từng message và chỉ bọc `outbox.ErrPermanent` khi broker từ chối chính message đó. Payload và header được chuyển nguyên vẹn, nên adapter không cần biết schema sự kiện.
 
 **Nhận lệnh qua message** (consumer): tạo adapter inbound mới, ví dụ `internal/adapter/inbound/kafkaconsumer`, gọi `port.UserService` giống `httpapi` và ánh xạ lỗi của core (`domain.ValidationError` → dead-letter; `context.DeadlineExceeded`, lỗi kết nối → thử lại). Use case hiện có đã đủ cho idempotency: gặp lại lệnh tạo user trả `ErrEmailAlreadyExists`, lệnh sửa kèm `ExpectedVersion` trả `ErrVersionConflict`, lệnh xoá trả `ErrNotFound`. Commit offset sau khi xử lý xong. Cần một rule depguard riêng cho package này, vì `inbound-adapters` cấm `franz-go`.
 
@@ -151,7 +153,7 @@ Không cần sửa dòng nào trong `internal/core`.
 2. Nếu cần, thêm method vào `port.UserRepository` và thêm test vào `repotest`, để mọi adapter cùng bị kiểm tra.
 3. Hiện thực ở service và thêm handler.
 
-**Use case ghi nhiều repository trong một transaction** (ví dụ tạo user và ghi outbox event): thêm port Unit of Work *tường minh*, trong đó transaction được truyền qua kiểu dữ liệu, không giấu trong `context`:
+**Use case ghi nhiều repository trong một transaction** (ví dụ tạo user và tạo luôn workspace mặc định cho user đó): thêm port Unit of Work *tường minh*, trong đó transaction được truyền qua kiểu dữ liệu, không giấu trong `context`:
 
 ```go
 // port

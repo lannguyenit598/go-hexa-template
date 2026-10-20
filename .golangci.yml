@@ -49,6 +49,8 @@ linters:
               desc: inbound adapters must not know about the database
             - pkg: github.com/twmb/franz-go
               desc: inbound adapters must not know about the message broker; events go through the outbox
+            - pkg: github.com/example/userapi/internal/outbox
+              desc: events are written by the storage adapter inside its transaction, never from a transport
             - pkg: github.com/example/userapi/internal/app
               desc: only cmd may depend on the composition root
         # Mỗi adapter outbound độc lập: không import adapter outbound khác hay bộ test dùng chung.
@@ -84,8 +86,29 @@ linters:
               desc: platform packages must not depend on adapters
             - pkg: github.com/example/userapi/internal/core
               desc: platform packages must not depend on the core
+            - pkg: github.com/example/userapi/internal/outbox
+              desc: platform packages must not depend on the outbox relay
             - pkg: github.com/example/userapi/internal/app
               desc: only cmd may depend on the composition root
+        # Chỉ adapter kafka được dùng client Kafka: adapter khác publish thẳng lên broker là dual write.
+        outbound-adapters-no-broker:
+          files:
+            - "**/internal/adapter/outbound/**"
+            - "!**/internal/adapter/outbound/kafka/**"
+            - "!$test"
+          deny:
+            - pkg: github.com/twmb/franz-go
+              desc: only the kafka adapter may use the Kafka client; other adapters write events to the outbox
+        # internal/outbox chỉ định nghĩa Source/Sink và vòng lặp relay: không biết database, broker hay domain.
+        outbox:
+          files:
+            - "**/internal/outbox/**"
+            - "!$test"
+          allow:
+            - $gostd
+          deny:
+            - pkg: database/sql
+              desc: internal/outbox must not know the database; postgres.OutboxSource implements Source
         # cmd chỉ đọc config, tạo logger, bắt tín hiệu và gọi internal/app; adapter được lắp trong internal/app.
         cmd:
           files:
@@ -102,6 +125,8 @@ linters:
               desc: adapters are wired in internal/app, not in cmd
             - pkg: github.com/twmb/franz-go
               desc: adapters are wired in internal/app, not in cmd
+            - pkg: github.com/pressly/goose
+              desc: migrations run through internal/app (app.Migrate), not from cmd
         # Mọi package khác (kể cả package mới như internal/worker): chỉ composition root được biết adapter.
         # Thêm một loại package mới có quyền import adapter thì phải thêm rule riêng cho nó.
         everything-else:
@@ -130,9 +155,6 @@ linters:
           msg: inject port.Clock instead of reading the wall clock in the core
         - pattern: ^slog\.(Debug|Info|Warn|Error|Log|Default|SetDefault)(Context)?$
           msg: use the injected *slog.Logger instead of the global logger
-    gosec:
-      excludes:
-        - G115 # chuyển đổi số nguyên có kiểm tra phạm vi ở nơi parse (config)
   exclusions:
     presets:
       - std-error-handling

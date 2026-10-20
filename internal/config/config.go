@@ -129,6 +129,10 @@ func Load(lookup func(string) (string, bool)) (Config, error) {
 	if cfg.DB.MinConns < 0 || cfg.DB.MinConns > cfg.DB.MaxConns {
 		p.fail("DB_MIN_CONNS must be between 0 and DB_MAX_CONNS")
 	}
+	// statement_timeout được gửi theo mili giây: 0 < giá trị < 1ms sẽ thành 0, tức tắt timeout của server.
+	if t := cfg.DB.StatementTimeout; t > 0 && t < time.Millisecond {
+		p.fail("DB_STATEMENT_TIMEOUT must be 0 or at least 1ms")
+	}
 	if cfg.RequestTimeout <= 0 {
 		p.fail("REQUEST_TIMEOUT must be > 0")
 	}

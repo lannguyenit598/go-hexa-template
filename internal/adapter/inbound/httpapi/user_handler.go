@@ -75,33 +75,49 @@ func parseIfMatch(c *echo.Context) (int64, error) {
 	if raw == "*" {
 		return 0, nil
 	}
-	if len(raw) >= 3 && raw[0] == '"' && raw[len(raw)-1] == '"' {
-		if v, err := strconv.ParseInt(raw[1:len(raw)-1], 10, 64); err == nil && v > 0 {
+	// So khớp strong là so từng ký tự với ETag đã cấp ("<version>"), nên chỉ nhận đúng dạng đó:
+	// không dấu, không số 0 ở đầu, không khoảng trắng ("+2", "02" không khớp "2").
+	if len(raw) >= 3 && raw[0] == '"' && raw[len(raw)-1] == '"' && isCanonicalVersion(raw[1:len(raw)-1]) {
+		if v, err := strconv.ParseInt(raw[1:len(raw)-1], 10, 64); err == nil {
 			return v, nil
 		}
 	}
 	return 0, errPreconditionFailed
 }
 
+// isCanonicalVersion: chuỗi là số nguyên dương viết như strconv.FormatInt viết ra.
+func isCanonicalVersion(s string) bool {
+	if s == "" || s[0] < '1' || s[0] > '9' {
+		return false
+	}
+	for i := 1; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+	return true
+}
+
 var errPreconditionFailed = echo.NewHTTPError(http.StatusPreconditionFailed, "If-Match does not match the current version of the resource")
 
 // bindJSON đọc body JSON vào target. Khác echo.BindBody, nó chỉ nhận application/json (BindBody
-// còn nhận form và XML, khiến body sai định dạng bị bỏ qua âm thầm) và trả detail cho biết vì
-// sao body hỏng. Không có body (Content-Length 0) thì không làm gì.
+// còn nhận form và XML, khiến body sai định dạng bị bỏ qua âm thầm), so media type không phân biệt
+// hoa thường như RFC 9110 (BindBody thì có), và trả detail cho biết vì sao body hỏng. Không có
+// body (Content-Length 0) thì không làm gì.
 func bindJSON(c *echo.Context, target any) error {
 	req := c.Request()
 	if req.ContentLength == 0 {
 		return nil
 	}
 	mediaType, _, _ := strings.Cut(req.Header.Get(echo.HeaderContentType), ";")
-	if strings.TrimSpace(mediaType) != echo.MIMEApplicationJSON {
+	if !strings.EqualFold(strings.TrimSpace(mediaType), echo.MIMEApplicationJSON) {
 		return echo.ErrUnsupportedMediaType
 	}
-	err := echo.BindBody(c, target)
+	err := c.Echo().JSONSerializer.Deserialize(c, target)
 	if err == nil {
 		return nil
 	}
-	// BodyLimit báo vượt giới hạn qua lỗi đọc body, bị BindBody bọc thành 400.
+	// BodyLimit báo vượt giới hạn qua lỗi đọc body, bị Deserialize bọc thành 400.
 	if errors.Is(err, echo.ErrStatusRequestEntityTooLarge) {
 		return echo.ErrStatusRequestEntityTooLarge
 	}

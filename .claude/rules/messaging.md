@@ -13,6 +13,9 @@ paths:
 - Core không biết sự kiện tồn tại: `git diff main -- internal/core` phải rỗng trong mọi thay đổi chỉ liên quan tới sự kiện. Sự kiện cần thông tin chỉ service biết (người thực hiện, lý do, giá trị cũ) thì đọc mục "Phát sự kiện qua transactional outbox" trong `docs/architecture.md` trước.
 - Sự kiện mỏng: không đưa email, tên hay dữ liệu cá nhân khác vào payload, header, log hay trace.
 - Giao ít nhất một lần: không hứa "đúng một lần" trong tài liệu hay code; consumer bỏ trùng theo `event_id` hoặc `version`.
+- `version` của các sự kiện của một user tăng đúng 1 mỗi sự kiện (`user.deleted` = version cuối + 1). Sự kiện mới phải giữ tính chất này, vì consumer dùng nó để bỏ bản cũ và phát hiện khoảng trống.
+- Header sự kiện chỉ mang trace context (`propagation.TraceContext`), không dùng propagator toàn cục: nó gồm Baggage, mà baggage do client tự đặt.
+- `Sink.Publish` trả lỗi theo từng message. Chỉ bọc `outbox.ErrPermanent` khi broker từ chối chính message đó (kích thước, nội dung); lỗi mạng, topic, quyền là tạm thời. Phân loại sai thì sự kiện bị tách riêng oan (consumer mất sự kiện) hoặc chặn hàng đợi mãi.
 - Schema (`docs/events.md`): trong cùng `schema_version` chỉ được thêm field. Đổi tên, đổi kiểu, xoá field thì tăng `schema_version`. Đổi schema hay thêm loại sự kiện là đổi hợp đồng: cập nhật `docs/events.md` cùng commit.
-- `internal/outbox` chỉ biết `Source`/`Sink`, không import adapter, `pgx` hay `franz-go` (rule depguard `everything-else`). Broker mới = adapter mới hiện thực `outbox.Sink` + nhánh trong `newSink` (`internal/app/relay.go`).
+- `internal/outbox` chỉ biết `Source`/`Sink`, chỉ dùng thư viện chuẩn (rule depguard `outbox`): không import adapter, `pgx`, `franz-go` hay domain. Broker mới = adapter mới hiện thực `outbox.Sink` + nhánh trong `newSink` (`internal/app/relay.go`).
 - Test Kafka dùng `kfake` (cluster in-memory), không cần broker thật. Test outbox trên PostgreSQL dùng `pgtest.FreshSchemaDSN` và migrate schema riêng.

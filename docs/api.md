@@ -6,7 +6,7 @@ Tài liệu cho người gọi API. Base URL mặc định khi chạy local: `ht
 
 | Mục | Quy ước |
 |---|---|
-| Định dạng | JSON (`application/json`). Request có body (POST, PATCH) **phải** gửi `Content-Type: application/json` (được kèm tham số, ví dụ `; charset=utf-8`). Thiếu header hoặc mọi media type khác, kể cả form và XML, nhận 415 |
+| Định dạng | JSON (`application/json`). Request có body (POST, PATCH) **phải** gửi `Content-Type: application/json` (không phân biệt hoa thường, được kèm tham số, ví dụ `; charset=utf-8`). Thiếu header hoặc mọi media type khác, kể cả form và XML, nhận 415 |
 | Kích thước body | Tối đa 1 MiB, vượt quá trả 413 (kể cả body gửi chunked, không có `Content-Length`) |
 | Field lạ trong body | Bị bỏ qua, không báo lỗi |
 | ID | UUID v7 dạng chuẩn, chữ thường (`01a15359-aa28-7a00-a380-c47e52905707`). ID sai định dạng (kể cả UUID chữ hoa) được coi là không tồn tại: 404 |
@@ -120,7 +120,7 @@ Mỗi lần ghi kiểm tra `version` (optimistic locking), nên hai PATCH chạy
 |---|---|
 | Không có `If-Match` (hoặc `If-Match: *`) | Server tự đọc lại và áp dụng lại thay đổi, tổng cộng tối đa 3 lần thử. Vẫn xung đột thì trả **409** |
 | `If-Match: "<version>"` | Version hiện tại khác thì trả **412**, không thử lại. Client nên GET lại, cho người dùng xem dữ liệu mới, rồi quyết định |
-| `If-Match` là weak ETag (`W/"2"`) hoặc không đúng dạng `"<số>"` | Luôn trả **412** (theo RFC 9110, `If-Match` dùng so sánh strong) |
+| `If-Match` là weak ETag (`W/"2"`) hoặc không đúng nguyên văn dạng `"<số>"` mà server cấp (ví dụ `"+2"`, `"02"`) | Luôn trả **412** (theo RFC 9110, `If-Match` dùng so sánh strong: so từng ký tự) |
 | `If-Match` rỗng, hoặc nhiều ETag (danh sách `"1", "2"` hay nhiều dòng header) | Luôn trả **412**, kể cả khi danh sách có version hiện tại. Server chỉ nhận **một** ETag; từ chối an toàn hơn là coi như không có `If-Match` rồi ghi đè vô điều kiện |
 
 Client hiển thị form sửa cho người dùng nên lưu `ETag` từ lúc GET và gửi lại trong `If-Match`. Đó là cách duy nhất phát hiện việc người dùng sửa trên dữ liệu đã cũ.
