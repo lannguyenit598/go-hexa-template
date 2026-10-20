@@ -59,8 +59,9 @@ func TestLoad_Errors(t *testing.T) {
 		{"OUTBOX_RETENTION": "0s"},
 		{"KAFKA_SASL_MECHANISM": "GSSAPI"},
 		{"KAFKA_SASL_MECHANISM": "SCRAM-SHA-512"}, // Missing username/password.
-		{"KAFKA_SASL_MECHANISM": "PLAIN", "KAFKA_SASL_USERNAME": "u", "KAFKA_SASL_PASSWORD": "p"}, // PLAIN sends the password in cleartext and requires TLS.
-		{"KAFKA_TLS_CA_FILE": "/etc/ca.pem"},                                                      // CA configured without TLS.
+		{"KAFKA_SASL_MECHANISM": "SCRAM-SHA-512", "KAFKA_SASL_USERNAME": "u", "KAFKA_SASL_PASSWORD": "   "}, // Blank password counts as missing.
+		{"KAFKA_SASL_MECHANISM": "PLAIN", "KAFKA_SASL_USERNAME": "u", "KAFKA_SASL_PASSWORD": "p"},           // PLAIN sends the password in cleartext and requires TLS.
+		{"KAFKA_TLS_CA_FILE": "/etc/ca.pem"}, // CA configured without TLS.
 		{"KAFKA_TLS": "maybe"},
 	}
 	for _, c := range cases {
@@ -118,14 +119,14 @@ func TestLoad_KafkaSecurity(t *testing.T) {
 	cfg, err := config.Load(env(map[string]string{
 		"STORAGE": "postgres", "DATABASE_URL": "postgres://x", "EVENTS_SINK": "kafka", "KAFKA_BROKERS": "b:9096",
 		"KAFKA_TLS": "true", "KAFKA_TLS_CA_FILE": "/etc/kafka/ca.pem",
-		"KAFKA_SASL_MECHANISM": "scram-sha-512", "KAFKA_SASL_USERNAME": "relay", "KAFKA_SASL_PASSWORD": "s3cret",
+		"KAFKA_SASL_MECHANISM": "scram-sha-512", "KAFKA_SASL_USERNAME": "relay", "KAFKA_SASL_PASSWORD": " s3 cret ", // Credentials are used verbatim.
 	}))
 	if err != nil {
 		t.Fatal(err)
 	}
 	ev := cfg.Events
 	if !ev.KafkaTLS || ev.KafkaTLSCAFile != "/etc/kafka/ca.pem" || ev.KafkaSASLMechanism != "SCRAM-SHA-512" ||
-		ev.KafkaSASLUsername != "relay" || ev.KafkaSASLPassword != "s3cret" {
+		ev.KafkaSASLUsername != "relay" || ev.KafkaSASLPassword != " s3 cret " {
 		t.Fatalf("%+v", ev)
 	}
 }

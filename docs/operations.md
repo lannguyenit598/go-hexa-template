@@ -33,7 +33,7 @@ All configuration comes from environment variables. Invalid configuration exits 
 | `KAFKA_TLS` | `false` | Encrypt broker connections (TLS 1.2+, system CAs) | Boolean |
 | `KAFKA_TLS_CA_FILE` | (empty) | PEM broker CA file, replacing system CAs for private certificates | Requires KAFKA_TLS=true |
 | `KAFKA_SASL_MECHANISM` | (empty) | PLAIN, SCRAM-SHA-256, SCRAM-SHA-512; empty disables authentication | PLAIN requires KAFKA_TLS=true; case-insensitive |
-| `KAFKA_SASL_USERNAME`, `KAFKA_SASL_PASSWORD` | (empty) | Relay SASL credentials; put the password in a Secret, not the image | Required when KAFKA_SASL_MECHANISM is set |
+| `KAFKA_SASL_USERNAME`, `KAFKA_SASL_PASSWORD` | (empty) | Relay SASL credentials; put the password in a Secret, not the image. The password is used verbatim: a trailing newline (e.g. a Secret created from `echo pw > file`) breaks authentication | Required when KAFKA_SASL_MECHANISM is set |
 | `RELAY_HEALTH_ADDR` | `:8081` | userapi relay liveness HTTP address (GET /healthz) | |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | (empty) | OTLP/HTTP endpoint. OTel starts when this **or** OTEL_EXPORTER_OTLP_TRACES_ENDPOINT / OTEL_EXPORTER_OTLP_METRICS_ENDPOINT is set, unless OTEL_SDK_DISABLED=true. A traces-only endpoint still sends metrics to the SDK default localhost:4318 | Standard OTEL_* variables are supported, including OTEL_SERVICE_NAME, OTEL_TRACES_SAMPLER, OTEL_SDK_DISABLED |
 

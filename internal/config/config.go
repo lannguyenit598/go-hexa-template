@@ -110,7 +110,7 @@ func Load(lookup func(string) (string, bool)) (Config, error) {
 			KafkaTLSCAFile:     p.str("KAFKA_TLS_CA_FILE", ""),
 			KafkaSASLMechanism: strings.ToUpper(p.str("KAFKA_SASL_MECHANISM", "")),
 			KafkaSASLUsername:  p.str("KAFKA_SASL_USERNAME", ""),
-			KafkaSASLPassword:  p.str("KAFKA_SASL_PASSWORD", ""),
+			KafkaSASLPassword:  p.raw("KAFKA_SASL_PASSWORD"),
 			PollInterval:       p.duration("OUTBOX_POLL_INTERVAL", "1s"),
 			BatchSize:          int(p.int32("OUTBOX_BATCH_SIZE", 100)),
 			Retention:          p.duration("OUTBOX_RETENTION", "168h"),
@@ -173,7 +173,7 @@ func Load(lookup func(string) (string, bool)) (Config, error) {
 	switch ev := cfg.Events; ev.KafkaSASLMechanism {
 	case "":
 	case "PLAIN", "SCRAM-SHA-256", "SCRAM-SHA-512":
-		if ev.KafkaSASLUsername == "" || ev.KafkaSASLPassword == "" {
+		if ev.KafkaSASLUsername == "" || strings.TrimSpace(ev.KafkaSASLPassword) == "" {
 			p.fail("KAFKA_SASL_USERNAME and KAFKA_SASL_PASSWORD are required when KAFKA_SASL_MECHANISM is set")
 		}
 		if ev.KafkaSASLMechanism == "PLAIN" && !ev.KafkaTLS {
@@ -212,6 +212,12 @@ func (p *parser) str(key, def string) string {
 		return strings.TrimSpace(v)
 	}
 	return def
+}
+
+// raw returns the value verbatim: credentials may legitimately contain surrounding spaces.
+func (p *parser) raw(key string) string {
+	v, _ := p.lookup(key)
+	return v
 }
 
 func (p *parser) duration(key, def string) time.Duration {
