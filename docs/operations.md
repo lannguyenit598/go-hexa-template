@@ -4,27 +4,27 @@ Tài liệu cho người triển khai và vận hành `userapi`: cấu hình, tr
 
 ## Cấu hình
 
-Mọi cấu hình đọc từ biến môi trường. Cấu hình sai làm tiến trình dừng ngay khi khởi động, và mọi lỗi được báo cùng một lúc. Mẫu đầy đủ: [`.env.example`](../.env.example).
+Mọi cấu hình đọc từ biến môi trường. Cấu hình sai làm tiến trình dừng ngay khi khởi động (exit code 1), và mọi lỗi được báo cùng một lúc trên một dòng. Dòng này là text ra **stderr** (`ERROR invalid configuration error=...`), không phải JSON, vì logger JSON chỉ được dựng sau khi đọc xong cấu hình. Mẫu đầy đủ: [`.env.example`](../.env.example).
 
 | Biến | Mặc định | Ý nghĩa | Ràng buộc |
 |---|---|---|---|
 | `HTTP_ADDR` | `:8080` | Địa chỉ lắng nghe | |
-| `STORAGE` | `memory` | `memory` hoặc `postgres` | |
+| `STORAGE` | `memory` | `memory` hoặc `postgres` | Không phân biệt hoa thường |
 | `DATABASE_URL` | (trống) | URL PostgreSQL | Bắt buộc khi `STORAGE=postgres` và cho lệnh `migrate` |
-| `LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error` | |
+| `LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error` | Không phân biệt hoa thường; nhận cả dạng `warn+1` của `slog` |
 | `REQUEST_TIMEOUT` | `10s` | Timeout của context cho mỗi request | `> 0` |
 | `HTTP_IDLE_TIMEOUT` | `75s` | Thời gian giữ keep-alive connection rảnh | `> 0`; phải lớn hơn idle timeout của LB |
 | `SHUTDOWN_DELAY` | `0s` | Thời gian vẫn phục vụ sau SIGTERM trước khi đóng listener | `≥ 0`; Kubernetes: 5s–10s |
 | `SHUTDOWN_TIMEOUT` | `10s` | Thời gian chờ request đang chạy, tính sau `SHUTDOWN_DELAY` | `≥ 0` |
 | `TRUSTED_PROXIES` | (trống) | CIDR của LB/ingress, phân tách bằng dấu phẩy | CIDR hợp lệ |
-| `READINESS_CHECK_DB` | `false` | `/readyz` có ping database (timeout 500ms) hay không | `true`/`false` |
-| `DB_MAX_CONNS` | `10` | Số kết nối tối đa **mỗi pod** | `≥ 1` |
-| `DB_MIN_CONNS` | `0` | Số kết nối giữ sẵn | `0 ≤ DB_MIN_CONNS ≤ DB_MAX_CONNS` |
-| `DB_MAX_CONN_LIFETIME` | `30m` | Tuổi thọ tối đa của một kết nối (giúp cân bằng lại sau failover) | |
-| `DB_MAX_CONN_IDLE_TIME` | `5m` | Đóng kết nối rảnh quá lâu | |
-| `DB_STATEMENT_TIMEOUT` | `5s` | `statement_timeout` phía PostgreSQL cho kết nối của app | |
+| `READINESS_CHECK_DB` | `false` | `/readyz` có ping database (timeout 500ms) hay không | Giá trị boolean của Go: `true`/`false`, `1`/`0`, `t`/`f`... |
+| `DB_MAX_CONNS` | `10` | Số kết nối tối đa **mỗi pod**. Luôn được áp dụng, ghi đè `pool_max_conns` nếu có trong `DATABASE_URL` | `≥ 1` |
+| `DB_MIN_CONNS` | `0` | Số kết nối giữ sẵn. `0` = dùng giá trị của URL (`pool_min_conns`) hoặc mặc định của pgx | `0 ≤ DB_MIN_CONNS ≤ DB_MAX_CONNS` |
+| `DB_MAX_CONN_LIFETIME` | `30m` | Tuổi thọ tối đa của một kết nối (giúp cân bằng lại sau failover) | `≤ 0` = mặc định của pgx |
+| `DB_MAX_CONN_IDLE_TIME` | `5m` | Đóng kết nối rảnh quá lâu | `≤ 0` = mặc định của pgx |
+| `DB_STATEMENT_TIMEOUT` | `5s` | `statement_timeout` phía PostgreSQL cho kết nối của app. Vượt quá thì request trả 503 | `≤ 0` = không đặt (dùng cấu hình của server) |
 | `MIGRATE_ON_START` | `false` | Chạy migration khi app khởi động. Tiện cho dev; production dùng `userapi migrate` | |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | (trống) | Endpoint OTLP/HTTP. Trống = không export trace/metric | Các biến `OTEL_*` chuẩn khác cũng được hỗ trợ (`OTEL_SERVICE_NAME`, `OTEL_TRACES_SAMPLER`, `OTEL_SDK_DISABLED`…) |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | (trống) | Endpoint OTLP/HTTP. OpenTelemetry bật khi biến này **hoặc** `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` / `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT` có giá trị (và `OTEL_SDK_DISABLED` khác `true`). Chỉ đặt endpoint cho trace thì metric vẫn được gửi tới endpoint mặc định của SDK (`localhost:4318`) | Các biến `OTEL_*` chuẩn khác cũng được hỗ trợ (`OTEL_SERVICE_NAME`, `OTEL_TRACES_SAMPLER`, `OTEL_SDK_DISABLED`…) |
 
 Giá trị thời gian dùng cú pháp Go: `500ms`, `10s`, `5m`, `1h30m`.
 
@@ -58,7 +58,7 @@ Mặc định `/readyz` chỉ phản ánh trạng thái của chính pod (sẵn 
 
 ### Kích thước pool kết nối
 
-Mặc định của pgx là `max(4, runtime.NumCPU())`, và trong container `NumCPU` là số core của *node*, không phải CPU limit của pod. Luôn đặt `DB_MAX_CONNS` sao cho:
+App luôn đặt kích thước pool bằng `DB_MAX_CONNS`, không dùng mặc định của pgx (`max(4, runtime.NumCPU())`, mà trong container `NumCPU` là số core của *node*, không phải CPU limit của pod). Đặt `DB_MAX_CONNS` sao cho:
 
 ```
 DB_MAX_CONNS × (số replica tối đa khi HPA scale + số pod tạm thời khi deploy) < max_connections của PostgreSQL
@@ -96,15 +96,17 @@ func requireAuth(next echo.HandlerFunc) echo.HandlerFunc {
 Migration là file SQL trong `internal/adapter/outbound/postgres/migrations`, nhúng vào binary và chạy bằng [goose](https://github.com/pressly/goose):
 
 ```bash
-DATABASE_URL=postgres://... userapi migrate   # hoặc: make migrate
+DATABASE_URL='postgres://...?connect_timeout=10' userapi migrate
+# Chạy local với database của docker compose: make migrate (bỏ qua DATABASE_URL; đổi DB bằng make migrate DB_URL=...)
 ```
 
 - Bảng `goose_db_version` ghi lại version đã chạy; mỗi file chạy đúng một lần, trong transaction riêng.
 - Advisory lock giữ trên một kết nối duy nhất, nên nhiều Job/replica chạy `migrate` cùng lúc vẫn an toàn.
 - Phiên migration dùng kết nối riêng với `statement_timeout = 0` (tạo index có thể lâu) và `lock_timeout = 5s`: nếu `ALTER TABLE` phải chờ lock, nó thất bại sớm thay vì làm mọi query khác trên bảng xếp hàng phía sau.
-- Khi khởi động, app chỉ **đọc** trạng thái migration (không tạo bảng, không chạy DDL). Còn migration chưa chạy, kể cả database trống, thì app dừng ngay với thông báo `database has pending migrations`.
+- `userapi migrate` không tự đặt timeout kết nối: nếu host database nhận TCP nhưng không phản hồi, lệnh treo vô hạn. Thêm `connect_timeout` (giây) vào URL như trên, hoặc đặt `activeDeadlineSeconds` cho Job.
+- Khi khởi động, app chỉ **đọc** trạng thái migration (không tạo bảng, không chạy DDL). Còn migration chưa chạy, kể cả database trống, thì app dừng ngay với thông báo `database has pending migrations`. Ngoại lệ: `MIGRATE_ON_START=true` (chỉ dành cho dev) cho app tự chạy migration trước khi kiểm tra.
 
-**Trên Kubernetes:** chạy `userapi migrate` bằng một Job (Helm pre-upgrade hook, Argo CD PreSync) hoặc initContainer, dùng **cùng image** với app. Giữ `MIGRATE_ON_START=false`. `docker compose up` mô phỏng đúng mô hình này với service `migrate`.
+**Trên Kubernetes:** chạy `userapi migrate` bằng một Job (Helm pre-upgrade hook, Argo CD PreSync) hoặc initContainer, dùng **cùng image** với app. Giữ `MIGRATE_ON_START=false`. `docker compose up` mô phỏng thứ tự này: service `migrate` chạy xong thì `api` mới khởi động. Nhưng cả hai dùng chung role `userapi` (superuser), nên compose **không** mô phỏng việc tách role ở mục dưới.
 
 ### Phân quyền database
 
@@ -137,9 +139,9 @@ Trong lúc deploy, pod cũ và pod mới cùng chạy trên schema mới, nên m
 
 ## Observability
 
-**Log.** JSON ra stdout. Mỗi request một dòng `http_request` (trừ `/healthz`, `/readyz`): 2xx/3xx ghi mức INFO, 4xx ghi WARN, 5xx ghi ERROR kèm lỗi gốc. Mọi dòng log ghi bằng `slog.*Context(ctx, ...)`, ở bất kỳ tầng nào, tự mang `request_id`, `trace_id`, `span_id`. Tìm log của một request bằng `X-Request-Id` trong response.
+**Log.** JSON ra stdout (trừ lỗi cấu hình lúc khởi động, xem [Cấu hình](#cấu-hình)). Mỗi request một dòng `http_request` (trừ `/healthz`, `/readyz`): 2xx/3xx ghi mức INFO, 4xx ghi WARN, 5xx ghi ERROR kèm lỗi gốc; `latency` tính bằng nano giây. `/readyz` trả 503 thì ghi một dòng WARN `readiness check failed` mỗi lần probe. Mọi dòng log ghi bằng `slog.*Context(ctx, ...)`, ở bất kỳ tầng nào, tự mang `request_id`; `trace_id` và `span_id` có khi request có span (OpenTelemetry bật, hoặc upstream gửi `traceparent`). Tìm log của một request bằng `X-Request-Id` trong response.
 
-**Trace và metric (OpenTelemetry).** Bật bằng `OTEL_EXPORTER_OTLP_ENDPOINT` (OTLP/HTTP). Khi không đặt, provider là no-op.
+**Trace và metric (OpenTelemetry).** Bật bằng `OTEL_EXPORTER_OTLP_ENDPOINT` hoặc endpoint riêng cho trace/metric (OTLP/HTTP, xem bảng [Cấu hình](#cấu-hình)). Khi không đặt, provider là no-op. Lỗi export (collector không tới được) chỉ được ghi log mức INFO (`traces export: ...`), không làm app dừng; nếu lần flush cuối lúc tắt thất bại thì ghi WARN `telemetry shutdown failed`.
 
 | Nguồn | Thu được |
 |---|---|

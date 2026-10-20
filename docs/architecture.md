@@ -38,7 +38,7 @@ Mũi tên import luôn hướng vào trong:
 - `service` chỉ import `domain` và `port`;
 - adapter import core, còn core không bao giờ import adapter.
 
-Chỉ composition root biết tất cả. `cmd/userapi/main.go` chỉ đọc config, tạo logger, bắt tín hiệu và gọi `app.Run`. `internal/app` lắp adapter vào core và quản lý vòng đời server, để phần này có test tự động.
+Chỉ composition root biết tất cả. `cmd/userapi/main.go` chỉ đọc config, tạo logger (và đặt nó làm logger mặc định cho thư viện), bắt tín hiệu, rồi gọi `app.Run` hoặc `app.Migrate` tuỳ lệnh. `internal/app` lắp adapter vào core và quản lý vòng đời server, để phần này có test tự động.
 
 Quy tắc được **CI thực thi tự động** bằng `depguard` (`.golangci.yml`); chạy `make lint` để kiểm tra local:
 
@@ -70,8 +70,8 @@ Ngoài depguard, hai linter chỉ áp dụng cho `internal/core` (trừ test) gi
    - ContextTimeout (`REQUEST_TIMEOUT`).
 3. `httpapi.userHandler.create` bind JSON vào DTO `createUserRequest` rồi gọi `port.UserService.Register`. Handler không chứa logic nghiệp vụ.
 4. `service.UserService.Register` lấy ID từ `IDGenerator`, thời gian từ `Clock`, rồi gọi `domain.NewUser` để chuẩn hoá và validate.
-5. `UserRepository.Create` lưu bản ghi. Adapter postgres dịch lỗi unique violation (`23505`) thành `domain.ErrEmailAlreadyExists`.
-6. Handler trả 201 kèm `Location` và `ETag`. Nếu có lỗi, handler chỉ cần `return err`; `HTTPErrorHandler` tập trung dùng `httpapi.toProblem` để ánh xạ lỗi sang problem+json. Ngoại lệ duy nhất: handler `update` tự quyết định trả 412 khi client gửi `If-Match` mà version xung đột.
+5. `UserRepository.Create` lưu bản ghi. Adapter postgres dịch lỗi unique violation (`23505`) trên constraint `users_email_key` thành `domain.ErrEmailAlreadyExists`; unique violation trên constraint khác vẫn là lỗi không lường trước (500).
+6. Handler trả 201 kèm `Location` và `ETag`. Nếu có lỗi, handler chỉ cần `return err`; `HTTPErrorHandler` tập trung dùng `httpapi.toProblem` để ánh xạ lỗi sang problem+json. Handler chỉ tự tạo lỗi của tầng HTTP: body hoặc query sai định dạng (400, 413, 415), `If-Match` sai định dạng (412), và 412 khi client gửi `If-Match` mà version xung đột. Mọi lỗi nghiệp vụ đến từ core.
 
 ## Phân loại lỗi
 
@@ -82,7 +82,7 @@ Ngoài depguard, hai linter chỉ áp dụng cho `internal/core` (trừ test) gi
 | `port.ErrNotFound` | Application | Không tìm thấy, dùng chung cho mọi aggregate |
 | `port.ErrVersionConflict` | Application | Bản ghi bị thay đổi kể từ lúc đọc (optimistic locking) |
 
-Repository trả sentinel trần; service wrap kèm ngữ cảnh (`fmt.Errorf("user %s: %w", id, port.ErrNotFound)`). Luôn so sánh bằng `errors.Is`/`errors.As`. Core không biết HTTP status; mỗi adapter inbound tự ánh xạ lỗi sang giao thức của mình.
+Repository trả sentinel trần; service wrap kèm ngữ cảnh (`fmt.Errorf("get user: %w", err)`; ID sai định dạng thành `fmt.Errorf("user %s: %w", raw, port.ErrNotFound)`). Luôn so sánh bằng `errors.Is`/`errors.As`. Core không biết HTTP status; mỗi adapter inbound tự ánh xạ lỗi sang giao thức của mình.
 
 ## Quyết định thiết kế
 
@@ -90,19 +90,19 @@ Repository trả sentinel trần; service wrap kèm ngữ cảnh (`fmt.Errorf("u
 
 **DTO và persistence model tách khỏi entity.** `userResponse` (JSON) và `userRow` (SQL) là hai struct riêng. Đổi tên cột hay đổi định dạng JSON không đụng tới domain. `domain.FieldError` cũng không mang tag JSON; `httpapi` map nó sang DTO riêng.
 
-**Inbound port chỉ nhận primitive.** `port.UpdateUserCmd` và tham số của `Get`/`Delete` là `string`, `*string`, `int64`, không phải `domain.UserID` hay `domain.Changes`. Mọi transport dùng chung một hợp đồng mà không phải tự dựng kiểu domain, và việc validate ID nằm ở một chỗ duy nhất trong core. Kết quả trả về vẫn là `domain.User`; adapter được phép đọc kiểu domain.
+**Inbound port chỉ nhận primitive.** `port.UpdateUserCmd`, `port.ListUsersQuery` và tham số của `Get`/`Delete` là `string`, `*string`, `int`, `int64`, không phải `domain.UserID` hay `domain.Changes`. Mọi transport dùng chung một hợp đồng mà không phải tự dựng kiểu domain, và việc validate ID nằm ở một chỗ duy nhất trong core. Kết quả trả về vẫn là `domain.User`; adapter được phép đọc kiểu domain.
 
 **ID không hợp lệ trả 404 thay vì 400.** Service validate ID trước khi gọi repository. Cách này tránh gửi chuỗi rác xuống PostgreSQL (vốn gây lỗi `22P02`) và không tiết lộ định dạng ID cho client.
 
-**`Email` là value object.** Chỉ tạo được qua `domain.ParseEmail` (đã chuẩn hoá và hợp lệ), nên không thể gán chuỗi rác vào `User.Email`. Adapter lưu trữ dựng lại bằng `domain.EmailFromStore`, hàm này **cố ý không validate lại**: nếu sau này quy tắc được thắt chặt, bản ghi cũ vẫn đọc được thay vì làm mọi request liên quan lỗi 500. Các field khác của `User` vẫn exported: trong Go, private hoá toàn bộ kèm getter tạo nhiều boilerplate mà lợi ích không tương xứng.
+**`Email` là value object.** Field bên trong không exported, nên ngoài package `domain` chỉ có hai cách tạo: `domain.ParseEmail` (chuẩn hoá và validate, dùng cho input) và `domain.EmailFromStore` (chỉ dành cho adapter lưu trữ). Code nghiệp vụ không thể gán chuỗi rác vào `User.Email`. `EmailFromStore` **cố ý không validate lại**: nếu sau này quy tắc được thắt chặt, bản ghi cũ vẫn đọc được thay vì làm mọi request liên quan lỗi 500. Các field khác của `User` vẫn exported: trong Go, private hoá toàn bộ kèm getter tạo nhiều boilerplate mà lợi ích không tương xứng.
 
 **`Clock` và `IDGenerator` là port.** Test của service hoàn toàn tất định. Đồng hồ thật làm tròn thời gian xuống micro giây để khớp độ chính xác của PostgreSQL. ID là UUIDv7 qua `google/uuid`: tăng dần theo thời gian nên index B-tree ít bị phân mảnh.
 
 **Logger được truyền vào service, không dùng logger toàn cục.** Test bắt được log, và mỗi instance có thể ghi log ra nơi khác nhau.
 
-**Optimistic locking thay vì `SELECT ... FOR UPDATE`.** Compare-and-set trên cột `version` chỉ cần một câu `UPDATE`, không giữ lock hay transaction giữa lúc đọc và ghi, và cùng cơ chế đó cung cấp luôn `ETag`. Đánh đổi: khi rất nhiều request cùng sửa *một* bản ghi, một phần sẽ nhận 409. Với dữ liệu kiểu hồ sơ user (tranh chấp thấp) đây là lựa chọn phù hợp.
+**Optimistic locking thay vì `SELECT ... FOR UPDATE`.** Compare-and-set trên cột `version` chỉ cần một câu `UPDATE`, không giữ lock hay transaction giữa lúc đọc và ghi, và cùng cơ chế đó cung cấp luôn `ETag`. Khi `UPDATE` không ghi được dòng nào, một câu `SELECT EXISTS` riêng phân biệt "không tồn tại" (404) với "version đã đổi" (409); câu này không cần nằm chung transaction, vì cả hai kết quả đều có nghĩa là lần ghi không xảy ra. Đánh đổi: khi rất nhiều request cùng sửa *một* bản ghi, một phần sẽ nhận 409. Với dữ liệu kiểu hồ sơ user (tranh chấp thấp) đây là lựa chọn phù hợp.
 
-**Migration bằng goose, chạy tách khỏi app.** App chỉ đọc trạng thái migration lúc khởi động; DDL chỉ chạy bằng lệnh `userapi migrate` với role riêng. Xem [operations.md](operations.md#migration).
+**Migration bằng goose, chạy tách khỏi app.** App chỉ đọc trạng thái migration lúc khởi động; DDL chỉ chạy bằng lệnh `userapi migrate` với role riêng. `MIGRATE_ON_START=true` cho app tự migrate lúc khởi động, chỉ để tiện khi phát triển local. Xem [operations.md](operations.md#migration).
 
 **Integration test dùng PostgreSQL thật qua `TEST_DATABASE_URL`, không dùng testcontainers-go.** CI (service container) và `docker compose` đã dựng sẵn PostgreSQL; testcontainers kéo thêm vài chục dependency gián tiếp chỉ để làm việc đó. Khi test cần nhiều loại hạ tầng (Kafka, Redis...), testcontainers mới đáng giá.
 

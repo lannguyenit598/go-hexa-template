@@ -10,7 +10,7 @@ Tài liệu cho người gọi API. Base URL mặc định khi chạy local: `ht
 | Kích thước body | Tối đa 1 MiB, vượt quá trả 413 (kể cả body gửi chunked, không có `Content-Length`) |
 | Field lạ trong body | Bị bỏ qua, không báo lỗi |
 | ID | UUID v7 dạng chuẩn, chữ thường (`01a15359-aa28-7a00-a380-c47e52905707`). ID sai định dạng (kể cả UUID chữ hoa) được coi là không tồn tại: 404 |
-| Thời gian | RFC 3339, UTC, độ chính xác micro giây (`2026-10-19T08:49:07.624656Z`) |
+| Thời gian | RFC 3339, UTC, độ chính xác micro giây (`2026-10-19T08:49:07.624656Z`). Số 0 ở cuối phần thập phân bị lược (`…07.5722Z`, `…07Z`), nên số chữ số thay đổi từ 0 tới 6: parse bằng bộ parse RFC 3339, đừng dùng định dạng cố định 6 chữ số |
 | Lỗi | `application/problem+json` theo RFC 9457, xem [Lỗi](#lỗi) |
 | Xác thực | Template **không có xác thực**. Xem [operations.md](operations.md#xác-thực) để gắn thêm |
 | Timeout | Mỗi request có timeout `REQUEST_TIMEOUT` (mặc định 10s); mỗi câu SQL có timeout `DB_STATEMENT_TIMEOUT` (mặc định 5s). Hết hạn ở bên nào cũng trả 503 |
@@ -40,7 +40,7 @@ Tài liệu cho người gọi API. Base URL mặc định khi chạy local: `ht
 | Field | Quy tắc |
 |---|---|
 | `email` | Bắt buộc; bỏ khoảng trắng hai đầu và chuyển chữ thường; tối đa 254 ký tự; phải là địa chỉ trần (`a@b.com`, không nhận `Tên <a@b.com>`); duy nhất trong hệ thống (so sánh sau khi chuẩn hoá) |
-| `name` | Bắt buộc; khoảng trắng thừa được gộp (`"  Lan   Nguyen "` → `"Lan Nguyen"`); tối đa 100 ký tự Unicode |
+| `name` | Bắt buộc; khoảng trắng thừa (kể cả tab, xuống dòng, khoảng trắng Unicode) được gộp thành một dấu cách (`"  Lan   Nguyen "` → `"Lan Nguyen"`); tối đa 100 ký tự, đếm theo Unicode code point (một chữ viết bằng ký tự gốc + dấu tổ hợp tính là 2) |
 | `version` | Bắt đầu từ 1, tăng 1 sau mỗi lần thay đổi thực sự |
 | `updated_at` | Chỉ đổi khi dữ liệu thực sự thay đổi |
 
@@ -110,7 +110,7 @@ Lỗi thường gặp: 404, 422, 409 (email đã tồn tại, hoặc xung đột
 | `GET /healthz` | Liveness: tiến trình còn sống | 200 `{"status":"ok"}` |
 | `GET /readyz` | Readiness: pod sẵn sàng nhận traffic | 200 `{"status":"ready"}`; 503 khi đang shutdown (hoặc database không phản hồi, nếu bật `READINESS_CHECK_DB`) |
 
-Probe không có tiền tố `/api/v1`, không đi qua middleware xác thực và không được ghi log.
+Probe không có tiền tố `/api/v1`, không đi qua middleware xác thực và không sinh dòng log truy cập `http_request`. `/readyz` trả 503 thì server ghi một dòng WARN `readiness check failed`.
 
 ## Cập nhật đồng thời
 
@@ -151,15 +151,16 @@ Mọi lỗi trả `Content-Type: application/problem+json`:
 | 400 | Field sai kiểu, ví dụ `{"email": 5}` | `field "email" has the wrong type` |
 | 400 | Body là JSON nhưng không phải object, ví dụ `[]` | `request body must be a JSON object` |
 | 400 | `limit`/`offset` không phải số nguyên | `limit must be an integer` / `offset must be an integer` |
-| 404 | User không tồn tại, ID sai định dạng, hoặc route không tồn tại | `resource not found` |
-| 405 | Sai method cho route | |
+| 404 | User không tồn tại, hoặc ID sai định dạng | `resource not found` |
+| 404 | Route không tồn tại (kể cả có `/` ở cuối, như `/api/v1/users/`) | (trống) |
+| 405 | Sai method cho route; response có header `Allow` | |
 | 409 | Email đã thuộc về user khác | `a user with this email already exists` |
 | 409 | Xung đột version sau 3 lần thử (không có `If-Match`) | `the user was modified concurrently, please retry` |
 | 412 | `If-Match` không khớp version hiện tại | `If-Match does not match the current version of the resource` |
 | 413 | Body lớn hơn 1 MiB | |
 | 415 | POST/PATCH có body nhưng `Content-Type` không phải `application/json` (thiếu, form, XML...) | |
 | 422 | Dữ liệu không hợp lệ, kèm `errors` theo từng field | `request failed validation` |
-| 499 | Client đóng kết nối trước khi có response (client không nhận được; chỉ thấy trong log) | `client closed request` |
+| 499 | Client đóng kết nối trước khi có response, hoặc request bị huỷ khi server tắt quá hạn. Client không nhận được response này; chỉ thấy status 499 trong log | |
 | 500 | Lỗi không lường trước | (trống) |
 | 503 | Request vượt `REQUEST_TIMEOUT`, hoặc câu SQL vượt `DB_STATEMENT_TIMEOUT` | `request timed out` |
 | 503 | `/readyz` khi pod chưa sẵn sàng | (trống) |

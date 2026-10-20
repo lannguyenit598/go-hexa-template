@@ -12,24 +12,22 @@ X-Request-Id: demo-create-1
 ### Danh sách (phân trang). limit > 100 được giới hạn thành 100; offset tối đa 10000
 GET {{base}}/api/v1/users?limit=20&offset=0
 
-### Lấy 1 user (thay id). Ghi lại header ETag để dùng cho If-Match bên dưới
+### Lấy 1 user (thay id). Ghi lại header ETag để dùng cho If-Match ngay bên dưới
 GET {{base}}/api/v1/users/REPLACE_WITH_ID
 
-### Cập nhật từng phần: field không gửi (hoặc null) được giữ nguyên
-PATCH {{base}}/api/v1/users/REPLACE_WITH_ID
-Content-Type: application/json
-
-{"name": "Lan Pham"}
-
 ### Cập nhật có kiểm tra version: thay "1" bằng ETag vừa GET. Sai version => 412
+### (Response có ETag mới; gửi lại request này lần nữa sẽ nhận 412)
 PATCH {{base}}/api/v1/users/REPLACE_WITH_ID
 Content-Type: application/json
 If-Match: "1"
 
 {"name": "Lan Tran"}
 
-### Xoá (DELETE không kiểm tra If-Match)
-DELETE {{base}}/api/v1/users/REPLACE_WITH_ID
+### Cập nhật từng phần, không kiểm tra version: field không gửi (hoặc null) được giữ nguyên
+PATCH {{base}}/api/v1/users/REPLACE_WITH_ID
+Content-Type: application/json
+
+{"name": "Lan Pham"}
 
 ### --- Ví dụ lỗi ---
 
@@ -45,13 +43,18 @@ Content-Type: application/json
 
 {"email": "LAN@example.com", "name": "Someone Else"}
 
-### 415: thiếu Content-Type
+### 415: thiếu Content-Type (hoặc Content-Type không phải application/json)
 POST {{base}}/api/v1/users
 
 {"email": "x@example.com", "name": "X"}
 
 ### 404: ID sai định dạng cũng trả 404
 GET {{base}}/api/v1/users/not-a-uuid
+
+### --- Xoá (chạy sau các ví dụ lỗi: 409 ở trên cần user vẫn còn) ---
+
+### DELETE không kiểm tra If-Match
+DELETE {{base}}/api/v1/users/REPLACE_WITH_ID
 
 ### --- Probe ---
 GET {{base}}/healthz

@@ -16,8 +16,8 @@ Công cụ: Go ≥ 1.26 và golangci-lint **v2.14.0** (phải là bản build b�
 ## Kiến trúc: quy tắc không được phá
 
 - Import chỉ hướng vào trong: `domain` ← `port` ← `service` ← adapter ← `internal/app` ← `cmd`. `internal/core/**` chỉ import thư viện chuẩn và chính `internal/core`. depguard trong `.golangci.yml` kiểm tra quy tắc này; **không** sửa `.golangci.yml` để lint xanh, hãy sửa code.
-- Inbound port (`port.UserService`) chỉ nhận kiểu primitive (`string`, `*string`, `int64`); service tự chuyển sang kiểu domain và validate. Kết quả trả về được dùng kiểu domain.
-- Lỗi: quy tắc nghiệp vụ ở `domain` (`ValidationError`, `ErrEmailAlreadyExists`); kết quả use case ở `port` (`ErrNotFound`, `ErrVersionConflict`, dùng chung mọi aggregate). Repository trả sentinel trần; service wrap kèm ngữ cảnh (`fmt.Errorf("user %s: %w", id, port.ErrNotFound)`); so sánh bằng `errors.Is`/`errors.As`. Core không biết HTTP status.
+- Inbound port (`port.UserService`) chỉ nhận kiểu primitive (`string`, `*string`, `int`, `int64`); service tự chuyển sang kiểu domain và validate. Kết quả trả về được dùng kiểu domain.
+- Lỗi: quy tắc nghiệp vụ ở `domain` (`ValidationError`, `ErrEmailAlreadyExists`); kết quả use case ở `port` (`ErrNotFound`, `ErrVersionConflict`, dùng chung mọi aggregate). Repository trả sentinel trần; service wrap kèm ngữ cảnh (`fmt.Errorf("get user: %w", err)`); so sánh bằng `errors.Is`/`errors.As`. Core không biết HTTP status.
 - Core không dùng state toàn cục: logger, đồng hồ, bộ sinh ID đều được truyền vào qua constructor/port (lint `forbidigo` và `gochecknoglobals` kiểm tra trong `internal/core`).
 - Chỉ composition root được biết adapter: `internal/app` lắp ráp, `cmd/userapi` chỉ gọi `internal/app`. Package mới nằm ngoài các nhóm đã có rule thì rơi vào rule depguard `everything-else` (không được import adapter).
 

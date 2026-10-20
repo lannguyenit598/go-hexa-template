@@ -15,7 +15,7 @@ const MaxNameLength = 100
 type UserID string
 
 // Valid kiểm tra UserID có đúng dạng UUID chuẩn hay không.
-// Adapter dùng nó để từ chối sớm ID rác thay vì gửi xuống database.
+// Service dùng nó để từ chối sớm ID rác thay vì gửi xuống database.
 func (id UserID) Valid() bool {
 	s := string(id)
 	if len(s) != 36 {
