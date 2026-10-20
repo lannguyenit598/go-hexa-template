@@ -21,7 +21,7 @@ A production-ready template for a user-management REST API, organized as a Hexag
 | Migrations | `github.com/pressly/goose/v3` v3.27.0 |
 | OpenTelemetry | `go.opentelemetry.io/otel` v1.46.0 |
 | Kafka client | `github.com/twmb/franz-go` v1.22.1 |
-| PostgreSQL | 16 |
+| PostgreSQL | 18 |
 
 ## Documentation
 

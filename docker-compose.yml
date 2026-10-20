@@ -1,6 +1,6 @@
 services:
   db:
-    image: postgres:16-alpine
+    image: postgres:18-alpine
     environment:
       POSTGRES_USER: userapi
       POSTGRES_PASSWORD: userapi
@@ -8,7 +8,7 @@ services:
     ports:
       - "127.0.0.1:5432:5432" # Local machine only; do not expose to the network.
     volumes:
-      - pgdata:/var/lib/postgresql/data
+      - pgdata:/var/lib/postgresql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U userapi -d userapi"]
       interval: 2s
