@@ -128,8 +128,8 @@ Separate schema-owning migration (DDL) and app (DML-only) roles so leaked app cr
 ```sql
 CREATE ROLE userapi_migrator LOGIN PASSWORD '...';
 CREATE ROLE userapi_app      LOGIN PASSWORD '...';
-CREATE DATABASE userapi OWNER userapi_migrator;
-\connect userapi
+CREATE DATABASE "userapi" OWNER userapi_migrator;
+\connect "userapi"
 -- PostgreSQL 15+ no longer grants every role CREATE on the public schema.
 GRANT USAGE, CREATE ON SCHEMA public TO userapi_migrator;
 GRANT USAGE ON SCHEMA public TO userapi_app;

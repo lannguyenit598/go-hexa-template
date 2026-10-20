@@ -44,8 +44,17 @@ jobs:
           expect 1 scripts/rename.sh ok github.com/acme/ok
           expect 2 scripts/rename.sh ok 'not a path'
           rm dirty
+          # Untracked files count as dirty even when git status is configured to hide them.
+          git config status.showUntrackedFiles no
+          touch dirty
+          expect 1 scripts/rename.sh ok github.com/acme/ok
+          rm dirty
+          git config --unset status.showUntrackedFiles
           # Missing tools are an environment error, not bad arguments.
-          expect 1 env PATH=/usr/bin:/bin scripts/rename.sh ok github.com/acme/ok
+          rc=0
+          env PATH=/usr/bin:/bin scripts/rename.sh ok github.com/acme/ok 2> "$RUNNER_TEMP/err" || rc=$?
+          test "$rc" = 1
+          grep -q 'missing required tool' "$RUNNER_TEMP/err"
           git diff --quiet
           # A copy without git (e.g. a ZIP download) is refused, and the repo in the cwd is not touched.
           copy=$(mktemp -d)
@@ -55,18 +64,29 @@ jobs:
           grep -qx 'module github.com/example/userapi' "$copy/go.mod"
       - name: A failed rename prints a working undo command
         run: |
-          # A failing tool mid-run (gofmt) and a failing make check both leave a half-renamed tree.
+          # A failing tool mid-run (gofmt, exiting 2 like a real parse error) and a failing make check
+          # both leave a half-renamed tree. Run from another repo: the undo must only touch the template.
+          repo=$PWD
+          other=$(mktemp -d)
+          git -C "$other" init -q
+          touch "$other/precious"
+          cp .env.example .env
           for tool in gofmt make; do
             fake=$(mktemp -d)
-            printf '#!/bin/sh\nexit 1\n' > "$fake/$tool"
+            printf '#!/bin/sh\nexit 2\n' > "$fake/$tool"
             chmod +x "$fake/$tool"
             rc=0
-            PATH="$fake:$PATH" scripts/rename.sh ok github.com/acme/ok 2> "$fake/err" || rc=$?
-            test "$rc" = 1 || { echo "$tool: want exit 1, got $rc"; exit 1; }
-            grep -F 'git checkout -- . && git clean -fd' "$fake/err" || { cat "$fake/err"; exit 1; }
-            git checkout -- . && git clean -fd
+            (cd "$other" && PATH="$fake:$PATH" "$repo/scripts/rename.sh" ok github.com/acme/ok) 2> "$fake/err" || rc=$?
+            test "$rc" = 1 || { echo "$tool: want exit 1, got $rc"; cat "$fake/err"; exit 1; }
+            undo=$(sed -n 's/.*undo with: //p' "$fake/err")
+            test -n "$undo" || { cat "$fake/err"; exit 1; }
+            (cd "$other" && eval "$undo")
+            test -e "$other/precious"
             test -z "$(git status --porcelain)"
+            # .env is gitignored, so undo cannot restore it: it must still be untouched.
+            cmp .env .env.example
           done
+          rm .env
       - name: Rename
         run: |
           # A developer's local .env (gitignored) is renamed too.

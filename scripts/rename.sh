@@ -35,13 +35,15 @@ fi
 # -print validates the module path without writing go.mod.
 go mod edit -module "$MODULE" -print >/dev/null || exit 2
 
-if [ -n "$(git status --porcelain)" ]; then
+if [ -n "$(git status --porcelain --untracked-files=normal)" ]; then
   echo "working tree not clean; commit or stash first" >&2
   exit 1
 fi
 
-UNDO="git checkout -- . && git clean -fd"
-trap 'echo "rename failed partway; undo with: $UNDO" >&2' ERR
+# Absolute, so the printed command undoes only this clone wherever it is pasted.
+root=$(printf %q "$(pwd -P)")
+UNDO="git -C $root checkout -- . && git -C $root clean -fd"
+trap 'echo "rename failed partway; undo with: $UNDO" >&2; exit 1' ERR
 go mod edit -module "$MODULE"
 
 # replace OLD NEW: literal replacement in the NUL-separated file list on stdin.
@@ -53,23 +55,24 @@ replace() {
 git grep -lz userapi -- ':!go.mod' ':!go.sum' ':!internal/adapter/outbound/postgres/migrations' \
   ':!scripts/rename.sh' ':!.github/workflows/template.yml' | replace userapi "$NAME"
 git grep -lz "github.com/example/$NAME" -- ':!go.mod' | replace "github.com/example/$NAME" "$MODULE"
-# A local .env copied from .env.example is gitignored, so git grep misses it.
-if [ -f .env ]; then
-  printf '.env\0' | replace userapi "$NAME"
-fi
 
 [ "$NAME" = userapi ] || mv cmd/userapi "cmd/$NAME"
 # A name of a different length shifts aligned comments.
 gofmt -w .
 rm scripts/rename.sh .github/workflows/template.yml
 # The READMEs' "start a new service" sections describe this script, which no longer exists.
-perl -0pi -e 's/^## Starting a new service\n.*?(?=^## )//ms' README.md
-perl -0pi -e 's/^## Bắt đầu service mới\n.*?(?=^## )//ms' README.vi.md
+perl -0pi -e 's/^## Starting a new service\n.*?(?=^## |\z)//ms' README.md
+perl -0pi -e 's/^## Bắt đầu service mới\n.*?(?=^## |\z)//ms' README.vi.md
 
 echo "Renamed to $NAME ($MODULE). Running make check..."
 if ! make check; then
   echo "rename applied but make check failed; fix the errors, or undo with: $UNDO" >&2
   exit 1
+fi
+
+# Last, because undo cannot restore it: a local .env (copied from .env.example) is gitignored.
+if [ -f .env ]; then
+  printf '.env\0' | replace userapi "$NAME"
 fi
 
 cat <<EOF
