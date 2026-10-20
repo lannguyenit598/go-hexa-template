@@ -58,8 +58,13 @@ jobs:
         run: |
           test "$(go list -m)" = "$MODULE"
           test -d "cmd/$NAME"
-          test ! -e scripts/rename.sh && test ! -e .github/workflows/template.yml
+          test ! -e scripts/rename.sh
+          test ! -e .github/workflows/template.yml
           test -x .claude/hooks/session-start.sh
+          for s in add-use-case add-migration steward; do
+            test -L ".claude/skills/$s" || exit 1
+            test -f ".claude/skills/$s/SKILL.md" || exit 1
+          done
           if [ "$NAME" != userapi ]; then
             test ! -e cmd/userapi
             if git grep -n userapi -- ':!internal/adapter/outbound/postgres/migrations' | grep -vF "$MODULE"; then exit 1; fi

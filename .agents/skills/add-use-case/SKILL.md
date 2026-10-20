@@ -1,12 +1,11 @@
 ---
 name: add-use-case
 description: Use when adding or changing a use case, endpoint, or repository method in this Go hexagonal userapi repo — e.g. "add search by email", "add a field to users", "new endpoint under /api/v1", or changing what an existing endpoint accepts or returns.
-argument-hint: "[use case description]"
 ---
 
 # Add or change a use case
 
-Work from inside out (domain → port → adapter → HTTP → docs), using TDD at every layer: write the test, **observe the intended failure**, then implement. Requested use case: $ARGUMENTS
+Work from inside out (domain → port → adapter → HTTP → docs), using TDD at every layer: write the test, **observe the intended failure**, then implement. The requested use case is the user's request that invoked this skill.
 
 ## 0. Define the contract before coding
 

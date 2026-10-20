@@ -4,6 +4,7 @@ coverage.out
 .env
 *.md
 .claude/
+.agents/
 .github/
 docs/
 api.http

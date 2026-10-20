@@ -1,12 +1,11 @@
 ---
 name: add-migration
 description: Use when changing the PostgreSQL schema of this userapi repo — adding/renaming/dropping a column, table, index or constraint, or when a feature needs new persisted data.
-argument-hint: "[schema change]"
 ---
 
 # Add a migration
 
-Requested schema change: $ARGUMENTS
+The requested schema change is the user's request that invoked this skill.
 
 Old and new pods share the new schema during rolling deployments, so migrations must be **backward-compatible with running code** (expand/contract). They run as the migrator role with `lock_timeout = 5s` and no `statement_timeout` limit.
 
