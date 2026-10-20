@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/example/userapi/internal/adapter/outbound/postgres/pgtest"
 	"github.com/example/userapi/internal/app"
 	"github.com/example/userapi/internal/config"
@@ -143,6 +145,89 @@ func TestRun_CanceledBeforeStartReturnsPromptly(t *testing.T) {
 	ln := listen(t)
 	if err := runWithTimeout(t, ctx, mustConfig(t, nil), app.Options{Listener: ln}, time.Second); err != nil {
 		t.Fatalf("Run = %v, want nil", err)
+	}
+}
+
+// Thêm hằng Storage mới mà quên nhánh trong newRepository thì phải lỗi khi khởi động,
+// không được âm thầm chạy bằng repository in-memory.
+func TestRun_RejectsUnknownStorage(t *testing.T) {
+	cfg := mustConfig(t, nil)
+	cfg.Storage = "mysql"
+	err := runWithTimeout(t, context.Background(), cfg, app.Options{Listener: listen(t)}, 2*time.Second)
+	if err == nil || !strings.Contains(err.Error(), `unsupported storage "mysql"`) {
+		t.Fatalf("Run = %v, want unsupported storage error", err)
+	}
+}
+
+// Request vẫn chạy khi hết SHUTDOWN_TIMEOUT bị huỷ, để Run trả về ngay thay vì chờ
+// pool.Close() đợi query xong; tiến trình không được sống quá ngân sách đã khai báo.
+func TestRun_CancelsInFlightRequestsWhenDrainTimesOut(t *testing.T) {
+	dsn := pgtest.FreshSchemaDSN(t) // skip nếu không có TEST_DATABASE_URL
+	base, cancel, done := startApp(t, map[string]string{
+		"STORAGE": "postgres", "DATABASE_URL": dsn, "MIGRATE_ON_START": "true",
+		"SHUTDOWN_TIMEOUT": "200ms", "REQUEST_TIMEOUT": "30s", "DB_STATEMENT_TIMEOUT": "30s",
+	}, 15*time.Second)
+
+	// Khoá bảng users để request GET /api/v1/users bị treo.
+	ctx := context.Background()
+	conn, err := pgx.Connect(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = conn.Close(ctx) })
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = tx.Rollback(ctx) })
+	if _, err := tx.Exec(ctx, `LOCK TABLE users IN ACCESS EXCLUSIVE MODE`); err != nil {
+		t.Fatal(err)
+	}
+
+	slowClient := &http.Client{Transport: &http.Transport{DisableKeepAlives: true}, Timeout: 10 * time.Second}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/api/v1/users", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inFlight := make(chan struct{})
+	go func() {
+		defer close(inFlight)
+		if resp, err := slowClient.Do(req); err == nil {
+			_ = resp.Body.Close()
+		}
+	}()
+	waitForLockWaiter(t, conn)
+
+	cancel()
+	start := time.Now()
+	err = waitDone(t, done, 3*time.Second)
+	if err == nil || !strings.Contains(err.Error(), "graceful shutdown") {
+		t.Fatalf("Run = %v, want graceful shutdown error", err)
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Fatalf("Run took %v after the drain deadline", elapsed)
+	}
+	<-inFlight
+}
+
+// waitForLockWaiter chờ tới khi có một truy vấn đang đợi khoá (request đã tới database).
+func waitForLockWaiter(t *testing.T, conn *pgx.Conn) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		var n int
+		err := conn.QueryRow(context.Background(),
+			`SELECT count(*) FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND application_name = 'userapi'`).Scan(&n)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if n > 0 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("request never reached the database")
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 }
 

@@ -94,6 +94,36 @@ func TestUserRepositoryContract(t *testing.T) {
 	})
 }
 
+// statement_timeout (DB_STATEMENT_TIMEOUT) là giới hạn thời gian của request ở phía database:
+// lỗi phải được nhận ra là context.DeadlineExceeded để HTTP trả 503, không phải 500.
+func TestStatementTimeout_IsDeadlineExceeded(t *testing.T) {
+	dsn := pgtest.FreshSchemaDSN(t)
+	ctx := context.Background()
+	if err := postgres.Migrate(ctx, dsn, slog.New(slog.DiscardHandler)); err != nil {
+		t.Fatal(err)
+	}
+	pool, err := postgres.Connect(ctx, dsn, postgres.PoolOptions{MaxConns: 2, StatementTimeout: 100 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pool.Close)
+
+	// Giữ khoá bảng trong một transaction khác để truy vấn của repository phải chờ tới khi hết hạn.
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = tx.Rollback(ctx) })
+	if _, err := tx.Exec(ctx, `LOCK TABLE users IN ACCESS EXCLUSIVE MODE`); err != nil {
+		t.Fatal(err)
+	}
+
+	_, _, err = postgres.NewUserRepository(pool).List(ctx, 10, 0)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("List = %v, want context.DeadlineExceeded", err)
+	}
+}
+
 func TestPendingMigrations_EmptySchema(t *testing.T) {
 	dsn := pgtest.FreshSchemaDSN(t)
 	ctx := context.Background()

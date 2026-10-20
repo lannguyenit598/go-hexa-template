@@ -1,7 +1,9 @@
 package httpapi
 
 import (
+	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -63,9 +65,14 @@ func etag(u domain.User) string { return `"` + strconv.FormatInt(u.Version, 10) 
 // parseIfMatch trả version client mong đợi; 0 nếu không có header hoặc là "*".
 // Header không phải một strong ETag dạng "N" thì không thể khớp => 412 theo RFC 9110.
 // (Weak ETag W/"N" cũng không bao giờ khớp vì If-Match dùng so sánh strong.)
+// Header rỗng hoặc danh sách nhiều ETag cũng trả 412: thà từ chối còn hơn ghi đè vô điều kiện.
 func parseIfMatch(c *echo.Context) (int64, error) {
-	raw := strings.TrimSpace(c.Request().Header.Get("If-Match"))
-	if raw == "" || raw == "*" {
+	values := c.Request().Header.Values("If-Match")
+	if len(values) == 0 {
+		return 0, nil
+	}
+	raw := strings.TrimSpace(strings.Join(values, ","))
+	if raw == "*" {
 		return 0, nil
 	}
 	if len(raw) >= 3 && raw[0] == '"' && raw[len(raw)-1] == '"' {
@@ -77,6 +84,41 @@ func parseIfMatch(c *echo.Context) (int64, error) {
 }
 
 var errPreconditionFailed = echo.NewHTTPError(http.StatusPreconditionFailed, "If-Match does not match the current version of the resource")
+
+// bindJSON đọc body JSON vào target. Khác echo.BindBody, nó chỉ nhận application/json (BindBody
+// còn nhận form và XML, khiến body sai định dạng bị bỏ qua âm thầm) và trả detail cho biết vì
+// sao body hỏng. Không có body (Content-Length 0) thì không làm gì.
+func bindJSON(c *echo.Context, target any) error {
+	req := c.Request()
+	if req.ContentLength == 0 {
+		return nil
+	}
+	mediaType, _, _ := strings.Cut(req.Header.Get(echo.HeaderContentType), ";")
+	if strings.TrimSpace(mediaType) != echo.MIMEApplicationJSON {
+		return echo.ErrUnsupportedMediaType
+	}
+	err := echo.BindBody(c, target)
+	if err == nil {
+		return nil
+	}
+	// BodyLimit báo vượt giới hạn qua lỗi đọc body, bị BindBody bọc thành 400.
+	if errors.Is(err, echo.ErrStatusRequestEntityTooLarge) {
+		return echo.ErrStatusRequestEntityTooLarge
+	}
+	var (
+		syntaxErr *json.SyntaxError
+		typeErr   *json.UnmarshalTypeError
+	)
+	switch {
+	case errors.As(err, &syntaxErr):
+		return echo.NewHTTPError(http.StatusBadRequest, "request body is not valid JSON").Wrap(err)
+	case errors.As(err, &typeErr) && typeErr.Field != "":
+		return echo.NewHTTPError(http.StatusBadRequest, fmt.Sprintf("field %q has the wrong type", typeErr.Field)).Wrap(err)
+	case errors.As(err, &typeErr):
+		return echo.NewHTTPError(http.StatusBadRequest, "request body must be a JSON object").Wrap(err)
+	}
+	return err
+}
 
 func writeUser(c *echo.Context, status int, u domain.User) error {
 	c.Response().Header().Set("ETag", etag(u))
@@ -91,8 +133,8 @@ type userHandler struct {
 
 func (h *userHandler) create(c *echo.Context) error {
 	var req createUserRequest
-	if err := echo.BindBody(c, &req); err != nil {
-		return err // *echo.HTTPError 400/415, error handler lo phần còn lại
+	if err := bindJSON(c, &req); err != nil {
+		return err // *echo.HTTPError 400/413/415, error handler lo phần còn lại
 	}
 	u, err := h.users.Register(c.Request().Context(), port.RegisterUserCmd{Email: req.Email, Name: req.Name})
 	if err != nil {
@@ -139,7 +181,7 @@ func (h *userHandler) update(c *echo.Context) error {
 		return err
 	}
 	var req updateUserRequest
-	if err := echo.BindBody(c, &req); err != nil {
+	if err := bindJSON(c, &req); err != nil {
 		return err
 	}
 	u, err := h.users.Update(c.Request().Context(), port.UpdateUserCmd{

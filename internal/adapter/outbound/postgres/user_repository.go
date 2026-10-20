@@ -18,7 +18,10 @@ import (
 	"github.com/example/userapi/internal/core/port"
 )
 
-const uniqueViolation = "23505"
+const (
+	uniqueViolation = "23505"
+	queryCanceled   = "57014" // statement_timeout hoặc pg_cancel_backend
+)
 
 type UserRepository struct {
 	pool *pgxpool.Pool
@@ -200,6 +203,11 @@ func mapError(err error) error {
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) && pgErr.Code == uniqueViolation && pgErr.ConstraintName == "users_email_key" {
 		return domain.ErrEmailAlreadyExists
+	}
+	if errors.As(err, &pgErr) && pgErr.Code == queryCanceled {
+		// statement_timeout hết hạn: cùng bản chất với request timeout, nên lộ ra như
+		// context.DeadlineExceeded (HTTP 503) thay vì một lỗi không lường trước (500).
+		return fmt.Errorf("postgres: %w: %w", context.DeadlineExceeded, err)
 	}
 	return fmt.Errorf("postgres: %w", err)
 }

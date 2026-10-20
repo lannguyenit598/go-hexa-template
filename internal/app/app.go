@@ -71,8 +71,13 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, opts Optio
 		RequestTimeout: cfg.RequestTimeout,
 		TrustedProxies: cfg.TrustedProxies,
 	})
+	// Context gốc của mọi request: bị huỷ khi drain quá hạn, để handler còn chạy dừng lại và trả
+	// kết nối database trước khi pool đóng (nếu không, pool.Close() chờ query chạy xong).
+	baseCtx, cancelRequests := context.WithCancel(context.Background())
+	defer cancelRequests()
 	srv := &http.Server{
-		Handler: httpapi.Instrument(e),
+		Handler:     httpapi.Instrument(e),
+		BaseContext: func(net.Listener) context.Context { return baseCtx },
 		// Chặn Slowloris: client phải gửi xong header trong 5s.
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       30 * time.Second,
@@ -110,6 +115,10 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, opts Optio
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
 	defer cancel()
 	if err := srv.Shutdown(shutdownCtx); err != nil {
+		// Quá hạn: huỷ request còn lại và đóng hẳn các kết nối. Vẫn trả lỗi (exit code khác 0)
+		// để người vận hành thấy drain không kịp, nhưng tiến trình thoát ngay sau đó.
+		cancelRequests()
+		_ = srv.Close()
 		return fmt.Errorf("graceful shutdown: %w", err)
 	}
 	logger.Info("userapi stopped gracefully")
@@ -125,11 +134,19 @@ func Migrate(ctx context.Context, cfg config.Config, logger *slog.Logger) error 
 }
 
 // newRepository chọn adapter lưu trữ theo cấu hình. checkDB là nil khi readiness không ping DB.
+// Mỗi giá trị Storage phải có nhánh riêng: thêm hằng mới mà quên nhánh thì app từ chối khởi động.
 func newRepository(ctx context.Context, cfg config.Config, logger *slog.Logger) (repo port.UserRepository, checkDB func(context.Context) error, closeFn func(), err error) {
-	if cfg.Storage != config.StoragePostgres {
+	switch cfg.Storage {
+	case config.StorageMemory:
 		return memory.NewUserRepository(), nil, func() {}, nil
+	case config.StoragePostgres:
+		return newPostgresRepository(ctx, cfg, logger)
+	default:
+		return nil, nil, nil, fmt.Errorf("unsupported storage %q", cfg.Storage)
 	}
+}
 
+func newPostgresRepository(ctx context.Context, cfg config.Config, logger *slog.Logger) (port.UserRepository, func(context.Context) error, func(), error) {
 	pool, err := postgres.Connect(ctx, cfg.DB.URL, postgres.PoolOptions{
 		MaxConns:         cfg.DB.MaxConns,
 		MinConns:         cfg.DB.MinConns,
@@ -157,6 +174,7 @@ func newRepository(ctx context.Context, cfg config.Config, logger *slog.Logger) 
 	if pending {
 		return fail(errors.New("database has pending migrations: run `userapi migrate` first (or set MIGRATE_ON_START=true)"))
 	}
+	var checkDB func(context.Context) error
 	if cfg.ReadinessCheckDB {
 		checkDB = pool.Ping
 	}

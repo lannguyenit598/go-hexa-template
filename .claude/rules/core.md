@@ -18,6 +18,6 @@ paths:
 - `service`:
   - Validate/parse input (ví dụ `parseUserID`) **trước** khi gọi repository.
   - Wrap lỗi kèm ngữ cảnh bằng `%w`.
-  - Log qua `s.logger` (được inject), không dùng `slog.Default()`/`slog.Info(...)`.
+  - Log qua `s.logger` (được inject), không dùng `slog.Default()`/`slog.Info(...)` (lint `forbidigo` chặn, cùng với `time.Now`).
   - Retry chỉ khi thao tác lặp lại an toàn (như `Update`: đọc lại rồi `Apply` lại).
 - Test service dùng `fakeClock`/`seqIDs` và repository in-memory; mô phỏng tranh chấp bằng repo bọc ngoài (xem `racingRepo`).
