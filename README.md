@@ -13,6 +13,8 @@ A production-ready template for a user-management REST API, organized as a Hexag
 - domain events published to Kafka through a transactional outbox (off by default), with the core unchanged;
 - a dependency rule enforced automatically in CI.
 
+The `user` domain is a worked example of every layer, not a requirement. Add your own domain with `/add-use-case`, and delete `user` once a real domain replaces it.
+
 | Component | Version |
 |---|---|
 | Go | 1.26 or later (the HTTP/2 security fixes in `golang.org/x/net` require Go 1.26) |
@@ -124,23 +126,15 @@ make build              # build the binary into ./bin, stamped with the git vers
 
 Tests that need PostgreSQL run only when `TEST_DATABASE_URL` is set and are skipped otherwise. CI always sets it, backed by a PostgreSQL service container.
 
-## Changing the module path
+## Starting a new service
 
-To start a new service from the template, follow [docs/new-project.md](docs/new-project.md): it renames the module path and the service name together. This section covers the module path only.
-
-The repo uses the placeholder module path `github.com/example/userapi`. To switch to yours:
+On a fresh clone of the template, rename the module path and the service in one command, then follow the rest of [docs/new-project.md](docs/new-project.md):
 
 ```bash
-NEW=github.com/<you>/userapi
-go mod edit -module $NEW
-# .golangci.yml contains package paths in its depguard rules: if you skip it, lint
-# reports false errors in the core and the rules that block wrong imports silently stop working.
-grep -rl github.com/example/userapi --include='*.go' --include='.golangci.yml' . \
-  | xargs sed -i "s#github.com/example/userapi#$NEW#g"
-go build ./... && go test ./... && golangci-lint run ./...
+scripts/rename.sh orders github.com/acme/orders
 ```
 
-On macOS, use `sed -i ''` instead of `sed -i`.
+The script exists only in the template: it deletes itself after a successful rename.
 
 ## License
 

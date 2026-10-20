@@ -13,6 +13,8 @@ Repo mẫu cho một REST API quản lý user, tổ chức theo kiến trúc Hex
 - phát sự kiện lên Kafka qua transactional outbox (tắt mặc định), không sửa core;
 - quy tắc phụ thuộc được CI kiểm tra tự động.
 
+Domain `user` là ví dụ minh hoạ đủ mọi tầng, không bắt buộc giữ. Thêm domain của bạn bằng `/add-use-case`, và xoá `user` khi đã có domain thật thay thế.
+
 | Thành phần | Phiên bản |
 |---|---|
 | Go | 1.26 trở lên (bản vá bảo mật HTTP/2 của `golang.org/x/net` yêu cầu Go 1.26) |
@@ -122,23 +124,15 @@ make build              # build binary vào ./bin, kèm version từ git
 
 Test cần PostgreSQL chỉ chạy khi có `TEST_DATABASE_URL`, nếu không sẽ được skip. CI luôn đặt biến này với một PostgreSQL service container.
 
-## Đổi module path
+## Bắt đầu service mới
 
-Bắt đầu một service mới từ template thì làm theo [docs/new-project.md](docs/new-project.md): đổi cả module path lẫn tên service. Mục này chỉ nói về module path.
-
-Repo dùng module path giả là `github.com/example/userapi`. Để đổi sang path của bạn:
+Trên bản clone mới của template, đổi module path và tên service bằng một lệnh, rồi làm tiếp theo [docs/new-project.md](docs/new-project.md):
 
 ```bash
-NEW=github.com/<you>/userapi
-go mod edit -module $NEW
-# .golangci.yml chứa đường dẫn package trong các rule depguard: bỏ sót file này thì
-# lint báo lỗi sai ở core, còn các rule chặn import sai thì âm thầm ngừng hoạt động.
-grep -rl github.com/example/userapi --include='*.go' --include='.golangci.yml' . \
-  | xargs sed -i "s#github.com/example/userapi#$NEW#g"
-go build ./... && go test ./... && golangci-lint run ./...
+scripts/rename.sh orders github.com/acme/orders
 ```
 
-Trên macOS, dùng `sed -i ''` thay cho `sed -i`.
+Script chỉ có trong template: nó tự xoá sau khi đổi tên thành công.
 
 ## Giấy phép
 

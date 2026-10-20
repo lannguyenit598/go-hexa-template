@@ -4,28 +4,17 @@ Checklist for a team starting a new service. Complete steps 1–3 on day one and
 
 ## 1. Create a repository and rename
 
-Create a repository from the GitHub template (**Use this template**; the owner must enable *Template repository* in Settings), clone it, then rename the module and service. Example: `orders`.
+Create a repository from the GitHub template (**Use this template**; the owner must enable *Template repository* in Settings), clone it, then rename the module and service in one command. Example: `orders`.
 
 ```bash
-NAME=orders
-NEW=github.com/acme/$NAME
-
-# Rename module paths, including depguard package paths in .golangci.yml.
-go mod edit -module $NEW
-grep -rl github.com/example/userapi --include='*.go' --include='.golangci.yml' . \
-  | xargs sed -i "s#github.com/example/userapi#$NEW#g"
-
-# Rename the command directory, binary, image, development database/role, PostgreSQL application_name,
-# OpenTelemetry service.name, logs, documentation, and Claude Code configuration.
-# Leave migrations unchanged (their comments do not affect behavior).
-git mv cmd/userapi cmd/$NAME
-git grep -l userapi -- ':!go.sum' ':!internal/adapter/outbound/postgres/migrations' \
-  | xargs sed -i "s/userapi/$NAME/g"
-
-make check
+scripts/rename.sh orders github.com/acme/orders
 ```
 
-On macOS, use `sed -i ''` instead of `sed -i`. This procedure was previously tested with build, lint (including depguard enforcement under the new path), and tests passing; `userapi` remained only in migrations.
+The script renames the module path (including depguard package paths in `.golangci.yml`), `cmd/userapi`, and every `userapi` string: binary, image, development database/role, PostgreSQL application_name, OpenTelemetry service.name, logs, documentation, and Claude Code configuration. Migrations stay unchanged (their comments do not affect behavior). It then deletes itself and the template-only `Template` workflow and runs `make check`. It does not commit: review `git status`, then commit.
+
+The name must match `^[a-z][a-z0-9_]*$`, because it also becomes an unquoted PostgreSQL role and database name and a Docker image tag. The script refuses a dirty working tree (exit 1) and invalid arguments (exit 2) before changing anything. It runs on macOS and Linux.
+
+If you are reading this inside a generated project, this step is already done.
 
 Then update manually:
 - `LICENSE`: owner and year.
