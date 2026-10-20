@@ -46,8 +46,10 @@ func main() {
 		err = app.Run(ctx, cfg, logger, app.Options{Version: version})
 	case "migrate":
 		err = app.Migrate(ctx, cfg, logger)
+	case "relay":
+		err = app.RunRelay(ctx, cfg, logger, app.Options{Version: version})
 	default:
-		err = fmt.Errorf("unknown command %q (usage: userapi [migrate])", cmd)
+		err = fmt.Errorf("unknown command %q (usage: userapi [migrate|relay])", cmd)
 	}
 	if err != nil {
 		logger.Error("userapi stopped with error", "error", err)

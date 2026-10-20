@@ -14,6 +14,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"github.com/example/userapi/internal/adapter/inbound/httpapi"
 	"github.com/example/userapi/internal/adapter/outbound/memory"
 	"github.com/example/userapi/internal/adapter/outbound/postgres"
@@ -40,18 +42,11 @@ type Options struct {
 // Image distroless không có lệnh `sleep` cho preStop kiểu exec. Kubernetes 1.30+ có action
 // preStop.sleep dựng sẵn, nhưng chờ trong app thì chạy được trên mọi nền tảng (ECS, Nomad...).
 func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, opts Options) error {
-	shutdownTelemetry, err := observability.Setup(ctx, opts.Version)
+	flushTelemetry, err := setupTelemetry(ctx, opts.Version, logger)
 	if err != nil {
 		return err
 	}
-	defer func() {
-		// Flush span/metric còn trong bộ đệm; dùng ctx mới vì ctx đã bị huỷ.
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err := shutdownTelemetry(ctx); err != nil {
-			logger.Warn("telemetry shutdown failed", "error", err)
-		}
-	}()
+	defer flushTelemetry()
 
 	// ---- Outbound adapters ----
 	repo, checkDB, closeRepo, err := newRepository(ctx, cfg, logger)
@@ -147,6 +142,24 @@ func newRepository(ctx context.Context, cfg config.Config, logger *slog.Logger) 
 }
 
 func newPostgresRepository(ctx context.Context, cfg config.Config, logger *slog.Logger) (port.UserRepository, func(context.Context) error, func(), error) {
+	pool, err := connectPostgres(ctx, cfg, logger)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	var checkDB func(context.Context) error
+	if cfg.ReadinessCheckDB {
+		checkDB = pool.Ping
+	}
+	var opts []postgres.Option
+	if cfg.Events.Sink != config.EventsSinkNone {
+		opts = append(opts, postgres.WithOutbox()) // relay (`userapi relay`) đẩy outbox lên broker
+	}
+	return postgres.NewUserRepository(pool, opts...), checkDB, pool.Close, nil
+}
+
+// connectPostgres mở pool, chạy migration nếu MIGRATE_ON_START, và dừng sớm, rõ ràng, nếu schema
+// cũ hơn code (Job migration chưa chạy / thất bại).
+func connectPostgres(ctx context.Context, cfg config.Config, logger *slog.Logger) (*pgxpool.Pool, error) {
 	pool, err := postgres.Connect(ctx, cfg.DB.URL, postgres.PoolOptions{
 		MaxConns:         cfg.DB.MaxConns,
 		MinConns:         cfg.DB.MinConns,
@@ -155,18 +168,17 @@ func newPostgresRepository(ctx context.Context, cfg config.Config, logger *slog.
 		StatementTimeout: cfg.DB.StatementTimeout,
 	})
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, err
 	}
-	fail := func(err error) (port.UserRepository, func(context.Context) error, func(), error) {
+	fail := func(err error) (*pgxpool.Pool, error) {
 		pool.Close()
-		return nil, nil, nil, err
+		return nil, err
 	}
 	if cfg.DB.MigrateOnStart {
 		if err := postgres.Migrate(ctx, cfg.DB.URL, logger); err != nil {
 			return fail(err)
 		}
 	}
-	// Dừng sớm, rõ ràng, nếu schema cũ hơn code (Job migration chưa chạy / thất bại).
 	pending, err := postgres.PendingMigrations(ctx, pool)
 	if err != nil {
 		return fail(err)
@@ -174,11 +186,23 @@ func newPostgresRepository(ctx context.Context, cfg config.Config, logger *slog.
 	if pending {
 		return fail(errors.New("database has pending migrations: run `userapi migrate` first (or set MIGRATE_ON_START=true)"))
 	}
-	var checkDB func(context.Context) error
-	if cfg.ReadinessCheckDB {
-		checkDB = pool.Ping
+	return pool, nil
+}
+
+// setupTelemetry bật OpenTelemetry; hàm trả về flush span/metric còn trong bộ đệm khi tắt.
+func setupTelemetry(ctx context.Context, version string, logger *slog.Logger) (flush func(), err error) {
+	shutdown, err := observability.Setup(ctx, version)
+	if err != nil {
+		return nil, err
 	}
-	return postgres.NewUserRepository(pool), checkDB, pool.Close, nil
+	return func() {
+		// ctx mới vì ctx của tiến trình đã bị huỷ lúc này.
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := shutdown(ctx); err != nil {
+			logger.Warn("telemetry shutdown failed", "error", err)
+		}
+	}, nil
 }
 
 var errDraining = errors.New("shutting down")

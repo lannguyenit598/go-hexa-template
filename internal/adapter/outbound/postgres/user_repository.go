@@ -24,13 +24,26 @@ const (
 )
 
 type UserRepository struct {
-	pool *pgxpool.Pool
+	pool   *pgxpool.Pool
+	outbox bool
 }
 
 var _ port.UserRepository = (*UserRepository)(nil)
 
-func NewUserRepository(pool *pgxpool.Pool) *UserRepository {
-	return &UserRepository{pool: pool}
+// Option tuỳ chỉnh UserRepository.
+type Option func(*UserRepository)
+
+// WithOutbox ghi một sự kiện vào bảng outbox trong cùng transaction với mỗi lần
+// Create/Update/Delete thành công (transactional outbox, xem docs/events.md). Hợp đồng của
+// port.UserRepository không đổi; core không biết gì về sự kiện.
+func WithOutbox() Option { return func(r *UserRepository) { r.outbox = true } }
+
+func NewUserRepository(pool *pgxpool.Pool, opts ...Option) *UserRepository {
+	r := &UserRepository{pool: pool}
+	for _, opt := range opts {
+		opt(r)
+	}
+	return r
 }
 
 // PoolOptions cấu hình pool kết nối. Giá trị 0 = dùng mặc định của pgx.
@@ -119,10 +132,14 @@ func (r userRow) toDomain() domain.User {
 const selectCols = `id::text AS id, email, name, created_at, updated_at, version`
 
 func (r *UserRepository) Create(ctx context.Context, u domain.User) error {
-	_, err := r.pool.Exec(ctx,
-		`INSERT INTO users (id, email, name, created_at, updated_at, version) VALUES ($1, $2, $3, $4, $5, $6)`,
-		u.ID.String(), u.Email.String(), u.Name, u.CreatedAt, u.UpdatedAt, u.Version)
-	return mapError(err)
+	return mapError(r.write(ctx, func(q querier) error {
+		if _, err := q.Exec(ctx,
+			`INSERT INTO users (id, email, name, created_at, updated_at, version) VALUES ($1, $2, $3, $4, $5, $6)`,
+			u.ID.String(), u.Email.String(), u.Name, u.CreatedAt, u.UpdatedAt, u.Version); err != nil {
+			return err
+		}
+		return r.appendEvent(ctx, q, eventUserRegistered, u.ID, u.Version, u.CreatedAt)
+	}))
 }
 
 func (r *UserRepository) GetByID(ctx context.Context, id domain.UserID) (domain.User, error) {
@@ -158,16 +175,25 @@ func (r *UserRepository) List(ctx context.Context, limit, offset int) ([]domain.
 	return users, total, nil
 }
 
-// Update là compare-and-set trên cột version: một câu UPDATE duy nhất, không cần
-// transaction hay SELECT ... FOR UPDATE, nên không giữ lock giữa lúc đọc và ghi.
+// Update là compare-and-set trên cột version: một câu UPDATE (cùng câu INSERT outbox trong một
+// transaction khi bật outbox), không có SELECT ... FOR UPDATE, nên không giữ lock giữa lúc đọc
+// và ghi.
 func (r *UserRepository) Update(ctx context.Context, u domain.User, expectedVersion int64) error {
-	tag, err := r.pool.Exec(ctx,
-		`UPDATE users SET email = $2, name = $3, updated_at = $4, version = $5 WHERE id = $1 AND version = $6`,
-		u.ID.String(), u.Email.String(), u.Name, u.UpdatedAt, u.Version, expectedVersion)
+	var updated bool
+	err := r.write(ctx, func(q querier) error {
+		tag, err := q.Exec(ctx,
+			`UPDATE users SET email = $2, name = $3, updated_at = $4, version = $5 WHERE id = $1 AND version = $6`,
+			u.ID.String(), u.Email.String(), u.Name, u.UpdatedAt, u.Version, expectedVersion)
+		if err != nil || tag.RowsAffected() == 0 {
+			return err
+		}
+		updated = true
+		return r.appendEvent(ctx, q, eventUserUpdated, u.ID, u.Version, u.UpdatedAt)
+	})
 	if err != nil {
 		return mapError(err)
 	}
-	if tag.RowsAffected() > 0 {
+	if updated {
 		return nil
 	}
 	// Không dòng nào được ghi: hoặc bản ghi không tồn tại, hoặc version đã đổi.
@@ -182,14 +208,14 @@ func (r *UserRepository) Update(ctx context.Context, u domain.User, expectedVers
 }
 
 func (r *UserRepository) Delete(ctx context.Context, id domain.UserID) error {
-	tag, err := r.pool.Exec(ctx, `DELETE FROM users WHERE id = $1`, id.String())
-	if err != nil {
-		return mapError(err)
-	}
-	if tag.RowsAffected() == 0 {
-		return port.ErrNotFound
-	}
-	return nil
+	return mapError(r.write(ctx, func(q querier) error {
+		// version cuối cùng đi kèm sự kiện user.deleted, để consumer xếp nó sau mọi bản cập nhật.
+		var version int64
+		if err := q.QueryRow(ctx, `DELETE FROM users WHERE id = $1 RETURNING version`, id.String()).Scan(&version); err != nil {
+			return err // pgx.ErrNoRows => port.ErrNotFound qua mapError
+		}
+		return r.appendEvent(ctx, q, eventUserDeleted, id, version, time.Now().UTC().Truncate(time.Microsecond))
+	}))
 }
 
 // mapError dịch lỗi của driver sang lỗi domain, để core không bao giờ thấy pgx.

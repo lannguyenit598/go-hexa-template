@@ -47,6 +47,8 @@ linters:
               desc: inbound adapters must not know about the database
             - pkg: github.com/exaring/otelpgx
               desc: inbound adapters must not know about the database
+            - pkg: github.com/twmb/franz-go
+              desc: inbound adapters must not know about the message broker; events go through the outbox
             - pkg: github.com/example/userapi/internal/app
               desc: only cmd may depend on the composition root
         # Mỗi adapter outbound độc lập: không import adapter outbound khác hay bộ test dùng chung.
@@ -64,6 +66,8 @@ linters:
             - pkg: github.com/example/userapi/internal/adapter/outbound/postgres
               desc: outbound adapters must not depend on each other
             - pkg: github.com/example/userapi/internal/adapter/outbound/system
+              desc: outbound adapters must not depend on each other
+            - pkg: github.com/example/userapi/internal/adapter/outbound/kafka
               desc: outbound adapters must not depend on each other
             - pkg: github.com/example/userapi/internal/adapter/outbound/repotest
               desc: the shared contract test kit is for tests only
@@ -96,6 +100,8 @@ linters:
               desc: adapters are wired in internal/app, not in cmd
             - pkg: github.com/labstack/echo
               desc: adapters are wired in internal/app, not in cmd
+            - pkg: github.com/twmb/franz-go
+              desc: adapters are wired in internal/app, not in cmd
         # Mọi package khác (kể cả package mới như internal/worker): chỉ composition root được biết adapter.
         # Thêm một loại package mới có quyền import adapter thì phải thêm rule riêng cho nó.
         everything-else:
@@ -116,6 +122,8 @@ linters:
               desc: only the postgres adapter may run migrations
             - pkg: github.com/labstack/echo
               desc: only the HTTP adapter may use the HTTP framework
+            - pkg: github.com/twmb/franz-go
+              desc: only the kafka adapter may use the Kafka client (internal/outbox talks to it through Sink)
     forbidigo:
       forbid:
         - pattern: ^time\.Now$

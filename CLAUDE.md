@@ -1,6 +1,6 @@
 # userapi: hướng dẫn cho Claude
 
-REST API quản lý user viết bằng Go 1.26 + Echo v5, theo kiến trúc Hexagonal. Tài liệu đầy đủ: `docs/architecture.md` (cho người phát triển), `docs/api.md` (hợp đồng HTTP), `docs/operations.md` (cấu hình, vận hành). Quy tắc riêng cho từng khu vực code nằm trong `.claude/rules/` và tự nạp khi bạn mở file tương ứng.
+REST API quản lý user viết bằng Go 1.26 + Echo v5, theo kiến trúc Hexagonal. Tài liệu đầy đủ: `docs/architecture.md` (cho người phát triển), `docs/api.md` (hợp đồng HTTP), `docs/events.md` (hợp đồng sự kiện), `docs/operations.md` (cấu hình, vận hành). Quy tắc riêng cho từng khu vực code nằm trong `.claude/rules/` và tự nạp khi bạn mở file tương ứng.
 
 ## Lệnh
 
@@ -10,6 +10,7 @@ REST API quản lý user viết bằng Go 1.26 + Echo v5, theo kiến trúc Hexa
 | Test kèm PostgreSQL | Đặt `TEST_DATABASE_URL=postgres://...` rồi `make check`. Không có biến này, test PostgreSQL bị skip: nói rõ điều đó khi báo kết quả |
 | Chạy API | `make run` (in-memory) hoặc `make run-pg` (cần Docker) |
 | Migration | `DATABASE_URL=... go run ./cmd/userapi migrate` |
+| Relay sự kiện (outbox → Kafka) | `STORAGE=postgres DATABASE_URL=... EVENTS_SINK=kafka KAFKA_BROKERS=... go run ./cmd/userapi relay` |
 
 Công cụ: Go ≥ 1.26 và golangci-lint **v2.14.0** (phải là bản build bằng Go ≥ phiên bản trong `go.mod`, nếu không lint sẽ từ chối chạy). CI ở `.github/workflows/ci.yml` chạy đúng các bước của `make check` cộng thêm govulncheck và build Docker.
 
@@ -34,6 +35,7 @@ Công cụ: Go ≥ 1.26 và golangci-lint **v2.14.0** (phải là bản build b�
 2. Hành vi mới có test đã được thấy **fail trước** khi sửa (TDD).
 3. Tài liệu được cập nhật cùng commit khi đổi:
    - hợp đồng HTTP → `docs/api.md` và `api.http`;
+   - loại hoặc schema sự kiện → `docs/events.md`;
    - biến môi trường → `docs/operations.md`, `.env.example`, `internal/config/config_test.go`;
    - kiến trúc hoặc quy tắc phụ thuộc → `docs/architecture.md` và `.golangci.yml`;
    - nội dung README → sửa **cả** `README.md` (tiếng Anh) và `README.vi.md` (tiếng Việt).
