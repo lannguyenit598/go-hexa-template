@@ -19,4 +19,6 @@ paths:
   - đổi module path thì phải đổi cả đường dẫn package trong các rule depguard (`grep -c github.com/example/userapi .golangci.yml` để đếm; bỏ sót thì rule âm thầm không còn tác dụng);
   - sau khi sửa rule depguard, thêm thử một file import vi phạm, xác nhận lint bắt được, rồi xoá file đó. File thử phải import một package **có thật** (package không tồn tại làm typecheck lỗi trước, depguard không chạy);
   - `forbidigo` và `gochecknoglobals` chỉ áp dụng cho `internal/core` (exclusion `path-except`); đó là phạm vi của quy tắc, không phải ngoại lệ để vượt lint.
-- CI chạy trên mọi PR và khi push lên `main`; không có job nào được phép đỏ khi merge.
+- CI chạy trên mọi PR, khi push lên `main` và hằng tuần (govulncheck); không có job nào được phép đỏ khi merge.
+- Action trong `.github/workflows` được pin theo commit SHA kèm comment phiên bản (`@<sha> # v7.0.1`). Nâng action: chọn bản đã phát hành ít nhất 2 tuần, lấy SHA của tag, sửa cả SHA lẫn comment. Dependabot (`.github/dependabot.yml`) tự đề xuất các bản nâng này.
+- CI dùng Go `1.26.x` mới nhất (`check-latest`), cùng dòng với image `golang:1.26-alpine` trong Dockerfile; dòng `go` trong `go.mod` là mức tối thiểu, không phải phiên bản CI dùng.

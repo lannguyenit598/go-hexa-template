@@ -18,7 +18,8 @@ PG_PORT=5433
 PG_DATA=/var/lib/postgresql/claude-test
 
 persist_env() {
-  if [ -n "${CLAUDE_ENV_FILE:-}" ]; then
+  # Không ghi trùng khi hook chạy lại (resume, clear, compact).
+  if [ -n "${CLAUDE_ENV_FILE:-}" ] && ! grep -qxF -- "$1" "$CLAUDE_ENV_FILE" 2>/dev/null; then
     echo "$1" >> "$CLAUDE_ENV_FILE"
   fi
 }

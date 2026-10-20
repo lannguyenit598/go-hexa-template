@@ -1,6 +1,9 @@
 .DEFAULT_GOAL := help
 DB_URL ?= postgres://userapi:userapi@localhost:5432/userapi?sslmode=disable
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+# Chỉ khởi động PostgreSQL bằng docker compose khi dùng DB_URL mặc định ở trên. Truyền DB_URL
+# (dòng lệnh hoặc biến môi trường) để chạy trên database của bạn mà không cần Docker.
+COMPOSE_DB := $(if $(filter file,$(origin DB_URL)),db-up)
 
 .PHONY: help run run-pg migrate test test-integration check cover lint build db-up db-down up down
 
@@ -10,16 +13,16 @@ help: ## Liệt kê các lệnh
 run: ## Chạy API với storage in-memory
 	go run ./cmd/userapi
 
-run-pg: db-up migrate ## Chạy API với PostgreSQL (khởi động DB bằng docker compose)
+run-pg: migrate ## Chạy API với PostgreSQL (DB_URL mặc định: khởi động DB bằng docker compose)
 	STORAGE=postgres DATABASE_URL="$(DB_URL)" go run ./cmd/userapi
 
-migrate: db-up ## Áp dụng migration PostgreSQL
+migrate: $(COMPOSE_DB) ## Áp dụng migration PostgreSQL (DB_URL=... để dùng database khác, không cần Docker)
 	DATABASE_URL="$(DB_URL)" go run ./cmd/userapi migrate
 
 test: ## Unit test + test HTTP (không cần DB)
 	go test -race ./...
 
-test-integration: db-up ## Chạy thêm contract test trên PostgreSQL (sẽ TRUNCATE bảng users và outbox)
+test-integration: $(COMPOSE_DB) ## Chạy thêm contract test trên PostgreSQL (sẽ TRUNCATE bảng users và outbox)
 	TEST_DATABASE_URL="$(DB_URL)" go test -race -count=1 ./...
 
 check: ## Mọi kiểm tra phải xanh trước khi commit: gofmt, go mod tidy, lint, test -race (gồm test PostgreSQL nếu có TEST_DATABASE_URL)

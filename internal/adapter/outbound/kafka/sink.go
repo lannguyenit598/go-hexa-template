@@ -5,13 +5,21 @@ package kafka
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/twmb/franz-go/pkg/kerr"
 	"github.com/twmb/franz-go/pkg/kgo"
+	"github.com/twmb/franz-go/pkg/sasl"
+	"github.com/twmb/franz-go/pkg/sasl/plain"
+	"github.com/twmb/franz-go/pkg/sasl/scram"
 
 	"github.com/example/userapi/internal/outbox"
 )
@@ -27,14 +35,77 @@ type Sink struct {
 
 var _ outbox.Sink = (*Sink)(nil)
 
+// Option tuỳ chỉnh kết nối tới broker.
+type Option func(*options) error
+
+type options struct {
+	tls  *tls.Config
+	sasl sasl.Mechanism
+}
+
+// WithTLS mã hoá kết nối bằng cfg (xem TLSConfig).
+func WithTLS(cfg *tls.Config) Option {
+	return func(o *options) error { o.tls = cfg; return nil }
+}
+
+// WithSASL xác thực với broker. mechanism: PLAIN, SCRAM-SHA-256 hoặc SCRAM-SHA-512 (Amazon MSK,
+// Confluent Cloud, Aiven... đều hỗ trợ ít nhất một cơ chế SCRAM hoặc PLAIN qua TLS).
+func WithSASL(mechanism, username, password string) Option {
+	return func(o *options) error {
+		switch strings.ToUpper(mechanism) {
+		case "PLAIN":
+			o.sasl = plain.Auth{User: username, Pass: password}.AsMechanism()
+		case "SCRAM-SHA-256":
+			o.sasl = scram.Auth{User: username, Pass: password}.AsSha256Mechanism()
+		case "SCRAM-SHA-512":
+			o.sasl = scram.Auth{User: username, Pass: password}.AsSha512Mechanism()
+		default:
+			return fmt.Errorf("unsupported SASL mechanism %q", mechanism)
+		}
+		return nil
+	}
+}
+
+// TLSConfig tạo cấu hình TLS cho client: TLS 1.2 trở lên, tin CA của hệ thống, hoặc chỉ CA trong
+// caFile (PEM) nếu được chỉ định. Không có tuỳ chọn bỏ qua kiểm tra chứng chỉ.
+func TLSConfig(caFile string) (*tls.Config, error) {
+	cfg := &tls.Config{MinVersion: tls.VersionTLS12}
+	if caFile == "" {
+		return cfg, nil
+	}
+	pemBytes, err := os.ReadFile(filepath.Clean(caFile)) // đường dẫn do người vận hành cấu hình
+	if err != nil {
+		return nil, fmt.Errorf("kafka CA file: %w", err)
+	}
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(pemBytes) {
+		return nil, fmt.Errorf("kafka CA file %s: no PEM certificates found", caFile)
+	}
+	cfg.RootCAs = pool
+	return cfg, nil
+}
+
 // NewSink tạo producer gửi vào topic. franz-go mặc định bật idempotent producer và acks=all:
 // broker không ghi trùng khi producer thử lại, và thứ tự trong một partition được giữ.
-func NewSink(brokers []string, topic string) (*Sink, error) {
-	client, err := kgo.NewClient(
+func NewSink(brokers []string, topic string, opts ...Option) (*Sink, error) {
+	var o options
+	for _, opt := range opts {
+		if err := opt(&o); err != nil {
+			return nil, err
+		}
+	}
+	kopts := []kgo.Opt{
 		kgo.SeedBrokers(brokers...),
 		kgo.DefaultProduceTopic(topic),
 		kgo.RecordDeliveryTimeout(deliveryTimeout),
-	)
+	}
+	if o.tls != nil {
+		kopts = append(kopts, kgo.DialTLSConfig(o.tls))
+	}
+	if o.sasl != nil {
+		kopts = append(kopts, kgo.SASL(o.sasl))
+	}
+	client, err := kgo.NewClient(kopts...)
 	if err != nil {
 		return nil, fmt.Errorf("kafka client: %w", err)
 	}

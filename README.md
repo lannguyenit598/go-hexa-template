@@ -33,6 +33,7 @@ The detailed documents are currently written in Vietnamese.
 | Deploying or operating the service | [docs/operations.md](docs/operations.md): configuration, Kubernetes, migrations and database roles, observability, troubleshooting |
 | Building on the template | [docs/architecture.md](docs/architecture.md): dependency rule, request flow, design decisions, how to extend |
 | Consuming the service's events | [docs/events.md](docs/events.md): event types, message format, delivery and ordering guarantees |
+| Starting a new project from this template | [docs/new-project.md](docs/new-project.md): renaming, removing what you don't need, GitHub setup, decisions to make before production |
 
 `docs/superpowers/` holds the specs and plans of earlier changes. They are historical records, accurate as of when they were written (line numbers in them may be out of date); do not use them as reference documentation.
 
@@ -106,6 +107,7 @@ api.http                     sample requests
 make help               # list all commands
 make test               # unit + HTTP + lifecycle tests, no database needed
 make test-integration   # adds tests against a real PostgreSQL (TRUNCATEs the users and outbox tables in the docker compose DB!)
+make migrate DB_URL=postgres://...   # any make target that needs PostgreSQL skips Docker when DB_URL is given
 make lint               # golangci-lint, including depguard for the dependency rule
 make build              # build the binary into ./bin, stamped with the git version
 ```
@@ -125,6 +127,8 @@ make build              # build the binary into ./bin, stamped with the git vers
 Tests that need PostgreSQL run only when `TEST_DATABASE_URL` is set and are skipped otherwise. CI always sets it, backed by a PostgreSQL service container.
 
 ## Changing the module path
+
+To start a new service from the template, follow [docs/new-project.md](docs/new-project.md): it renames the module path and the service name together. This section covers the module path only.
 
 The repo uses the placeholder module path `github.com/example/userapi`. To switch to yours:
 
