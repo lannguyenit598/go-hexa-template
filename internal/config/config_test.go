@@ -119,14 +119,14 @@ func TestLoad_KafkaSecurity(t *testing.T) {
 	cfg, err := config.Load(env(map[string]string{
 		"STORAGE": "postgres", "DATABASE_URL": "postgres://x", "EVENTS_SINK": "kafka", "KAFKA_BROKERS": "b:9096",
 		"KAFKA_TLS": "true", "KAFKA_TLS_CA_FILE": "/etc/kafka/ca.pem",
-		"KAFKA_SASL_MECHANISM": "scram-sha-512", "KAFKA_SASL_USERNAME": "relay", "KAFKA_SASL_PASSWORD": " s3 cret ", // Credentials are used verbatim.
+		"KAFKA_SASL_MECHANISM": "scram-sha-512", "KAFKA_SASL_USERNAME": "relay", "KAFKA_SASL_PASSWORD": " pw ", // Credentials are used verbatim.
 	}))
 	if err != nil {
 		t.Fatal(err)
 	}
 	ev := cfg.Events
 	if !ev.KafkaTLS || ev.KafkaTLSCAFile != "/etc/kafka/ca.pem" || ev.KafkaSASLMechanism != "SCRAM-SHA-512" ||
-		ev.KafkaSASLUsername != "relay" || ev.KafkaSASLPassword != " s3 cret " {
+		ev.KafkaSASLUsername != "relay" || ev.KafkaSASLPassword != " pw " {
 		t.Fatalf("%+v", ev)
 	}
 }
