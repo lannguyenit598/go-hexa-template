@@ -2,13 +2,13 @@ package port
 
 import "errors"
 
-// Lỗi kết quả của use case, dùng chung cho mọi aggregate. Chúng thuộc tầng application chứ
-// không thuộc domain: "không tìm thấy" hay "bị sửa đồng thời" là kết quả của việc đọc/ghi,
-// không phải quy tắc nghiệp vụ. Ngữ cảnh được thêm bằng wrap, ví dụ
-// fmt.Errorf("user %s: %w", id, port.ErrNotFound); so sánh bằng errors.Is.
-// Repository trả sentinel trần; service thêm ngữ cảnh.
+// Use-case outcome errors shared by all aggregates. These belong to the application layer,
+// not domain: "not found" and "concurrent modification" are read/write outcomes,
+// not business rules. Add context by wrapping, for example
+// fmt.Errorf("user %s: %w", id, port.ErrNotFound); compare with errors.Is.
+// Repositories return bare sentinels; services add context.
 var (
 	ErrNotFound = errors.New("not found")
-	// ErrVersionConflict: bản ghi đã bị thay đổi kể từ lúc được đọc (optimistic locking).
+	// ErrVersionConflict means the record changed since it was read (optimistic locking).
 	ErrVersionConflict = errors.New("version conflict")
 )

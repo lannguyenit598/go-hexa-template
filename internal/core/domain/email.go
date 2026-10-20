@@ -7,13 +7,13 @@ import (
 
 const MaxEmailLength = 254
 
-// Email là value object: một giá trị Email chỉ có thể được tạo ra qua ParseEmail (đã chuẩn
-// hoá và hợp lệ) hoặc EmailFromStore (dữ liệu đã được validate khi ghi). Code nhận một
-// Email không cần kiểm tra lại, và không thể vô tình gán một chuỗi rác vào User.Email.
+// Email is a value object. Use ParseEmail for validated input or EmailFromStore for persisted
+// data. The zero value is empty (see IsZero); callers must not assume it has been validated.
+// Its private field prevents direct assignment of arbitrary strings to User.Email.
 type Email struct{ v string }
 
-// ParseEmail chuẩn hoá (trim, chữ thường) rồi kiểm tra địa chỉ email.
-// Lỗi trả về là *ValidationError với field "email".
+// ParseEmail normalizes (trim, lowercase) and validates an email address.
+// Returns *ValidationError with the field "email" on failure.
 func ParseEmail(raw string) (Email, error) {
 	e, msg := parseEmail(raw)
 	if msg != "" {
@@ -24,16 +24,16 @@ func ParseEmail(raw string) (Email, error) {
 	return e, nil
 }
 
-// EmailFromStore dựng Email từ dữ liệu đã lưu mà KHÔNG validate lại. Cố ý như vậy: nếu sau này
-// quy tắc validate được thắt chặt, các bản ghi cũ vẫn phải đọc được, nếu không một thay đổi
-// quy tắc sẽ làm mọi request đọc bản ghi cũ bị lỗi 500. Chỉ adapter lưu trữ được dùng hàm này.
+// EmailFromStore reconstructs persisted data WITHOUT revalidating it. This is intentional:
+// stricter future validation must not make legacy records unreadable and turn reads into 500s.
+// Use only in storage adapters when restoring persisted values.
 func EmailFromStore(s string) Email { return Email{v: s} }
 
 func (e Email) String() string { return e.v }
 
 func (e Email) IsZero() bool { return e.v == "" }
 
-// parseEmail trả thông báo lỗi rỗng khi hợp lệ.
+// parseEmail returns an empty error message for valid input.
 func parseEmail(raw string) (Email, string) {
 	email := strings.ToLower(strings.TrimSpace(raw))
 	switch {
@@ -43,7 +43,7 @@ func parseEmail(raw string) (Email, string) {
 		return Email{}, "must be at most 254 characters"
 	}
 	addr, err := mail.ParseAddress(email)
-	// Chỉ chấp nhận địa chỉ trần ("a@b.com"), không chấp nhận "Tên <a@b.com>".
+	// Accept only bare addresses ("a@b.com"), not display names ("Name <a@b.com>").
 	if err != nil || addr.Address != email || addr.Name != "" {
 		return Email{}, "must be a valid email address"
 	}

@@ -9,16 +9,16 @@ paths:
   - "Dockerfile"
 ---
 
-# Composition root, cấu hình, hạ tầng dùng chung
+# Composition root, configuration, and shared infrastructure
 
-- `cmd/userapi/main.go` chỉ: đọc config, tạo logger, bắt tín hiệu, chọn lệnh, gọi `app.Run`/`app.Migrate`/`app.RunRelay`. Logic vòng đời đặt trong `internal/app`, nơi có test.
-- `internal/app` là nơi duy nhất lắp adapter vào core (`newRepository`, `httpapi.NewServer`, `newSink`). Mọi thứ mở ra trong `Run` phải được đóng trên **mọi** nhánh lỗi lúc khởi động.
-- Thứ tự tắt phải giữ nguyên: đánh dấu draining → chờ `ShutdownDelay` → `srv.Shutdown` → đóng pool → flush telemetry. Khi `srv.Shutdown` quá hạn, huỷ context gốc của request (`BaseContext`) và `srv.Close()` **trước** khi đóng pool; nếu không, `pool.Close()` chờ query chạy xong và tiến trình sống quá ngân sách. Có test trong `internal/app/app_test.go`; chạy lại khi sửa.
-- `newRepository` dùng `switch` có nhánh `default` trả lỗi: mỗi giá trị `Storage` phải có nhánh riêng.
-- Thêm biến môi trường thì làm đủ trong cùng commit:
-  1. đọc và validate trong `internal/config/config.go`, lỗi gom qua `parser`;
-  2. thêm case vào `config_test.go` (giá trị mặc định và giá trị sai);
-  3. thêm vào `.env.example`;
-  4. thêm vào bảng cấu hình trong `docs/operations.md` (mặc định, ý nghĩa, ràng buộc).
-- `internal/config` và `internal/observability` không import core, adapter hay `internal/app` (rule depguard `platform`).
-- Lời gọi I/O mạng phải nhận context: `net.ListenConfig{}.Listen(ctx, …)`, `http.NewRequestWithContext` (lint `noctx`).
+- `cmd/userapi/main.go` only reads config, creates a logger, handles signals, selects a command, and calls `app.Run`/`app.Migrate`/`app.RunRelay`. Keep lifecycle logic in `internal/app`, where it is tested.
+- `internal/app` is the only place that wires adapters into core (`newRepository`, `httpapi.NewServer`, `newSink`). Every resource opened in `Run` must be closed on **every** startup error path.
+- Preserve shutdown order: mark draining → wait `ShutdownDelay` → `srv.Shutdown` → close pool → flush telemetry. If shutdown times out, cancel the root request context (`BaseContext`) and call `srv.Close()` **before** closing the pool; otherwise `pool.Close()` waits for queries and exceeds the shutdown budget. Rerun `internal/app/app_test.go` when changing this.
+- `newRepository` uses a `switch` with an error-returning `default`: each `Storage` value needs its own branch.
+- Add environment variables completely in the same commit:
+  1. read and validate in `internal/config/config.go`, collecting errors through `parser`;
+  2. add default and invalid-value cases in `config_test.go`;
+  3. add to `.env.example`;
+  4. document default, meaning, and constraints in `docs/operations.md`.
+- `internal/config` and `internal/observability` must not import core, adapters, or `internal/app` (depguard `platform` rule).
+- Network I/O requires context: `net.ListenConfig{}.Listen(ctx, …)`, `http.NewRequestWithContext` (`noctx` lint).

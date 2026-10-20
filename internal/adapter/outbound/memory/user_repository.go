@@ -1,5 +1,5 @@
-// Package memory là adapter lưu trữ trong RAM. Dùng cho dev nhanh, demo và test.
-// Dữ liệu mất khi tắt tiến trình.
+// Package memory provides in-memory storage for quick development, demos, and tests.
+// Data is lost when the process stops.
 package memory
 
 import (

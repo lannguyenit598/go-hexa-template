@@ -4,14 +4,14 @@ paths:
   - "internal/adapter/outbound/postgres/migrations/*.sql"
 ---
 
-# Adapter outbound và persistence
+# Outbound adapters and persistence
 
-- Mỗi adapter outbound độc lập: không import adapter outbound khác, adapter inbound, Echo hay `internal/app` (depguard chặn). Thêm adapter mới thì thêm đường dẫn của nó vào rule `outbound-adapters` trong `.golangci.yml`.
-- Repository phải đúng hợp đồng trong comment của `port.UserRepository` và **vượt qua `repotest.Run`**. Hành vi mới của repository được thêm vào `repotest` trước, để mọi adapter cùng bị kiểm tra.
-- Trả sentinel trần (`port.ErrNotFound`, `port.ErrVersionConflict`, `domain.ErrEmailAlreadyExists`); dịch lỗi driver trong `mapError`, không để `pgx`/`pgconn` lọt ra ngoài adapter. Lỗi timeout phía database (`57014`, `statement_timeout`) được bọc thành `context.DeadlineExceeded` để HTTP trả 503.
-- `Update` là compare-and-set trên `version` trong **một** câu `UPDATE ... WHERE id = $1 AND version = $n`; không dùng `SELECT ... FOR UPDATE`. Khi bật outbox, câu đó và câu ghi outbox nằm trong một transaction ngắn (`r.write`).
-- Lệnh ghi mới của repository đi qua `r.write` và gọi `r.appendEvent` khi thành công, để sự kiện luôn commit cùng dữ liệu (xem `.claude/rules/messaging.md`).
-- SQL chỉ dùng tham số (`$1`), không nối chuỗi.
-- Trace không được chứa giá trị tham số (PII): giữ `otelpgx` ở cấu hình mặc định, không bật `WithIncludeQueryParameters`.
-- Migration: **không bao giờ sửa file đã merge**; luôn thêm file mới. Dùng skill `/add-migration`.
-- Kiểm tra trạng thái migration ở runtime phải chỉ đọc. `goose.HasPending` tự tạo bảng `goose_db_version`, nên luôn kiểm tra trước bằng `to_regclass`, như `PendingMigrations`.
+- Outbound adapters are independent: no other outbound adapters, inbound adapters, Echo, or `internal/app` imports (enforced by depguard). Add new adapter paths to `outbound-adapters` in `.golangci.yml`.
+- Repositories must satisfy the `port.UserRepository` comment contract and **pass `repotest.Run`**. Add new behavior to the shared suite first so every adapter is checked.
+- Return bare sentinels (`port.ErrNotFound`, `port.ErrVersionConflict`, `domain.ErrEmailAlreadyExists`). Translate driver errors in `mapError`; never leak `pgx`/`pgconn`. Map database timeouts (`57014`, `statement_timeout`) to `context.DeadlineExceeded` for HTTP 503.
+- `Update` uses compare-and-set on `version` in **one** `UPDATE ... WHERE id = $1 AND version = $n`, without `SELECT ... FOR UPDATE`. With outbox enabled, the update and event insert share a short transaction (`r.write`).
+- New repository writes use `r.write` and call `r.appendEvent` on success so events commit with data (see `.claude/rules/messaging.md`).
+- Parameterize SQL (`$1`); do not concatenate values.
+- Traces must not contain parameter values (personal data): keep default `otelpgx` settings without `WithIncludeQueryParameters`.
+- Migrations: **never change executable SQL in a merged migration**; add a new file. Use `/add-migration`. Comment-only translations must preserve SQL and goose directives.
+- Runtime migration checks must be read-only. `goose.HasPending` creates `goose_db_version`, so check `to_regclass` first as in `PendingMigrations`.

@@ -1,7 +1,7 @@
-// Package outbox chuyển sự kiện từ bảng outbox (ghi cùng transaction với dữ liệu) lên message
-// broker: transactional outbox. Package này không biết PostgreSQL hay Kafka; nó chỉ định nghĩa
-// Source và Sink, và adapter hiện thực chúng. Giao ít nhất một lần: consumer phải bỏ qua bản
-// trùng theo event_id hoặc version (xem docs/events.md).
+// Package outbox forwards events from an outbox table, written atomically with data,
+// to a message broker. It knows neither PostgreSQL nor Kafka; it defines
+// Source and Sink for adapters to implement. Delivery is at-least-once: consumers must
+// deduplicate by event_id or version (see docs/events.md).
 package outbox
 
 import (
@@ -12,54 +12,54 @@ import (
 	"time"
 )
 
-// Message là một sự kiện đã nằm trong outbox, sẵn sàng gửi lên broker.
+// Message is an outbox event ready for delivery to the broker.
 type Message struct {
 	ID      string // event_id (UUIDv7)
-	Key     string // ID của aggregate: broker giữ thứ tự theo key
-	Type    string // ví dụ "user.updated"
+	Key     string // Aggregate ID: broker partition key; see docs/events.md for ordering limits.
+	Type    string // For example, "user.updated".
 	Payload []byte // JSON, schema trong docs/events.md
 	Headers map[string]string
 }
 
-// ErrPermanent đánh dấu lỗi mà gửi lại cũng không thành công, ví dụ broker từ chối message vì
-// nội dung (quá lớn, không hợp lệ). Sink bọc lỗi đó bằng %w; Source tách message ra khỏi hàng đợi
-// (parked) thay vì thử lại mãi và chặn mọi message phía sau.
+// ErrPermanent marks errors that retries cannot fix, such as broker rejection of
+// oversized or invalid content. Sink wraps it with %w; Source parks the message
+// instead of retrying forever and blocking later messages.
 var ErrPermanent = errors.New("outbox: message rejected permanently")
 
-// Result là kết quả xử lý một lô.
+// Result contains the outcome of processing one batch.
 type Result struct {
-	Published int      // broker đã nhận, đã đánh dấu
-	Parked    []string // ID message bị từ chối vĩnh viễn, đã tách khỏi hàng đợi
-	Retry     int      // lỗi tạm thời: giữ nguyên, thử lại ở lần sau
-	Err       error    // lỗi publish đầu tiên trong lô (nếu có), để log
+	Published int      // Accepted by the broker and marked published.
+	Parked    []string // IDs permanently rejected and parked.
+	Retry     int      // Temporary failures: keep and retry later.
+	Err       error    // First publish error in the batch, if any, for logging.
 }
 
-// Source là nơi lưu outbox.
+// Source stores outbox messages.
 type Source interface {
-	// Process giữ tối đa limit message chưa publish (theo thứ tự ghi), gọi publish, rồi xử lý kết
-	// quả của TỪNG message trong cùng transaction: thành công thì đánh dấu đã publish, lỗi bọc
-	// ErrPermanent thì tách riêng, lỗi khác thì để nguyên cho lần sau. Lỗi trả về chỉ là lỗi của
-	// chính Source (database).
+	// Process selects up to limit unpublished messages in write order, calls publish, and handles
+	// each result in one transaction: mark successes as published, park errors wrapping
+	// ErrPermanent, and leave other failures for retry. The returned error describes a failure
+	// of batch processing itself; per-message publish failures are reported in Result.
 	Process(ctx context.Context, limit int, publish func(context.Context, []Message) []error) (Result, error)
-	// Purge xoá message đã publish trước thời điểm before. Message đã tách riêng không bị xoá.
+	// Purge deletes messages published before before. Parked messages are retained.
 	Purge(ctx context.Context, before time.Time) (int64, error)
 }
 
-// Sink gửi message lên broker. Publish trả lỗi theo từng message, cùng thứ tự với msgs:
-// errs[i] == nil nghĩa là broker đã nhận msgs[i].
+// Sink sends messages to the broker. Publish returns one error per message in input order:
+// errs[i] == nil means the broker accepted msgs[i].
 type Sink interface {
 	Publish(ctx context.Context, msgs []Message) []error
 }
 
 const (
-	// batchTimeout giới hạn một lô; lô đang chạy không bị huỷ theo tín hiệu tắt (xem Run).
+	// batchTimeout bounds a batch; shutdown signals do not cancel an active batch (see Run).
 	batchTimeout = 30 * time.Second
 	purgeEvery   = time.Hour
-	// healthSlack: biên cho HealthThreshold, phủ purge và độ trễ lập lịch.
+	// healthSlack allows time for purge and scheduling delays in HealthThreshold.
 	healthSlack = 30 * time.Second
 )
 
-// Relay đọc outbox theo lô và đẩy lên Sink cho tới khi ctx bị huỷ.
+// Relay reads outbox batches and forwards them to Sink until ctx is canceled.
 type Relay struct {
 	Source       Source
 	Sink         Sink
@@ -68,10 +68,10 @@ type Relay struct {
 	PollInterval time.Duration
 	Retention    time.Duration
 
-	lastActivity atomic.Int64 // UnixNano của lần vòng lặp tiến lên gần nhất; 0 = chưa chạy
+	lastActivity atomic.Int64 // UnixNano of the last loop progress; 0 = not started.
 }
 
-// LastActivity là lần gần nhất vòng lặp tiến lên (bắt đầu hoặc xong một lô); zero nếu chưa chạy.
+// LastActivity is the last loop progress (batch start or completion); zero before startup.
 func (r *Relay) LastActivity() time.Time {
 	if n := r.lastActivity.Load(); n != 0 {
 		return time.Unix(0, n)
@@ -79,13 +79,13 @@ func (r *Relay) LastActivity() time.Time {
 	return time.Time{}
 }
 
-// HealthThreshold là khoảng lặng dài nhất của một relay khoẻ: một lô dài nhất, một lần chờ poll
-// và một khoảng biên. Lặng lâu hơn nghĩa là vòng lặp bị treo.
+// HealthThreshold is the longest healthy silence: the maximum batch duration, a poll interval,
+// and slack. A longer silence indicates a stalled loop.
 func (r *Relay) HealthThreshold() time.Duration {
 	return batchTimeout + r.PollInterval + healthSlack
 }
 
-// Healthy cho liveness probe: relay đang chạy và vòng lặp tiến lên trong HealthThreshold.
+// Healthy reports whether the relay has started and progressed within HealthThreshold.
 func (r *Relay) Healthy(now time.Time) bool {
 	last := r.LastActivity()
 	return !last.IsZero() && now.Sub(last) <= r.HealthThreshold()
@@ -93,11 +93,11 @@ func (r *Relay) Healthy(now time.Time) bool {
 
 func (r *Relay) beat() { r.lastActivity.Store(time.Now().UnixNano()) }
 
-// Run chạy vòng lặp relay; trả nil khi ctx bị huỷ. Lỗi publish được log và thử lại ở lần poll
-// sau, nên Run không dừng vì broker tạm thời không tới được.
+// Run loops until ctx is canceled, returning nil. Publish errors are logged and retried
+// after polling, so temporary broker outages do not stop Run.
 //
-// Lô đang publish khi có tín hiệu tắt vẫn được chạy hết (tối đa batchTimeout): huỷ giữa chừng
-// sẽ khiến message đã tới broker không được đánh dấu, và bị gửi lại ở lần chạy sau.
+// An in-flight batch finishes during shutdown (up to batchTimeout): canceling midway can
+// leave delivered messages unmarked, causing redelivery on the next run.
 func (r *Relay) Run(ctx context.Context) error {
 	var lastPurge time.Time
 	for {
@@ -111,7 +111,7 @@ func (r *Relay) Run(ctx context.Context) error {
 			return nil
 		}
 		if err == nil && res.Retry == 0 && res.Published+len(res.Parked) == r.BatchSize {
-			continue // còn tồn đọng: đọc lô tiếp ngay
+			continue // Backlog remains: read the next batch immediately.
 		}
 		if time.Since(lastPurge) >= purgeEvery {
 			lastPurge = time.Now()
@@ -135,7 +135,7 @@ func (r *Relay) log(ctx context.Context, res Result, err error) {
 		return
 	}
 	if len(res.Parked) > 0 {
-		// Cần người xử lý: consumer sẽ không nhận các sự kiện này (xem docs/operations.md).
+		// Operator action required: consumers will not receive these events (see docs/operations.md).
 		r.Logger.ErrorContext(ctx, "outbox relay: parked messages the broker rejected permanently",
 			"count", len(res.Parked), "ids", res.Parked, "error", res.Err)
 	}

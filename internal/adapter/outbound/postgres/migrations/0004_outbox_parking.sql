@@ -1,7 +1,7 @@
 -- +goose Up
--- Message bị broker từ chối vĩnh viễn (ví dụ quá lớn) được tách khỏi hàng đợi thay vì chặn mọi
--- message phía sau: relay ghi parked_at và lý do, rồi không lấy lại nó nữa. Chỉ thêm cột
--- nullable, nên an toàn khi rolling deploy: relay cũ không biết tới hai cột này vẫn chạy được.
+-- Permanently rejected messages (for example, oversized ones) are parked rather than blocking
+-- later messages: the relay stores parked_at and the reason, then stops selecting them. Adding
+-- only nullable columns is safe for rolling deployments; old relays still work.
 ALTER TABLE outbox
     ADD COLUMN IF NOT EXISTS parked_at  TIMESTAMPTZ,
     ADD COLUMN IF NOT EXISTS last_error TEXT;

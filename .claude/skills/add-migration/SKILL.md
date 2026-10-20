@@ -1,74 +1,74 @@
 ---
 name: add-migration
 description: Use when changing the PostgreSQL schema of this userapi repo — adding/renaming/dropping a column, table, index or constraint, or when a feature needs new persisted data.
-argument-hint: "[thay đổi schema]"
+argument-hint: "[schema change]"
 ---
 
-# Thêm migration
+# Add a migration
 
-Thay đổi schema cần làm: $ARGUMENTS
+Requested schema change: $ARGUMENTS
 
-Pod cũ và pod mới cùng chạy trên schema mới trong lúc rolling deploy, nên mọi migration phải **tương thích ngược với code đang chạy** (expand/contract). Migration chạy bằng role migrator, với `lock_timeout = 5s` và không giới hạn `statement_timeout`.
+Old and new pods share the new schema during rolling deployments, so migrations must be **backward-compatible with running code** (expand/contract). They run as the migrator role with `lock_timeout = 5s` and no `statement_timeout` limit.
 
-## 1. Chọn chiến lược
+## 1. Choose a strategy
 
-| Muốn | Làm | Số lần deploy |
+| Goal | Approach | Deployments |
 |---|---|---|
-| Thêm cột | Cột nullable hoặc có `DEFAULT` hằng số | 1 |
-| Thêm `NOT NULL` cho cột đã có | Backfill trước; `ADD CONSTRAINT ... CHECK (col IS NOT NULL) NOT VALID`, rồi `VALIDATE CONSTRAINT` ở migration sau | 2 |
-| Đổi tên / đổi kiểu / xoá cột | Thêm cột mới → code ghi cả hai → backfill → code chỉ đọc cột mới → xoá cột cũ | 3+ |
-| Index trên bảng có dữ liệu | `CREATE INDEX CONCURRENTLY` trong **file riêng** có `-- +goose NO TRANSACTION` | 1 |
-| Foreign key | `ADD CONSTRAINT ... NOT VALID`, rồi `VALIDATE CONSTRAINT` ở migration riêng | 2 |
+| Add a column | Nullable column or constant `DEFAULT` | 1 |
+| Add `NOT NULL` to an existing column | Backfill; `ADD CONSTRAINT ... CHECK (col IS NOT NULL) NOT VALID`; then `VALIDATE CONSTRAINT` in a later migration | 2 |
+| Rename / change type / remove a column | Add column → dual-write → backfill → read new column only → remove old column | 3+ |
+| Index an existing table | `CREATE INDEX CONCURRENTLY` in a **separate file** with `-- +goose NO TRANSACTION` | 1 |
+| Foreign key | `ADD CONSTRAINT ... NOT VALID`, then `VALIDATE CONSTRAINT` in a separate migration | 2 |
 
-Nếu thay đổi cần nhiều lần deploy, nói rõ với người dùng và chỉ làm bước đầu trong PR này.
+If multiple deployments are required, explain this to the user and implement only the first step in this PR.
 
-## 2. Viết file
+## 2. Write the file
 
-- **Không sửa file migration đã merge**; luôn tạo file mới.
-- Đường dẫn: `internal/adapter/outbound/postgres/migrations/NNNN_mo_ta_ngan.sql`, với `NNNN` là số kế tiếp, 4 chữ số (xem `ls` thư mục).
-- Định dạng goose:
+- **Do not modify executable SQL in merged migrations**; create a new file. Comment translations must preserve SQL and goose directives.
+- Path: `internal/adapter/outbound/postgres/migrations/NNNN_short_description.sql`, with the next four-digit `NNNN` (list the directory).
+- goose format:
 
 ```sql
 -- +goose Up
--- Lý do và chiến lược (expand/contract), viết bằng tiếng Việt.
+-- Explain the reason and expand/contract strategy in English.
 ALTER TABLE users ADD COLUMN IF NOT EXISTS phone TEXT;
 
 -- +goose Down
 ALTER TABLE users DROP COLUMN IF EXISTS phone;
 ```
 
-- File có `CREATE INDEX CONCURRENTLY` phải bắt đầu bằng `-- +goose NO TRANSACTION`, và chỉ chứa câu lệnh đó.
+- Files containing `CREATE INDEX CONCURRENTLY` must begin with `-- +goose NO TRANSACTION` and contain only that statement.
 
-## 3. Cập nhật code persistence
+## 3. Update persistence code
 
-Trong `internal/adapter/outbound/postgres/user_repository.go`: struct `userRow`, hằng `selectCols`, câu `INSERT`/`UPDATE`, `toDomain`. Code mới phải chạy được cả khi cột mới còn rỗng (dữ liệu cũ).
+In `internal/adapter/outbound/postgres/user_repository.go`, update `userRow`, `selectCols`, `INSERT`/`UPDATE`, and `toDomain`. New code must handle empty new columns in legacy records.
 
-## 4. Kiểm chứng (cần PostgreSQL, đặt `TEST_DATABASE_URL`)
+## 4. Verify (requires PostgreSQL and `TEST_DATABASE_URL`)
 
-1. Migration chạy được trên database trống: `TestPendingMigrations_EmptySchema` áp dụng toàn bộ migration trên một schema mới.
-2. Chạy hai lần liên tiếp vẫn thành công (lần hai không làm gì): `DATABASE_URL=$TEST_DATABASE_URL go run ./cmd/userapi migrate`.
-3. Contract test và toàn bộ suite: `make check`.
-4. Nếu có `Down`: chạy thử up → down → up trên một schema tạm (lần đầu mất khoảng 1 phút để tải goose CLI):
+1. Apply all migrations to an empty schema with `TestPendingMigrations_EmptySchema`.
+2. Run twice successfully (the second run is a no-op): `DATABASE_URL=$TEST_DATABASE_URL go run ./cmd/userapi migrate`.
+3. Run contract tests and the full suite: `make check`.
+4. If `Down` exists, test up → down → up in a temporary schema (the first goose CLI download takes about a minute):
    ```bash
    S=down_check
    psql "$TEST_DATABASE_URL" -c "DROP SCHEMA IF EXISTS $S CASCADE; CREATE SCHEMA $S"
    G="go run github.com/pressly/goose/v3/cmd/goose@v3.27.0 -dir internal/adapter/outbound/postgres/migrations postgres"
-   DSN="$TEST_DATABASE_URL&search_path=$S"   # TEST_DATABASE_URL đã có '?', nên nối bằng '&'
+   DSN="$TEST_DATABASE_URL&search_path=$S"   # TEST_DATABASE_URL already contains '?'; append with '&'.
    $G "$DSN" up && $G "$DSN" down && $G "$DSN" up
    psql "$TEST_DATABASE_URL" -c "DROP SCHEMA $S CASCADE"
    ```
-   Giữ phiên bản goose CLI trùng với `go.mod`.
+   Keep the goose CLI version aligned with `go.mod`.
 
-## 5. Tài liệu
+## 5. Documentation
 
-Có ví dụ hay quy tắc mới cho việc viết migration thì cập nhật mục expand/contract trong `docs/operations.md`.
+Update the expand/contract section of `docs/operations.md` with new migration examples or rules.
 
-## Lỗi thường gặp
+## Common mistakes
 
-| Lỗi | Hậu quả | Đúng là |
+| Mistake | Consequence | Correct approach |
 |---|---|---|
-| Sửa file migration đã merge | Database đã chạy file cũ không bao giờ nhận thay đổi | File mới |
-| `ADD COLUMN ... NOT NULL` không có `DEFAULT` | Lỗi trên bảng có dữ liệu; pod cũ không `INSERT` được | Nullable/`DEFAULT`, `NOT NULL` ở bước sau |
-| `CREATE INDEX CONCURRENTLY` chung file với lệnh khác | Lỗi "cannot run inside a transaction block" | File riêng + `NO TRANSACTION` |
-| `CREATE INDEX` thường trên bảng lớn | Khoá ghi toàn bảng trong lúc tạo index | `CONCURRENTLY` |
-| Xoá/đổi tên cột trong cùng lần deploy với code mới | Pod cũ lỗi `column does not exist` | Expand/contract qua nhiều lần deploy |
+| Change a merged migration | Databases that applied the original never receive the change | New file |
+| `ADD COLUMN ... NOT NULL` without `DEFAULT` | Fails on populated tables; old pods cannot insert | Nullable/`DEFAULT`; add `NOT NULL` later |
+| `CREATE INDEX CONCURRENTLY` with other statements | "cannot run inside a transaction block" | Separate file + `NO TRANSACTION` |
+| Regular `CREATE INDEX` on a large table | Blocks writes while building | `CONCURRENTLY` |
+| Remove/rename a column with the new code deployment | Old pods fail with `column does not exist` | Expand/contract across deployments |

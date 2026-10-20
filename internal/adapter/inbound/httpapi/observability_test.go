@@ -52,7 +52,7 @@ func TestTracingAndRequestScopedLogs(t *testing.T) {
 		t.Fatalf("span name = %q, want route-based name", span.Name())
 	}
 
-	// Dòng access log mang request_id (cũng có trong header) và trace_id của span.
+	// The access log includes request_id (also in the header) and the span trace_id.
 	var line map[string]any
 	if err := json.Unmarshal(bytes.TrimSpace(logs.Bytes()), &line); err != nil {
 		t.Fatalf("log: %v (%s)", err, logs.String())

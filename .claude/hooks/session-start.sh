@@ -1,9 +1,9 @@
 #!/bin/bash
-# SessionStart hook cho Claude Code cloud session: chuẩn bị đủ công cụ để `make check` chạy được.
-#   1. Toolchain Go theo go.mod (tải tự động qua GOTOOLCHAIN=auto) và các module.
-#   2. golangci-lint đúng phiên bản CI (phải build bằng Go >= dòng `go` trong go.mod).
-#   3. PostgreSQL cục bộ (nếu image có sẵn) và TEST_DATABASE_URL, để chạy cả integration test.
-# Idempotent: chạy lại nhiều lần an toàn. Chỉ chạy trong cloud session.
+# SessionStart hook for Claude Code cloud sessions: prepare the tools needed by `make check`.
+#   1. Go toolchain from go.mod (downloaded through GOTOOLCHAIN=auto) and modules.
+#   2. The CI version of golangci-lint (built with Go >= the `go` directive in go.mod).
+#   3. Local PostgreSQL (when available in the image) and TEST_DATABASE_URL for integration tests.
+# Idempotent: safe to run repeatedly. Runs only in cloud sessions.
 set -euo pipefail
 
 if [ "${CLAUDE_CODE_REMOTE:-}" != "true" ]; then
@@ -12,23 +12,23 @@ fi
 
 cd "${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel)}"
 
-# Giữ đồng bộ với .github/workflows/ci.yml.
+# Keep in sync with .github/workflows/ci.yml.
 LINT_VERSION="v2.14.0"
 PG_PORT=5433
 PG_DATA=/var/lib/postgresql/claude-test
 
 persist_env() {
-  # Không ghi trùng khi hook chạy lại (resume, clear, compact).
+  # Avoid duplicate entries when the hook runs again (resume, clear, compact).
   if [ -n "${CLAUDE_ENV_FILE:-}" ] && ! grep -qxF -- "$1" "$CLAUDE_ENV_FILE" 2>/dev/null; then
     echo "$1" >> "$CLAUDE_ENV_FILE"
   fi
 }
 
-# 1. Toolchain Go và module. Lệnh go đầu tiên trong repo tự tải toolchain mà go.mod yêu cầu.
+# 1. Go toolchain and modules. The first go command downloads the toolchain required by go.mod.
 go mod download
 echo "session-start: $(go version)"
 
-# 2. golangci-lint. Bản cài sẵn trong image có thể quá cũ cho Go của repo, nên cài đúng bản CI vào GOPATH/bin.
+# 2. golangci-lint. The preinstalled version may be too old; install the CI version in GOPATH/bin.
 GOBIN_DIR="$(go env GOPATH)/bin"
 if ! "$GOBIN_DIR/golangci-lint" version 2>/dev/null | grep -q "has version ${LINT_VERSION#v} "; then
   GOBIN="$GOBIN_DIR" go install "github.com/golangci/golangci-lint/v2/cmd/golangci-lint@${LINT_VERSION}"
@@ -36,7 +36,7 @@ fi
 persist_env "export PATH=\"$GOBIN_DIR:\$PATH\""
 echo "session-start: $("$GOBIN_DIR/golangci-lint" version)"
 
-# 3. PostgreSQL cho integration test. Không bắt buộc: thiếu thì test PostgreSQL tự skip.
+# 3. PostgreSQL for integration tests. Optional: PostgreSQL tests skip when unavailable.
 setup_postgres() {
   local pg_bin
   pg_bin="$(ls -d /usr/lib/postgresql/*/bin 2>/dev/null | sort -V | tail -1)" || return 1

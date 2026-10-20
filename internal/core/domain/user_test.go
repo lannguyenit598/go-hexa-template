@@ -41,7 +41,7 @@ func TestNewUser_Validation(t *testing.T) {
 		{"bad email", "not-an-email", "Bob", []string{"email"}},
 		{"display-name form rejected", "Bob <bob@example.com>", "Bob", []string{"email"}},
 		{"name too long", "bob@example.com", strings.Repeat("x", 101), []string{"name"}},
-		{"unicode name at limit is ok", "bob@example.com", strings.Repeat("ữ", 100), nil},
+		{"unicode name at limit is ok", "bob@example.com", strings.Repeat("\u1eef", 100), nil},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -96,7 +96,7 @@ func TestApply(t *testing.T) {
 func TestUserID_Valid(t *testing.T) {
 	cases := map[domain.UserID]bool{
 		validID:                                true,
-		"0192F3A4-5B6C-7D8E-9F01-23456789ABCD": false, // phải là chữ thường
+		"0192F3A4-5B6C-7D8E-9F01-23456789ABCD": false, // Must be lowercase.
 		"not-a-uuid":                           false,
 		"":                                     false,
 		"0192f3a4x5b6c-7d8e-9f01-23456789abcd": false,
@@ -122,7 +122,7 @@ func TestParseEmail(t *testing.T) {
 }
 
 func TestEmailFromStore_DoesNotRevalidate(t *testing.T) {
-	// Dữ liệu cũ phải đọc được kể cả khi không còn hợp lệ theo quy tắc hiện tại.
+	// Legacy data must remain readable even when it fails current validation rules.
 	if got := domain.EmailFromStore("legacy-value").String(); got != "legacy-value" {
 		t.Fatalf("got %q", got)
 	}

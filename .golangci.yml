@@ -2,21 +2,21 @@ version: "2"
 
 linters:
   enable:
-    - depguard # thực thi quy tắc phụ thuộc của kiến trúc hexagonal (xem rules bên dưới)
-    - forbidigo # core không dùng đồng hồ/logger toàn cục (chỉ áp dụng cho internal/core, xem exclusions)
-    - gochecknoglobals # core không có state toàn cục (chỉ áp dụng cho internal/core, xem exclusions)
-    - errorlint # so sánh lỗi bằng errors.Is/As, wrap bằng %w
+    - depguard # Enforce hexagonal dependency rules (see rules below).
+    - forbidigo # No global clock/logger in core (internal/core only; see exclusions).
+    - gochecknoglobals # No global state in core (internal/core only; see exclusions).
+    - errorlint # Compare errors with errors.Is/As and wrap with %w.
     - bodyclose
-    - noctx # không gọi I/O mạng mà thiếu context
+    - noctx # No network I/O without a context.
     - gosec
     - misspell
     - unconvert
   settings:
     depguard:
       rules:
-        # Core (domain, port, service) chỉ được phụ thuộc thư viện chuẩn và chính nó, trừ những
-        # package thư viện chuẩn thuộc về adapter (HTTP, SQL) hoặc composition root (môi trường).
-        # Test của core được phép dùng adapter (ví dụ repository in-memory) nên loại trừ $test.
+        # Core (domain, port, service) may depend only on itself and the standard library, excluding
+        # standard packages owned by adapters (HTTP, SQL) or the composition root (environment).
+        # Core tests may use adapters (such as the memory repository), so exclude $test.
         core:
           files:
             - "**/internal/core/**"
@@ -31,7 +31,7 @@ linters:
               desc: the core must not know about the database; declare a port instead
             - pkg: os
               desc: configuration and the environment belong to the composition root
-        # Adapter inbound không được biết storage; adapter outbound không được biết transport.
+        # Inbound adapters must not know storage; outbound adapters must not know transport.
         inbound-adapters:
           files:
             - "**/internal/adapter/inbound/**"
@@ -53,7 +53,7 @@ linters:
               desc: events are written by the storage adapter inside its transaction, never from a transport
             - pkg: github.com/example/userapi/internal/app
               desc: only cmd may depend on the composition root
-        # Mỗi adapter outbound độc lập: không import adapter outbound khác hay bộ test dùng chung.
+        # Outbound adapters are independent: no imports of other outbound adapters or shared test suites.
         outbound-adapters:
           files:
             - "**/internal/adapter/outbound/**"
@@ -75,7 +75,7 @@ linters:
               desc: the shared contract test kit is for tests only
             - pkg: github.com/example/userapi/internal/app
               desc: only cmd may depend on the composition root
-        # Hạ tầng dùng chung (config, observability) không được biết core, adapter hay app.
+        # Shared infrastructure (config, observability) must not know core, adapters, or app.
         platform:
           files:
             - "**/internal/observability/**"
@@ -90,7 +90,7 @@ linters:
               desc: platform packages must not depend on the outbox relay
             - pkg: github.com/example/userapi/internal/app
               desc: only cmd may depend on the composition root
-        # Chỉ adapter kafka được dùng client Kafka: adapter khác publish thẳng lên broker là dual write.
+        # Only the kafka adapter may use a Kafka client; direct publishing elsewhere would be a dual write.
         outbound-adapters-no-broker:
           files:
             - "**/internal/adapter/outbound/**"
@@ -99,7 +99,7 @@ linters:
           deny:
             - pkg: github.com/twmb/franz-go
               desc: only the kafka adapter may use the Kafka client; other adapters write events to the outbox
-        # internal/outbox chỉ định nghĩa Source/Sink và vòng lặp relay: không biết database, broker hay domain.
+        # internal/outbox defines Source/Sink and the relay loop; it knows no database, broker, or domain.
         outbox:
           files:
             - "**/internal/outbox/**"
@@ -109,7 +109,7 @@ linters:
           deny:
             - pkg: database/sql
               desc: internal/outbox must not know the database; postgres.OutboxSource implements Source
-        # cmd chỉ đọc config, tạo logger, bắt tín hiệu và gọi internal/app; adapter được lắp trong internal/app.
+        # cmd reads config, creates a logger, handles signals, and calls internal/app, which wires adapters.
         cmd:
           files:
             - "**/cmd/**"
@@ -127,8 +127,8 @@ linters:
               desc: adapters are wired in internal/app, not in cmd
             - pkg: github.com/pressly/goose
               desc: migrations run through internal/app (app.Migrate), not from cmd
-        # Mọi package khác (kể cả package mới như internal/worker): chỉ composition root được biết adapter.
-        # Thêm một loại package mới có quyền import adapter thì phải thêm rule riêng cho nó.
+        # All other packages (including new ones such as internal/worker): only the composition root may know adapters.
+        # A new package category allowed to import adapters needs its own rule.
         everything-else:
           files:
             - $all
@@ -159,8 +159,8 @@ linters:
     presets:
       - std-error-handling
     rules:
-      # Hai linter này thực thi quy tắc riêng của core; ngoài core (adapter, composition root, test)
-      # đọc đồng hồ thật hay có biến package-level là hợp lệ.
+      # These linters enforce core-specific rules. Outside core (adapters, composition root, tests),
+      # using the real clock or package-level variables is allowed.
       - path-except: internal/core/
         linters:
           - forbidigo

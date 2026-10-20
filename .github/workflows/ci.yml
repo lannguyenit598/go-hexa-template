@@ -4,7 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
-  # Chạy lại hằng tuần trên main: govulncheck bắt lỗ hổng mới công bố dù code không đổi.
+  # Run weekly on main: govulncheck catches newly disclosed vulnerabilities even without code changes.
   schedule:
     - cron: "17 3 * * 1"
   workflow_dispatch:
@@ -48,7 +48,7 @@ jobs:
           --health-timeout 3s
           --health-retries 15
     env:
-      # Bật contract test + test đồng thời trên PostgreSQL thật.
+      # Enable contract and concurrency tests against real PostgreSQL.
       TEST_DATABASE_URL: postgres://userapi:userapi@localhost:5432/userapi?sslmode=disable
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -73,8 +73,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          # Cùng phiên bản Go với image build production (Dockerfile), vì lỗ hổng của
-          # thư viện chuẩn phụ thuộc vào toolchain thực sự dùng để build binary.
+          # Use the same Go version as the production build image (Dockerfile), since standard-library
+          # vulnerabilities depend on the toolchain actually used to build the binary.
           go-version: "1.26.x"
           check-latest: true
       - run: go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...

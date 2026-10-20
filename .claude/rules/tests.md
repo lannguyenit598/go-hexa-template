@@ -5,15 +5,15 @@ paths:
   - "internal/adapter/outbound/postgres/pgtest/**"
 ---
 
-# Viết test
+# Writing tests
 
-- TDD: chạy test và thấy nó **fail đúng lý do** trước khi sửa code. Test pass ngay từ đầu nghĩa là nó chưa kiểm tra điều bạn nghĩ.
-- Đặt tên test theo hành vi (`TestUpdate_EmptyPatchIsNoOp`); dùng table test khi nhiều input cùng một kỳ vọng.
-- Không gọi `t.Fatal`/`t.FailNow` trong goroutine khác goroutine của test: dựng mọi thứ có thể fail (config, listener…) trước khi `go func()`, và trả lỗi về qua channel.
-- Không dùng `time.Sleep` để chờ một điều kiện; polling có deadline (xem `startApp` trong `internal/app/app_test.go`). Deadline phải rộng hơn mọi cơ chế chờ bên dưới; ví dụ advisory lock của goose thử lại mỗi 5s, nên test có migrate cần chờ ≥ 15s.
-- HTTP client trong test: tắt keep-alive (`DisableKeepAlives: true`) khi kiểm tra việc server đóng kết nối; tạo request bằng `NewRequestWithContext`.
-- Test cần PostgreSQL:
-  - đọc `TEST_DATABASE_URL` và tự skip khi thiếu;
-  - cần schema sạch, riêng biệt (database trống, migration) thì dùng `pgtest.FreshSchemaDSN(t)`;
-  - test trong package `postgres` dùng chung bảng `users` và `TRUNCATE` nó, nên không giả định dữ liệu do test khác tạo ra.
-- `go test ./...` chạy các package **song song** trên cùng database: không dựa vào thứ tự giữa các package.
+- TDD: run a test and observe it **fail for the intended reason** before implementation. An immediately passing test may not check the intended behavior.
+- Name tests by behavior (`TestUpdate_EmptyPatchIsNoOp`); use tables for multiple inputs with the same expectation.
+- Never call `t.Fatal`/`t.FailNow` outside the test goroutine: prepare fallible resources (config, listeners...) before `go func()` and return errors through channels.
+- Do not use `time.Sleep` to await a condition; poll with a deadline (see `startApp` in `internal/app/app_test.go`). Allow for underlying retries: goose advisory locks retry every 5s, so migration tests need at least 15s.
+- HTTP clients testing connection closure must disable keep-alive (`DisableKeepAlives: true`); create requests with `NewRequestWithContext`.
+- PostgreSQL tests:
+  - read `TEST_DATABASE_URL` and skip when absent;
+  - use `pgtest.FreshSchemaDSN(t)` for isolated empty schemas and migrations;
+  - tests in package `postgres` share and `TRUNCATE` the users table; do not rely on data from other tests.
+- `go test ./...` runs packages **concurrently** against the same database; do not rely on package order.

@@ -32,7 +32,7 @@ func publishOne(t *testing.T, sink *kafka.Sink) error {
 	return sink.Publish(ctx, []outbox.Message{{ID: "e1", Key: "u1", Type: "user.registered", Payload: []byte(`{}`)}})[0]
 }
 
-// Broker yêu cầu SASL (MSK, Confluent, Aiven...): sink xác thực bằng SCRAM hoặc PLAIN.
+// Brokers requiring SASL (MSK, Confluent, Aiven...): authenticate using SCRAM or PLAIN.
 func TestSink_AuthenticatesWithSASL(t *testing.T) {
 	for _, mech := range []string{"SCRAM-SHA-256", "SCRAM-SHA-512", "PLAIN"} {
 		t.Run(mech, func(t *testing.T) {
@@ -70,8 +70,8 @@ func TestNewSink_RejectsUnknownSASLMechanism(t *testing.T) {
 	}
 }
 
-// Broker dùng TLS với CA nội bộ: sink tin CA trong file được chỉ định, và từ chối broker khi
-// không có CA đó (không bao giờ tắt kiểm tra chứng chỉ).
+// TLS with a private CA: trust the specified CA file and reject the broker without it;
+// never disable certificate verification.
 func TestSink_ConnectsOverTLSWithACAFile(t *testing.T) {
 	serverCfg, caFile := selfSignedTLS(t)
 	c, err := kfake.NewCluster(kfake.NumBrokers(1), kfake.SeedTopics(1, "users"), kfake.TLS(serverCfg))
@@ -93,7 +93,7 @@ func TestSink_ConnectsOverTLSWithACAFile(t *testing.T) {
 		t.Fatalf("publish over TLS: %v", err)
 	}
 
-	systemRoots, err := kafka.TLSConfig("") // chỉ tin CA của hệ thống: CA tự ký phải bị từ chối
+	systemRoots, err := kafka.TLSConfig("") // Trust only system CAs: reject the self-signed CA.
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -120,7 +120,7 @@ func TestTLSConfig_RejectsUnreadableCAFile(t *testing.T) {
 	}
 }
 
-// selfSignedTLS tạo một CA tự ký cho 127.0.0.1; trả cấu hình TLS cho broker và đường dẫn file CA.
+// selfSignedTLS creates a self-signed CA for 127.0.0.1 and returns broker TLS config and the CA file path.
 func selfSignedTLS(t *testing.T) (*tls.Config, string) {
 	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)

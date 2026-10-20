@@ -17,15 +17,15 @@ import (
 	"github.com/example/userapi/internal/outbox"
 )
 
-// Loại sự kiện. Schema và cam kết tương thích: docs/events.md.
+// Event types. Schema and compatibility guarantees: docs/events.md.
 const (
 	eventUserRegistered = "user.registered"
 	eventUserUpdated    = "user.updated"
 	eventUserDeleted    = "user.deleted"
 )
 
-// userEvent là sự kiện "mỏng": chỉ ID, version và thời điểm, không có PII (email, name).
-// Consumer cần chi tiết thì gọi API. Xoá user vì vậy không đòi hỏi xoá gì trên broker.
+// userEvent is a thin event: IDs, version, and time, without email or name.
+// Consumers fetch details from the API. Deleting a user does not require deleting their name/email from the broker.
 type userEvent struct {
 	SchemaVersion int       `json:"schema_version"`
 	EventID       string    `json:"event_id"`
@@ -35,14 +35,14 @@ type userEvent struct {
 	Version       int64     `json:"version"`
 }
 
-// querier là phần chung của pool và transaction mà các lệnh ghi cần.
+// querier is the pool/transaction interface needed by write operations.
 type querier interface {
 	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
 }
 
-// write chạy fn trong một transaction khi outbox bật (thay đổi dữ liệu và sự kiện cùng commit
-// hoặc cùng rollback), hoặc thẳng trên pool khi tắt.
+// write executes fn in a transaction when outbox is enabled (data and event commit or
+// roll back together), or directly on the pool when disabled.
 func (r *UserRepository) write(ctx context.Context, fn func(q querier) error) error {
 	if !r.outbox {
 		return fn(r.pool)
@@ -50,8 +50,8 @@ func (r *UserRepository) write(ctx context.Context, fn func(q querier) error) er
 	return pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error { return fn(tx) })
 }
 
-// appendEvent ghi sự kiện vào outbox bằng q (transaction của lần ghi). Trace context của request
-// được lưu vào headers, để trace đi tiếp qua broker tới consumer.
+// appendEvent writes through q, the mutation's transaction. Request trace context is saved
+// in headers so tracing continues through the broker to consumers.
 func (r *UserRepository) appendEvent(ctx context.Context, q querier, eventType string, id domain.UserID, version int64, at time.Time) error {
 	if !r.outbox {
 		return nil
@@ -71,13 +71,13 @@ func (r *UserRepository) appendEvent(ctx context.Context, q querier, eventType s
 	if err != nil {
 		return fmt.Errorf("outbox payload: %w", err)
 	}
-	// Chỉ trace context (traceparent/tracestate), không dùng propagator toàn cục: nó gồm cả Baggage,
-	// mà baggage do client tự đặt có thể chứa dữ liệu cá nhân hay giá trị tuỳ ý.
+	// Use only trace context (traceparent/tracestate), not the global propagator that includes Baggage:
+	// client-supplied baggage may contain personal data or arbitrary values.
 	headers := propagation.MapCarrier{}
 	propagation.TraceContext{}.Inject(ctx, headers)
-	// created_at = clock_timestamp() (thời điểm câu INSERT chạy), không phải now() (thời điểm
-	// transaction bắt đầu): câu INSERT chạy sau khi lệnh ghi đã giữ khoá dòng của user, nên thứ tự
-	// created_at của một user khớp thứ tự commit, kể cả khi transaction bắt đầu theo thứ tự khác.
+	// created_at uses clock_timestamp() (INSERT time), not now() (transaction start time).
+	// The INSERT runs after the mutation has locked the user row, so that user's created_at order
+	// matches commit order even when transactions started in a different order.
 	_, err = q.Exec(ctx,
 		`INSERT INTO outbox (id, aggregate_id, event_type, payload, headers, created_at)
 		VALUES ($1, $2, $3, $4, $5, clock_timestamp())`,
@@ -85,7 +85,7 @@ func (r *UserRepository) appendEvent(ctx context.Context, q querier, eventType s
 	return err
 }
 
-// OutboxSource hiện thực outbox.Source trên bảng outbox.
+// OutboxSource implements outbox.Source using the outbox table.
 type OutboxSource struct {
 	pool *pgxpool.Pool
 }
@@ -94,8 +94,8 @@ var _ outbox.Source = (*OutboxSource)(nil)
 
 func NewOutboxSource(pool *pgxpool.Pool) *OutboxSource { return &OutboxSource{pool: pool} }
 
-// Process khoá một lô bằng FOR UPDATE SKIP LOCKED: nhiều relay chạy song song không lấy trùng
-// message, và không chờ nhau. Khoá được giữ tới khi publish xong và kết quả từng message được ghi.
+// Process locks a batch with FOR UPDATE SKIP LOCKED: concurrent relays do not select the same
+// message or wait for each other. Locks remain until publishing and per-message result updates finish.
 func (s *OutboxSource) Process(ctx context.Context, limit int, publish func(context.Context, []outbox.Message) []error) (outbox.Result, error) {
 	var res outbox.Result
 	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {

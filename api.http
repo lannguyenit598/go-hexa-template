@@ -1,59 +1,59 @@
-### Dùng với REST Client (VS Code) hoặc HTTP Client (JetBrains).
-### Tài liệu đầy đủ: docs/api.md
+### Use with REST Client (VS Code) or HTTP Client (JetBrains).
+### Full documentation: docs/api.md
 @base = http://localhost:8080
 
-### Tạo user. Response có Location (đường dẫn user mới) và ETag: "1"
+### Create a user. Response includes Location (new user path) and ETag: "1"
 POST {{base}}/api/v1/users
 Content-Type: application/json
 X-Request-Id: demo-create-1
 
 {"email": "lan@example.com", "name": "Lan Nguyen"}
 
-### Danh sách (phân trang). limit > 100 được giới hạn thành 100; offset tối đa 10000
+### List users (paginated). limit > 100 is capped at 100; maximum offset is 10000
 GET {{base}}/api/v1/users?limit=20&offset=0
 
-### Lấy 1 user (thay id). Ghi lại header ETag để dùng cho If-Match ngay bên dưới
+### Get one user (replace id). Save the ETag header for If-Match below
 GET {{base}}/api/v1/users/REPLACE_WITH_ID
 
-### Cập nhật có kiểm tra version: thay "1" bằng ETag vừa GET. Sai version => 412
-### (Response có ETag mới; gửi lại request này lần nữa sẽ nhận 412)
+### Update with a version check: replace "1" with the ETag from GET. Wrong version => 412
+### (Response includes a new ETag; repeating this request returns 412)
 PATCH {{base}}/api/v1/users/REPLACE_WITH_ID
 Content-Type: application/json
 If-Match: "1"
 
 {"name": "Lan Tran"}
 
-### Cập nhật từng phần, không kiểm tra version: field không gửi (hoặc null) được giữ nguyên
+### Partial update without a version check: omitted fields (or null) are unchanged
 PATCH {{base}}/api/v1/users/REPLACE_WITH_ID
 Content-Type: application/json
 
 {"name": "Lan Pham"}
 
-### --- Ví dụ lỗi ---
+### --- Error examples ---
 
-### 422: dữ liệu không hợp lệ, có danh sách lỗi theo từng field
+### 422: invalid input, with errors for individual fields
 POST {{base}}/api/v1/users
 Content-Type: application/json
 
 {"email": "not-an-email", "name": ""}
 
-### 409: email đã tồn tại (chạy sau request "Tạo user" ở trên)
+### 409: email already exists (run after the Create user request above)
 POST {{base}}/api/v1/users
 Content-Type: application/json
 
 {"email": "LAN@example.com", "name": "Someone Else"}
 
-### 415: thiếu Content-Type (hoặc Content-Type không phải application/json)
+### 415: missing Content-Type (or Content-Type other than application/json)
 POST {{base}}/api/v1/users
 
 {"email": "x@example.com", "name": "X"}
 
-### 404: ID sai định dạng cũng trả 404
+### 404: malformed IDs also return 404
 GET {{base}}/api/v1/users/not-a-uuid
 
-### --- Xoá (chạy sau các ví dụ lỗi: 409 ở trên cần user vẫn còn) ---
+### --- Delete (run after the error examples: 409 above requires the user to exist) ---
 
-### DELETE không kiểm tra If-Match
+### DELETE does not check If-Match
 DELETE {{base}}/api/v1/users/REPLACE_WITH_ID
 
 ### --- Probe ---

@@ -17,15 +17,15 @@ import (
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 )
 
-// Shutdown flush dữ liệu còn trong bộ đệm rồi đóng exporter.
+// Shutdown flushes buffered data and closes exporters.
 type Shutdown func(context.Context) error
 
-// Setup bật OpenTelemetry khi có cấu hình OTLP theo biến môi trường chuẩn
-// (OTEL_EXPORTER_OTLP_ENDPOINT, OTEL_SERVICE_NAME, OTEL_TRACES_SAMPLER...). Khi không có,
-// các provider toàn cục giữ nguyên dạng no-op: instrumentation vẫn chạy nhưng gần như không tốn gì,
-// và không có exporter nào cố kết nối tới localhost:4318 rồi ghi log lỗi.
+// Setup enables OpenTelemetry when standard environment variables configure OTLP
+// (OTEL_EXPORTER_OTLP_ENDPOINT, OTEL_SERVICE_NAME, OTEL_TRACES_SAMPLER...). Otherwise,
+// global providers remain no-ops: instrumentation still runs with negligible overhead,
+// and no exporter tries localhost:4318 and logs connection failures.
 func Setup(ctx context.Context, serviceVersion string) (Shutdown, error) {
-	// Propagator luôn được đặt: dù không export, trace context từ upstream vẫn được chuyển tiếp.
+	// Always install the propagator so upstream trace context is forwarded even without export.
 	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(propagation.TraceContext{}, propagation.Baggage{}))
 
 	if !Enabled(os.Getenv) {
@@ -37,7 +37,7 @@ func Setup(ctx context.Context, serviceVersion string) (Shutdown, error) {
 			attribute.String("service.name", "userapi"),
 			attribute.String("service.version", serviceVersion),
 		),
-		resource.WithFromEnv(), // OTEL_SERVICE_NAME, OTEL_RESOURCE_ATTRIBUTES ghi đè giá trị trên
+		resource.WithFromEnv(), // OTEL_SERVICE_NAME and OTEL_RESOURCE_ATTRIBUTES override the values above.
 		resource.WithTelemetrySDK(),
 		resource.WithHost(),
 	)
@@ -49,7 +49,7 @@ func Setup(ctx context.Context, serviceVersion string) (Shutdown, error) {
 	if err != nil {
 		return nil, fmt.Errorf("otlp trace exporter: %w", err)
 	}
-	// Sampler đọc từ OTEL_TRACES_SAMPLER / OTEL_TRACES_SAMPLER_ARG (mặc định: parentbased_always_on).
+	// Read sampler from OTEL_TRACES_SAMPLER / OTEL_TRACES_SAMPLER_ARG (default: parentbased_always_on).
 	tp := sdktrace.NewTracerProvider(sdktrace.WithBatcher(traceExp), sdktrace.WithResource(res))
 
 	metricExp, err := otlpmetrichttp.New(ctx)
@@ -67,7 +67,7 @@ func Setup(ctx context.Context, serviceVersion string) (Shutdown, error) {
 	}, nil
 }
 
-// Enabled: OpenTelemetry được bật khi có endpoint OTLP và không bị tắt bằng OTEL_SDK_DISABLED.
+// Enabled reports an OTLP endpoint is configured and OTEL_SDK_DISABLED is not set to disable it.
 func Enabled(getenv func(string) string) bool {
 	if strings.EqualFold(getenv("OTEL_SDK_DISABLED"), "true") {
 		return false

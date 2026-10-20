@@ -15,14 +15,14 @@ import (
 	"github.com/example/userapi/internal/core/port"
 )
 
-// ---------- DTO: hình dạng JSON trên dây, tách khỏi domain ----------
+// ---------- DTO: JSON wire format, separate from domain ----------
 
 type createUserRequest struct {
 	Email string `json:"email"`
 	Name  string `json:"name"`
 }
 
-// Con trỏ để phân biệt "không gửi field" (nil) với "gửi chuỗi rỗng".
+// Pointers distinguish an omitted field (nil) from an explicitly empty string.
 type updateUserRequest struct {
 	Email *string `json:"email"`
 	Name  *string `json:"name"`
@@ -59,13 +59,13 @@ func toResponse(u domain.User) userResponse {
 	}
 }
 
-// etag là strong ETag dựa trên version: cùng version thì cùng biểu diễn JSON.
+// etag is a strong ETag based on version: the same resource version has the same JSON representation.
 func etag(u domain.User) string { return `"` + strconv.FormatInt(u.Version, 10) + `"` }
 
-// parseIfMatch trả version client mong đợi; 0 nếu không có header hoặc là "*".
-// Header không phải một strong ETag dạng "N" thì không thể khớp => 412 theo RFC 9110.
-// (Weak ETag W/"N" cũng không bao giờ khớp vì If-Match dùng so sánh strong.)
-// Header rỗng hoặc danh sách nhiều ETag cũng trả 412: thà từ chối còn hơn ghi đè vô điều kiện.
+// parseIfMatch returns the version expected by the client; 0 for an absent header or "*".
+// A header other than a strong ETag of the form "N" cannot match => 412 per RFC 9110.
+// (Weak ETags W/"N" never match because If-Match uses strong comparison.)
+// Empty headers and lists of ETags also return 412: reject instead of overwriting unconditionally.
 func parseIfMatch(c *echo.Context) (int64, error) {
 	values := c.Request().Header.Values("If-Match")
 	if len(values) == 0 {
@@ -75,8 +75,8 @@ func parseIfMatch(c *echo.Context) (int64, error) {
 	if raw == "*" {
 		return 0, nil
 	}
-	// So khớp strong là so từng ký tự với ETag đã cấp ("<version>"), nên chỉ nhận đúng dạng đó:
-	// không dấu, không số 0 ở đầu, không khoảng trắng ("+2", "02" không khớp "2").
+	// Strong comparison matches the issued ETag ("<version>") character for character, accepting only:
+	// no sign, leading zeros, or whitespace ("+2" and "02" do not match "2").
 	if len(raw) >= 3 && raw[0] == '"' && raw[len(raw)-1] == '"' && isCanonicalVersion(raw[1:len(raw)-1]) {
 		if v, err := strconv.ParseInt(raw[1:len(raw)-1], 10, 64); err == nil {
 			return v, nil
@@ -85,7 +85,7 @@ func parseIfMatch(c *echo.Context) (int64, error) {
 	return 0, errPreconditionFailed
 }
 
-// isCanonicalVersion: chuỗi là số nguyên dương viết như strconv.FormatInt viết ra.
+// isCanonicalVersion checks for a positive integer formatted as strconv.FormatInt would produce.
 func isCanonicalVersion(s string) bool {
 	if s == "" || s[0] < '1' || s[0] > '9' {
 		return false
@@ -100,10 +100,10 @@ func isCanonicalVersion(s string) bool {
 
 var errPreconditionFailed = echo.NewHTTPError(http.StatusPreconditionFailed, "If-Match does not match the current version of the resource")
 
-// bindJSON đọc body JSON vào target. Khác echo.BindBody, nó chỉ nhận application/json (BindBody
-// còn nhận form và XML, khiến body sai định dạng bị bỏ qua âm thầm), so media type không phân biệt
-// hoa thường như RFC 9110 (BindBody thì có), và trả detail cho biết vì sao body hỏng. Không có
-// body (Content-Length 0) thì không làm gì.
+// bindJSON reads JSON into target. Unlike echo.BindBody, it accepts only application/json (BindBody
+// also accepts forms and XML, silently ignoring incorrectly formatted bodies), compares media types
+// case-insensitively per RFC 9110 (unlike BindBody), and explains malformed bodies in detail.
+// An absent body (Content-Length 0) is a no-op.
 func bindJSON(c *echo.Context, target any) error {
 	req := c.Request()
 	if req.ContentLength == 0 {
@@ -117,7 +117,7 @@ func bindJSON(c *echo.Context, target any) error {
 	if err == nil {
 		return nil
 	}
-	// BodyLimit báo vượt giới hạn qua lỗi đọc body, bị Deserialize bọc thành 400.
+	// BodyLimit reports excess size as a body read error, which Deserialize wraps as 400.
 	if errors.Is(err, echo.ErrStatusRequestEntityTooLarge) {
 		return echo.ErrStatusRequestEntityTooLarge
 	}
@@ -150,7 +150,7 @@ type userHandler struct {
 func (h *userHandler) create(c *echo.Context) error {
 	var req createUserRequest
 	if err := bindJSON(c, &req); err != nil {
-		return err // *echo.HTTPError 400/413/415, error handler lo phần còn lại
+		return err // *echo.HTTPError 400/413/415; the error handler handles the response.
 	}
 	u, err := h.users.Register(c.Request().Context(), port.RegisterUserCmd{Email: req.Email, Name: req.Name})
 	if err != nil {
@@ -207,8 +207,8 @@ func (h *userHandler) update(c *echo.Context) error {
 		ExpectedVersion: expected,
 	})
 	if err != nil {
-		// Client đã gửi If-Match: xung đột version là điều kiện tiên quyết không thoả (412).
-		// Không có If-Match: service đã tự retry mà vẫn xung đột => 409 (xem toProblem).
+		// With If-Match, a version conflict means the precondition failed (412).
+		// Without If-Match, conflicts remaining after service retries become 409 (see toProblem).
 		if expected != 0 && errors.Is(err, port.ErrVersionConflict) {
 			return errPreconditionFailed
 		}

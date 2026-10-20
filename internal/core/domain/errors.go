@@ -6,19 +6,19 @@ import (
 	"strings"
 )
 
-// Domain chỉ giữ lỗi của quy tắc nghiệp vụ (dữ liệu không hợp lệ, email đã được dùng).
-// Lỗi kết quả của use case (không tìm thấy, xung đột version) nằm ở package port.
-// Adapter inbound (HTTP, gRPC, CLI...) tự quyết định ánh xạ chúng sang mã lỗi của giao thức;
-// core không biết gì về HTTP status.
+// Domain contains business-rule errors (invalid input, email already in use).
+// Use-case outcome errors (not found, version conflict) belong to package port.
+// Inbound adapters (HTTP, gRPC, CLI...) map them to protocol-specific errors;
+// core knows nothing about HTTP status codes.
 var ErrEmailAlreadyExists = errors.New("email already exists")
 
-// FieldError mô tả một lỗi trên một trường dữ liệu.
+// FieldError describes a validation error for one field.
 type FieldError struct {
 	Field   string
 	Message string
 }
 
-// ValidationError gom tất cả lỗi kiểm tra dữ liệu để trả về một lần.
+// ValidationError collects all input errors for a single response.
 type ValidationError struct {
 	Fields []FieldError
 }

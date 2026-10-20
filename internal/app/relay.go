@@ -15,9 +15,9 @@ import (
 	"github.com/example/userapi/internal/outbox"
 )
 
-// RunRelay chạy relay của transactional outbox (lệnh `userapi relay`): đọc sự kiện mà API đã ghi
-// vào bảng outbox và gửi lên broker, cho tới khi ctx bị huỷ. Chạy thành tiến trình riêng (cùng
-// image với API) để scale và khởi động lại độc lập với API.
+// RunRelay runs the transactional outbox relay (`userapi relay`): read API-written events
+// from the outbox and send them to the broker until ctx is canceled. Run in a separate process
+// using the API image, allowing independent scaling and restarts.
 func RunRelay(ctx context.Context, cfg config.Config, logger *slog.Logger, opts Options) error {
 	if cfg.Events.Sink == config.EventsSinkNone {
 		return errors.New("EVENTS_SINK=none: there is nothing to relay (set EVENTS_SINK, see docs/events.md)")
@@ -28,7 +28,7 @@ func RunRelay(ctx context.Context, cfg config.Config, logger *slog.Logger, opts 
 	}
 	defer flushTelemetry()
 
-	// Broker trước database: cấu hình sink sai (kể cả quên nhánh trong newSink) lộ ra ngay.
+	// Check the broker first to expose invalid sink configuration, including missing newSink branches.
 	sink, closeSink, err := newSink(ctx, cfg)
 	if err != nil {
 		return err
@@ -61,9 +61,9 @@ func RunRelay(ctx context.Context, cfg config.Config, logger *slog.Logger, opts 
 	return err
 }
 
-// serveRelayHealth mở GET /healthz cho liveness probe của relay: 200 khi vòng lặp còn tiến lên,
-// 503 khi bị treo quá relay.HealthThreshold() (Kubernetes sẽ khởi động lại pod). Relay không có
-// readiness: nó không nhận traffic.
+// serveRelayHealth exposes GET /healthz: 200 while the relay loop progresses,
+// 503 when stalled beyond relay.HealthThreshold() (Kubernetes restarts the pod).
+// The relay has no readiness probe because it receives no traffic.
 func serveRelayHealth(ctx context.Context, cfg config.Config, opts Options, relay *outbox.Relay, logger *slog.Logger) (stop func(), err error) {
 	ln := opts.Listener
 	if ln == nil {
@@ -94,8 +94,8 @@ func serveRelayHealth(ctx context.Context, cfg config.Config, opts Options, rela
 	}, nil
 }
 
-// newSink chọn adapter broker theo cấu hình, và kiểm tra kết nối ngay để cấu hình sai lộ ra lúc
-// khởi động. Mỗi giá trị EventsSink phải có nhánh riêng.
+// newSink selects the broker adapter and checks connectivity immediately to expose startup
+// configuration errors. Each EventsSink value needs its own branch.
 func newSink(ctx context.Context, cfg config.Config) (outbox.Sink, func(), error) {
 	switch cfg.Events.Sink {
 	case config.EventsSinkKafka:

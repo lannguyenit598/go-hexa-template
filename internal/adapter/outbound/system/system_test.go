@@ -7,8 +7,8 @@ import (
 	"github.com/example/userapi/internal/adapter/outbound/system"
 )
 
-// PostgreSQL lưu timestamptz tới micro giây: đồng hồ phải làm tròn sẵn, nếu không giá trị
-// trả về lúc tạo sẽ khác giá trị đọc lại từ database (ETag/so sánh thời gian lệch nhau).
+// PostgreSQL stores timestamptz at microsecond precision: truncate the clock beforehand so
+// creation responses match subsequent reads (ETags/time comparisons remain consistent).
 func TestClock_IsUTCWithMicrosecondPrecision(t *testing.T) {
 	for range 1000 {
 		now := system.Clock{}.Now()

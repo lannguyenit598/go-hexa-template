@@ -20,11 +20,11 @@ import (
 	"github.com/example/userapi/internal/core/service"
 )
 
-// Integration test: chỉ chạy khi có TEST_DATABASE_URL, ví dụ
+// Integration test: runs only with TEST_DATABASE_URL, for example
 //
 //	TEST_DATABASE_URL=postgres://userapi:userapi@localhost:5432/userapi?sslmode=disable go test ./...
 //
-// CẢNH BÁO: test sẽ TRUNCATE bảng users. Đừng trỏ vào database thật.
+// WARNING: this test TRUNCATEs users and outbox. Never point it at a real application database.
 func TestUserRepositoryContract(t *testing.T) {
 	dsn := os.Getenv("TEST_DATABASE_URL")
 	if dsn == "" {
@@ -44,7 +44,7 @@ func TestUserRepositoryContract(t *testing.T) {
 		t.Fatalf("pending migrations after Migrate: %v %v", pending, err)
 	}
 
-	// Ghi outbox trong cùng transaction không được làm đổi hợp đồng của repository.
+	// Writing the outbox in the same transaction must not change the repository contract.
 	for _, tc := range []struct {
 		name string
 		opts []postgres.Option
@@ -94,7 +94,7 @@ func TestUserRepositoryContract(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		// Mỗi lần ghi thành công tăng version đúng 1: không lần ghi nào bị ghi đè âm thầm.
+		// Each successful write increments version by exactly 1: no write is silently overwritten.
 		if got.Version != 1+successes.Load() {
 			t.Fatalf("version = %d, successes = %d", got.Version, successes.Load())
 		}
@@ -102,8 +102,8 @@ func TestUserRepositoryContract(t *testing.T) {
 	})
 }
 
-// statement_timeout (DB_STATEMENT_TIMEOUT) là giới hạn thời gian của request ở phía database:
-// lỗi phải được nhận ra là context.DeadlineExceeded để HTTP trả 503, không phải 500.
+// statement_timeout (DB_STATEMENT_TIMEOUT) bounds request execution at the database:
+// the error must match context.DeadlineExceeded so HTTP returns 503 rather than 500.
 func TestStatementTimeout_IsDeadlineExceeded(t *testing.T) {
 	dsn := pgtest.FreshSchemaDSN(t)
 	ctx := context.Background()
@@ -116,7 +116,7 @@ func TestStatementTimeout_IsDeadlineExceeded(t *testing.T) {
 	}
 	t.Cleanup(pool.Close)
 
-	// Giữ khoá bảng trong một transaction khác để truy vấn của repository phải chờ tới khi hết hạn.
+	// Lock the table in another transaction so the repository query waits until timeout.
 	tx, err := pool.Begin(ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -145,8 +145,8 @@ func TestPendingMigrations_EmptySchema(t *testing.T) {
 	if err != nil || !pending {
 		t.Fatalf("empty database: pending=%v err=%v, want pending=true err=nil", pending, err)
 	}
-	// Kiểm tra phải chỉ đọc: app thường chạy bằng role không có quyền DDL, nên không được tự tạo
-	// bảng version của goose (nếu tạo, role chỉ có DML sẽ gặp "permission denied" khó hiểu).
+	// The check must be read-only: application roles often lack DDL privileges, so do not create
+	// goose's version table (a DML-only role would get a confusing "permission denied").
 	var created bool
 	if err := pool.QueryRow(ctx, `SELECT to_regclass('goose_db_version') IS NOT NULL`).Scan(&created); err != nil {
 		t.Fatal(err)

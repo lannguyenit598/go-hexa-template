@@ -1,101 +1,103 @@
-# Vận hành
+# Operations
 
-Tài liệu cho người triển khai và vận hành `userapi`: cấu hình, triển khai trên Kubernetes, migration, observability và xử lý sự cố.
+Deployment and operations reference for userapi: configuration, Kubernetes, migrations, observability, and troubleshooting.
 
-## Cấu hình
+## Configuration
 
-Mọi cấu hình đọc từ biến môi trường. Cấu hình sai làm tiến trình dừng ngay khi khởi động (exit code 1), và mọi lỗi được báo cùng một lúc trên một dòng. Dòng này là text ra **stderr** (`ERROR invalid configuration error=...`), không phải JSON, vì logger JSON chỉ được dựng sau khi đọc xong cấu hình. Mẫu đầy đủ: [`.env.example`](../.env.example).
+All configuration comes from environment variables. Invalid configuration exits immediately with code 1, reporting all errors on one line. This line is text on **stderr** (`ERROR invalid configuration error=...`), not JSON, because the JSON logger is created afterward. Full example: [`.env.example`](../.env.example).
 
-| Biến | Mặc định | Ý nghĩa | Ràng buộc |
+| Variable | Default | Meaning | Constraints |
 |---|---|---|---|
-| `HTTP_ADDR` | `:8080` | Địa chỉ lắng nghe | |
-| `STORAGE` | `memory` | `memory` hoặc `postgres` | Không phân biệt hoa thường |
-| `DATABASE_URL` | (trống) | URL PostgreSQL | Bắt buộc khi `STORAGE=postgres` và cho lệnh `migrate` |
-| `LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error` | Không phân biệt hoa thường; nhận cả dạng `warn+1` của `slog` |
-| `REQUEST_TIMEOUT` | `10s` | Timeout của context cho mỗi request | `> 0` |
-| `HTTP_IDLE_TIMEOUT` | `75s` | Thời gian giữ keep-alive connection rảnh | `> 0`; phải lớn hơn idle timeout của LB |
-| `SHUTDOWN_DELAY` | `0s` | Thời gian vẫn phục vụ sau SIGTERM trước khi đóng listener | `≥ 0`; Kubernetes: 5s–10s |
-| `SHUTDOWN_TIMEOUT` | `10s` | Thời gian chờ request đang chạy, tính sau `SHUTDOWN_DELAY` | `≥ 0` |
-| `TRUSTED_PROXIES` | (trống) | CIDR của LB/ingress, phân tách bằng dấu phẩy | CIDR hợp lệ |
-| `READINESS_CHECK_DB` | `false` | `/readyz` có ping database (timeout 500ms) hay không | Giá trị boolean của Go: `true`/`false`, `1`/`0`, `t`/`f`... |
-| `DB_MAX_CONNS` | `10` | Số kết nối tối đa **mỗi pod**. Luôn được áp dụng, ghi đè `pool_max_conns` nếu có trong `DATABASE_URL` | `≥ 1` |
-| `DB_MIN_CONNS` | `0` | Số kết nối giữ sẵn. `0` = dùng giá trị của URL (`pool_min_conns`) hoặc mặc định của pgx | `0 ≤ DB_MIN_CONNS ≤ DB_MAX_CONNS` |
-| `DB_MAX_CONN_LIFETIME` | `30m` | Tuổi thọ tối đa của một kết nối (giúp cân bằng lại sau failover) | `≤ 0` = mặc định của pgx |
-| `DB_MAX_CONN_IDLE_TIME` | `5m` | Đóng kết nối rảnh quá lâu | `≤ 0` = mặc định của pgx |
-| `DB_STATEMENT_TIMEOUT` | `5s` | `statement_timeout` phía PostgreSQL cho kết nối của app. Vượt quá thì request trả 503 | `≤ 0` = không đặt (dùng cấu hình của server); giá trị dương phải `≥ 1ms` |
-| `MIGRATE_ON_START` | `false` | Chạy migration khi app khởi động. Tiện cho dev; production dùng `userapi migrate` | |
-| `EVENTS_SINK` | `none` | Nơi phát sự kiện: `none` (không ghi outbox) hoặc `kafka`. Xem [Phát sự kiện](#phát-sự-kiện) | `kafka` cần `STORAGE=postgres` và `KAFKA_BROKERS`; không phân biệt hoa thường |
-| `KAFKA_BROKERS` | (trống) | Địa chỉ broker Kafka (hoặc tương thích: Redpanda, MSK...), phân tách bằng dấu phẩy | Bắt buộc khi `EVENTS_SINK=kafka` |
-| `KAFKA_TOPIC` | `users` | Topic nhận sự kiện user | |
-| `OUTBOX_POLL_INTERVAL` | `1s` | Relay chờ bao lâu giữa hai lần đọc outbox khi không còn tồn đọng | `> 0` |
-| `OUTBOX_BATCH_SIZE` | `100` | Số sự kiện tối đa mỗi lô relay gửi | `1`–`1000` |
-| `OUTBOX_RETENTION` | `168h` | Giữ bản ghi outbox đã gửi bao lâu trước khi relay xoá | `> 0` |
-| `KAFKA_TLS` | `false` | Mã hoá kết nối tới broker (TLS 1.2+, tin CA của hệ thống) | Boolean |
-| `KAFKA_TLS_CA_FILE` | (trống) | File PEM chứa CA của broker, khi broker dùng CA nội bộ; thay cho CA của hệ thống | Cần `KAFKA_TLS=true` |
-| `KAFKA_SASL_MECHANISM` | (trống) | Xác thực với broker: `PLAIN`, `SCRAM-SHA-256` hoặc `SCRAM-SHA-512`. Trống = không xác thực | `PLAIN` cần `KAFKA_TLS=true`; không phân biệt hoa thường |
-| `KAFKA_SASL_USERNAME`, `KAFKA_SASL_PASSWORD` | (trống) | Tài khoản SASL của relay. Đưa mật khẩu vào Secret, không vào image | Bắt buộc khi đặt `KAFKA_SASL_MECHANISM` |
-| `RELAY_HEALTH_ADDR` | `:8081` | Địa chỉ HTTP của `userapi relay` cho liveness probe (`GET /healthz`) | |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | (trống) | Endpoint OTLP/HTTP. OpenTelemetry bật khi biến này **hoặc** `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` / `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT` có giá trị (và `OTEL_SDK_DISABLED` khác `true`). Chỉ đặt endpoint cho trace thì metric vẫn được gửi tới endpoint mặc định của SDK (`localhost:4318`) | Các biến `OTEL_*` chuẩn khác cũng được hỗ trợ (`OTEL_SERVICE_NAME`, `OTEL_TRACES_SAMPLER`, `OTEL_SDK_DISABLED`…) |
+| `HTTP_ADDR` | `:8080` | Listen address | |
+| `STORAGE` | `memory` | memory or postgres | Case-insensitive |
+| `DATABASE_URL` | (empty) | PostgreSQL URL | Required for STORAGE=postgres and migrate |
+| `LOG_LEVEL` | `info` | debug, info, warn, error | Case-insensitive; accepts slog forms such as warn+1 |
+| `REQUEST_TIMEOUT` | `10s` | Per-request context timeout | > 0 |
+| `HTTP_IDLE_TIMEOUT` | `75s` | Idle keep-alive duration | > 0; must exceed LB idle timeout |
+| `SHUTDOWN_DELAY` | `0s` | Continue serving after SIGTERM before closing listener | ≥ 0; Kubernetes: 5s–10s |
+| `SHUTDOWN_TIMEOUT` | `10s` | Active-request drain period after SHUTDOWN_DELAY | ≥ 0 |
+| `TRUSTED_PROXIES` | (empty) | Comma-separated LB/ingress CIDRs | Valid CIDRs |
+| `READINESS_CHECK_DB` | `false` | Ping DB from /readyz (500ms timeout) | Go boolean syntax: true/false, 1/0, t/f, etc. |
+| `DB_MAX_CONNS` | `10` | Maximum connections **per pod**; always overrides pool_max_conns in DATABASE_URL | ≥ 1 |
+| `DB_MIN_CONNS` | `0` | Minimum idle-ready connections; 0 uses URL pool_min_conns or pgx default | 0 ≤ DB_MIN_CONNS ≤ DB_MAX_CONNS |
+| `DB_MAX_CONN_LIFETIME` | `30m` | Maximum connection age, helping rebalance after failover | ≤ 0 uses pgx default |
+| `DB_MAX_CONN_IDLE_TIME` | `5m` | Close long-idle connections | ≤ 0 uses pgx default |
+| `DB_STATEMENT_TIMEOUT` | `5s` | PostgreSQL statement_timeout on app connections; expiry returns HTTP 503 | ≤ 0 leaves server configuration unchanged; positive values must be ≥ 1ms |
+| `MIGRATE_ON_START` | `false` | Migrate on startup for development; production uses userapi migrate | |
+| `EVENTS_SINK` | `none` | none (no outbox writes) or kafka; see [Event publishing](#event-publishing) | kafka requires STORAGE=postgres and KAFKA_BROKERS; case-insensitive |
+| `KAFKA_BROKERS` | (empty) | Comma-separated Kafka-compatible broker addresses (Kafka, Redpanda, MSK...) | Required for EVENTS_SINK=kafka |
+| `KAFKA_TOPIC` | `users` | Topic for user events | |
+| `OUTBOX_POLL_INTERVAL` | `1s` | Relay wait between reads with no backlog | > 0 |
+| `OUTBOX_BATCH_SIZE` | `100` | Maximum events per relay batch | 1–1000 |
+| `OUTBOX_RETENTION` | `168h` | Published-row retention before relay cleanup | > 0 |
+| `KAFKA_TLS` | `false` | Encrypt broker connections (TLS 1.2+, system CAs) | Boolean |
+| `KAFKA_TLS_CA_FILE` | (empty) | PEM broker CA file, replacing system CAs for private certificates | Requires KAFKA_TLS=true |
+| `KAFKA_SASL_MECHANISM` | (empty) | PLAIN, SCRAM-SHA-256, SCRAM-SHA-512; empty disables authentication | PLAIN requires KAFKA_TLS=true; case-insensitive |
+| `KAFKA_SASL_USERNAME`, `KAFKA_SASL_PASSWORD` | (empty) | Relay SASL credentials; put the password in a Secret, not the image | Required when KAFKA_SASL_MECHANISM is set |
+| `RELAY_HEALTH_ADDR` | `:8081` | userapi relay liveness HTTP address (GET /healthz) | |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | (empty) | OTLP/HTTP endpoint. OTel starts when this **or** OTEL_EXPORTER_OTLP_TRACES_ENDPOINT / OTEL_EXPORTER_OTLP_METRICS_ENDPOINT is set, unless OTEL_SDK_DISABLED=true. A traces-only endpoint still sends metrics to the SDK default localhost:4318 | Standard OTEL_* variables are supported, including OTEL_SERVICE_NAME, OTEL_TRACES_SAMPLER, OTEL_SDK_DISABLED |
 
-Giá trị thời gian dùng cú pháp Go: `500ms`, `10s`, `5m`, `1h30m`.
+Durations use Go syntax: 500ms, 10s, 5m, 1h30m.
 
-## Triển khai trên Kubernetes
+## Kubernetes deployment
 
-### Shutdown không làm rơi request
+### Shutdown without dropping requests
 
-Khi nhận SIGTERM, app:
-1. đánh dấu `/readyz` là 503, nhưng **vẫn phục vụ bình thường** trong `SHUTDOWN_DELAY`;
-2. đóng listener và chờ tối đa `SHUTDOWN_TIMEOUT` cho request đang chạy;
-3. đóng pool database, flush trace/metric (tối đa 5s, chỉ khi bật OpenTelemetry), rồi thoát với code 0.
+On SIGTERM, the app:
+1. makes /readyz return 503 while **continuing to serve** during SHUTDOWN_DELAY;
+2. closes the listener and waits up to SHUTDOWN_TIMEOUT for active requests;
+3. closes the DB pool, flushes enabled telemetry for up to 5s, and exits with code 0.
 
-Nếu hết `SHUTDOWN_TIMEOUT` mà vẫn còn request chạy, app huỷ các request đó (log ghi status 499, client thấy kết nối bị đóng), đóng mọi kết nối, rồi thoát với **code 1** và log `userapi stopped with error` kèm `graceful shutdown: context deadline exceeded`. Exit code khác 0 là tín hiệu để điều chỉnh `SHUTDOWN_TIMEOUT` hoặc tìm request chạy quá lâu.
+If requests remain after SHUTDOWN_TIMEOUT, cancel them (499 in logs; clients see closed connections), close all connections, and exit with **code 1**, logging `userapi stopped with error` and `graceful shutdown: context deadline exceeded`. Adjust the timeout or investigate slow requests.
 
-Lý do phải chờ: Kubernetes gỡ pod khỏi Endpoints và cập nhật kube-proxy/ingress *bất đồng bộ* với SIGTERM. Đóng listener ngay sẽ gây 502 ở mỗi lần rolling deploy. Image distroless không có lệnh `sleep` cho `preStop` kiểu exec; Kubernetes 1.30+ có action `preStop.sleep` dựng sẵn, nhưng chờ trong app thì chạy được trên mọi nền tảng.
+Kubernetes removes endpoints and updates kube-proxy/ingress *asynchronously* with SIGTERM. Closing immediately causes rolling-deployment 502s. Distroless lacks sleep for exec preStop; Kubernetes 1.30+ has preStop.sleep, but an in-app delay works across platforms.
 
-Đặt `terminationGracePeriodSeconds` lớn hơn `SHUTDOWN_DELAY + SHUTDOWN_TIMEOUT + 5s` (5s cho việc flush telemetry; ví dụ 5s + 10s + 5s, đặt 30s). Tín hiệu thứ hai (Ctrl+C lần nữa khi chạy local) kết thúc tiến trình ngay.
+Set terminationGracePeriodSeconds above SHUTDOWN_DELAY + SHUTDOWN_TIMEOUT + 5s for telemetry (for example 5s + 10s + 5s → choose 30s). A second signal, such as another Ctrl+C locally, terminates immediately.
 
-### Timeout của HTTP server
+### HTTP server timeouts
 
-| Timeout | Giá trị | Lý do |
+| Timeout | Value | Reason |
 |---|---|---|
-| `ReadHeaderTimeout` | 5s | Chặn Slowloris |
-| `ReadTimeout` | 30s | Giới hạn thời gian đọc request |
-| `WriteTimeout` | `REQUEST_TIMEOUT + 5s` | Handler kịp trả lỗi timeout thay vì bị cắt kết nối giữa chừng |
-| `IdleTimeout` | `HTTP_IDLE_TIMEOUT` | Phải **lớn hơn** idle timeout của LB (AWS ALB mặc định 60s). Nếu server đóng keep-alive connection trước LB, LB có thể gửi request vào đúng connection vừa đóng và trả 502 lác đác, rất khó tìm nguyên nhân |
+| ReadHeaderTimeout | 5s | Slowloris protection |
+| ReadTimeout | 30s | Bound request reads |
+| WriteTimeout | REQUEST_TIMEOUT + 5s | Let handlers return timeout errors before connection closure |
+| IdleTimeout | HTTP_IDLE_TIMEOUT | Must **exceed** LB idle timeout (AWS ALB default 60s). Otherwise the LB can reuse a just-closed connection, causing hard-to-diagnose intermittent 502s |
 
 ### Readiness
 
-Mặc định `/readyz` chỉ phản ánh trạng thái của chính pod (sẵn sàng hay đang shutdown), **không** ping database. Nếu readiness phụ thuộc database dùng chung, một sự cố database vài giây sẽ làm *mọi* pod cùng lúc unready: service mất hết endpoint và client nhận 503 từ LB, thay vì nhận lỗi nhanh rồi tự hồi phục. Theo dõi database bằng metrics và alert. Nếu vẫn muốn, bật `READINESS_CHECK_DB=true` (timeout 500ms) và đặt `failureThreshold` của probe đủ cao.
+By default, /readyz reflects only the pod's own state and does **not** ping the database. Shared-DB failures could otherwise remove *every* pod, leaving no service endpoints and producing LB 503s instead of fast application errors and recovery. Monitor DB through metrics/alerts. If needed, enable READINESS_CHECK_DB=true (500ms timeout) and use a sufficiently high probe failureThreshold.
 
-### Kích thước pool kết nối
+### Connection pool sizing
 
-App luôn đặt kích thước pool bằng `DB_MAX_CONNS`, không dùng mặc định của pgx (`max(4, runtime.NumCPU())`, mà trong container `NumCPU` là số core của *node*, không phải CPU limit của pod). Đặt `DB_MAX_CONNS` sao cho:
+The app explicitly sets DB_MAX_CONNS instead of pgx's max(4, runtime.NumCPU()) default, since container NumCPU reports node cores rather than the pod CPU limit. Size it so:
 
 ```
-DB_MAX_CONNS × (số replica tối đa khi HPA scale + số pod tạm thời khi deploy) < max_connections của PostgreSQL
+DB_MAX_CONNS × (maximum HPA replicas + deployment surge pods) < PostgreSQL max_connections
 ```
 
-và chừa chỗ cho migration và kết nối quản trị. Khi số replica lớn, đặt PgBouncer phía trước.
+Reserve connections for migrations and administration. Use PgBouncer when replica counts grow.
 
 ### IP client
 
-Sau LB, `RemoteAddr` là IP của LB. Đặt `TRUSTED_PROXIES` bằng đúng dải IP của LB/ingress; app chỉ tin các hop `X-Forwarded-For` nằm trong dải này. Các dải private mặc định *không* được tin, vì mọi pod trong cluster đều nằm trong mạng private và có thể giả header.
+Behind a load balancer, RemoteAddr is its IP. Set TRUSTED_PROXIES to the exact LB/ingress CIDRs; only those X-Forwarded-For hops are trusted. Default private ranges are *not* trusted because other private-address cluster pods can forge headers.
 
-### Xác thực
+<a id="x&#225;c-th&#7921;c"></a>
 
-Template **không có xác thực**, và `GET /api/v1/users` trả email của mọi user. Trước khi đưa lên môi trường thật, gắn middleware xác thực/phân quyền ở composition root, trong `internal/app/app.go`, nơi dựng `httpapi.Options`:
+### Authentication
+
+The template has **no authentication**, and GET /api/v1/users returns every user's email. Before real deployment, attach authentication/authorization middleware where internal/app/app.go constructs httpapi.Options:
 
 ```go
 e := httpapi.NewServer(users, httpapi.Options{
-	// ... các option hiện có ...
-	APIMiddleware: []echo.MiddlewareFunc{requireAuth}, // chỉ áp cho /api/v1, không áp cho probe
+	// ... existing options ...
+	APIMiddleware: []echo.MiddlewareFunc{requireAuth}, // /api/v1 only, not probes
 })
 
-// Ví dụ tối giản; thay bằng cơ chế thật (JWT, OIDC, API key từ secret store...).
+// Minimal example; replace with real JWT, OIDC, or secret-store API-key authentication.
 func requireAuth(next echo.HandlerFunc) echo.HandlerFunc {
 	return func(c *echo.Context) error {
 		if !validToken(c.Request().Header.Get("Authorization")) {
-			return echo.ErrUnauthorized // thành 401 application/problem+json
+		return echo.ErrUnauthorized // mapped to 401 application/problem+json
 		}
 		return next(c)
 	}
@@ -104,83 +106,83 @@ func requireAuth(next echo.HandlerFunc) echo.HandlerFunc {
 
 ## Migration
 
-Migration là file SQL trong `internal/adapter/outbound/postgres/migrations`, nhúng vào binary và chạy bằng [goose](https://github.com/pressly/goose):
+SQL migrations in internal/adapter/outbound/postgres/migrations are embedded in the binary and executed by [goose](https://github.com/pressly/goose):
 
 ```bash
 DATABASE_URL='postgres://...?connect_timeout=10' userapi migrate
-# Chạy local với database của docker compose: make migrate (bỏ qua DATABASE_URL; đổi DB bằng make migrate DB_URL=...)
+# Local docker compose database: make migrate (without DATABASE_URL; use make migrate DB_URL=... for another DB)
 ```
 
-- Bảng `goose_db_version` ghi lại version đã chạy; mỗi file chạy đúng một lần, trong transaction riêng.
-- Advisory lock giữ trên một kết nối duy nhất, nên nhiều Job/replica chạy `migrate` cùng lúc vẫn an toàn.
-- Phiên migration dùng kết nối riêng với `statement_timeout = 0` (tạo index có thể lâu) và `lock_timeout = 5s`: nếu `ALTER TABLE` phải chờ lock, nó thất bại sớm thay vì làm mọi query khác trên bảng xếp hàng phía sau.
-- `userapi migrate` không tự đặt timeout kết nối: nếu host database nhận TCP nhưng không phản hồi, lệnh treo vô hạn. Thêm `connect_timeout` (giây) vào URL như trên, hoặc đặt `activeDeadlineSeconds` cho Job.
-- Khi khởi động, app chỉ **đọc** trạng thái migration (không tạo bảng, không chạy DDL). Còn migration chưa chạy, kể cả database trống, thì app dừng ngay với thông báo `database has pending migrations`. Ngoại lệ: `MIGRATE_ON_START=true` (chỉ dành cho dev) cho app tự chạy migration trước khi kiểm tra.
+- goose_db_version tracks applied versions; each file runs once in its own transaction.
+- A single-connection advisory lock makes concurrent migration Jobs/replicas safe.
+- Migrations use a separate connection with statement_timeout=0 for long index builds and lock_timeout=5s, failing early on blocked ALTER TABLE instead of queuing all table queries behind it.
+- userapi migrate sets no connection timeout. A host accepting TCP but not responding can hang the command; add connect_timeout in seconds to the URL or use Job activeDeadlineSeconds.
+- Startup only **reads** migration state, without DDL. Pending migrations, including an empty database, fail with `database has pending migrations`. MIGRATE_ON_START=true allows automatic migration first, for development only.
 
-**Trên Kubernetes:** chạy `userapi migrate` bằng một Job (Helm pre-upgrade hook, Argo CD PreSync) hoặc initContainer, dùng **cùng image** với app. Giữ `MIGRATE_ON_START=false`. `docker compose up` mô phỏng thứ tự này: service `migrate` chạy xong thì `api` mới khởi động. Nhưng cả hai dùng chung role `userapi` (superuser), nên compose **không** mô phỏng việc tách role ở mục dưới.
+**Kubernetes:** run userapi migrate as a Job (Helm pre-upgrade or Argo CD PreSync) or initContainer with the **same image** as the app. Keep MIGRATE_ON_START=false. Compose models this ordering: migrate finishes before api starts. Both use the userapi superuser, however, so Compose does **not** model the role separation below.
 
-### Phân quyền database
+### Database permissions
 
-Tách hai role: role migration sở hữu schema (DDL), role của app chỉ có DML. App bị lộ thông tin đăng nhập cũng không thể `DROP TABLE`. Chạy bằng superuser:
+Separate schema-owning migration (DDL) and app (DML-only) roles so leaked app credentials cannot DROP TABLE. Run as superuser:
 
 ```sql
 CREATE ROLE userapi_migrator LOGIN PASSWORD '...';
 CREATE ROLE userapi_app      LOGIN PASSWORD '...';
 CREATE DATABASE userapi OWNER userapi_migrator;
 \connect userapi
--- PostgreSQL 15+ không còn cho mọi role quyền CREATE trên schema public.
+-- PostgreSQL 15+ no longer grants every role CREATE on the public schema.
 GRANT USAGE, CREATE ON SCHEMA public TO userapi_migrator;
 GRANT USAGE ON SCHEMA public TO userapi_app;
 ALTER DEFAULT PRIVILEGES FOR ROLE userapi_migrator IN SCHEMA public
     GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO userapi_app;
 ```
 
-Job migration và app dùng **hai `DATABASE_URL` khác nhau**: Job dùng `userapi_migrator`, app dùng `userapi_app`. Default privileges ở trên chỉ áp cho bảng do `userapi_migrator` tạo, nên migration phải luôn chạy bằng role đó.
+Use **different DATABASE_URL values**: the migration Job uses userapi_migrator; the app uses userapi_app. Default privileges apply only to objects created by userapi_migrator, so always migrate under that role.
 
-### Viết migration an toàn khi rolling deploy (expand/contract)
+### Safe rolling-deployment migrations (expand/contract)
 
-Trong lúc deploy, pod cũ và pod mới cùng chạy trên schema mới, nên mọi migration phải tương thích ngược với code đang chạy:
+Old and new pods share the new schema during rollout; migrations must remain backward-compatible with running code:
 
-| Muốn | Làm |
+| Goal | Approach |
 |---|---|
-| Thêm cột | Thêm cột nullable hoặc có `DEFAULT` (như `0002_add_users_version.sql`) |
-| Đổi tên / xoá cột | Thêm cột mới → deploy code ghi cả hai → backfill → deploy code chỉ đọc cột mới → xoá cột cũ ở lần deploy sau |
-| Tạo index trên bảng lớn | `CREATE INDEX CONCURRENTLY` trong file riêng có dòng `-- +goose NO TRANSACTION` (CONCURRENTLY không chạy được trong transaction) |
-| Thêm `NOT NULL` / foreign key | `ADD CONSTRAINT ... NOT VALID`, sau đó `VALIDATE CONSTRAINT` ở migration riêng |
+| Add column | Nullable or with DEFAULT, as in 0002_add_users_version.sql |
+| Rename/remove column | Add new → deploy dual-write → backfill → deploy new-only reads → remove old in a later deployment |
+| Index large table | CREATE INDEX CONCURRENTLY in a separate file with -- +goose NO TRANSACTION; CONCURRENTLY cannot run in a transaction |
+| Add NOT NULL / foreign key | ADD CONSTRAINT ... NOT VALID, then VALIDATE CONSTRAINT in a separate migration |
 
-## Phát sự kiện
+## Event publishing
 
-`userapi` phát sự kiện `user.registered` / `user.updated` / `user.deleted` lên Kafka qua transactional outbox. Hợp đồng sự kiện cho consumer: [events.md](events.md).
+userapi publishes user.registered / user.updated / user.deleted to Kafka through a transactional outbox. Consumer contract: [events.md](events.md).
 
-Bật bằng `EVENTS_SINK=kafka` (cùng `STORAGE=postgres`, `KAFKA_BROKERS`), đặt **giống nhau** cho API và relay:
+Enable EVENTS_SINK=kafka with STORAGE=postgres and KAFKA_BROKERS, configured **identically** for API and relay:
 
-- **API** ghi thêm một bản ghi vào bảng `outbox` trong cùng transaction với mỗi lần tạo, sửa, xoá user. API không kết nối tới Kafka: broker sập không làm API lỗi.
-- **Relay** là lệnh `userapi relay`, chạy thành Deployment riêng từ **cùng image**:
+- **API:** adds an outbox row atomically with each user creation, update, or deletion. It does not connect to Kafka; broker outages do not break API writes.
+- **Relay:** run userapi relay as a separate Deployment using the **same image**:
   ```bash
   STORAGE=postgres DATABASE_URL=postgres://... EVENTS_SINK=kafka KAFKA_BROKERS=kafka-0:9092 userapi relay
   ```
-  Lúc khởi động, relay kiểm tra migration (như API) và kết nối broker; broker không tới được thì thoát ngay với code 1 (`kafka ping: unable to dial: ...`). Đang chạy mà broker sập thì relay ghi WARN `outbox relay: publish failed, will retry` và thử lại ở lần poll sau, không thoát. Mỗi lô chờ broker xác nhận tối đa 20s.
-- **Liveness probe:** relay mở `GET /healthz` tại `RELAY_HEALTH_ADDR`. Trả 200 `{"status":"ok"}` khi vòng lặp còn tiến lên, 503 `{"status":"stalled"}` khi một lô bị treo quá khoảng 1 phút (30s cho một lô, cộng `OUTBOX_POLL_INTERVAL` và biên 30s), để Kubernetes khởi động lại pod. Relay không có readiness probe vì không nhận traffic. Ví dụ:
+  Startup checks migration state and broker connectivity; an unreachable broker exits with code 1 (`kafka ping: unable to dial: ...`). Runtime broker failures log WARN `outbox relay: publish failed, will retry` and retry after polling without exiting. Broker acknowledgment waits are bounded to 20s per batch.
+- **Liveness:** GET /healthz on RELAY_HEALTH_ADDR returns 200 `{"status":"ok"}` while the loop progresses, or 503 `{"status":"stalled"}` after roughly a minute stalled (30s batch + OUTBOX_POLL_INTERVAL + 30s slack), allowing Kubernetes restart. No readiness probe is needed because relay accepts no traffic. Example:
   ```yaml
   livenessProbe:
     httpGet: {path: /healthz, port: 8081}
     periodSeconds: 10
     failureThreshold: 3
   ```
-- **Kafka có xác thực** (Amazon MSK, Confluent Cloud, Aiven, Redpanda Cloud): bật `KAFKA_TLS=true` và đặt `KAFKA_SASL_MECHANISM` cùng tài khoản. Amazon MSK: dùng SASL/SCRAM qua TLS (port 9096); xác thực bằng IAM chưa được hỗ trợ. Sai tài khoản thì relay thoát ngay lúc khởi động với lỗi `kafka ping: ...`.
-- **Số replica của relay:** 1 là đủ cho phần lớn tải và giữ đúng thứ tự sự kiện theo từng user. Nhiều replica chạy an toàn (`FOR UPDATE SKIP LOCKED`, không gửi trùng nhau), nhưng sự kiện của một user có thể lệch thứ tự; consumer theo [events.md](events.md#cam-kết-với-consumer) không bị ảnh hưởng.
-- **Tắt:** SIGTERM làm relay gửi nốt lô đang dở rồi thoát với code 0, log `outbox relay stopped`.
-- **Topic:** relay không tự tạo topic. Tạo trước với `cleanup.policy=delete`, retention 7 ngày (đủ cho consumer phục hồi sau sự cố qua cuối tuần; sự kiện không chứa dữ liệu cá nhân nên retention không bị ràng buộc bởi việc xoá dữ liệu), và số partition theo số consumer song song cần có.
-- **Quyền database:** relay dùng role của app; role đó cần `SELECT`, `UPDATE`, `DELETE` trên `outbox`, và đã có sẵn qua default privileges ở [Phân quyền database](#phân-quyền-database).
-- **Dọn outbox:** relay xoá bản ghi đã gửi quá `OUTBOX_RETENTION`, tối đa mỗi giờ một lần. Bản ghi bị tách riêng (dưới đây) không bị xoá.
-- **Sự kiện bị broker từ chối vĩnh viễn** (record lớn hơn giới hạn của topic, record không hợp lệ): relay gửi lại riêng record đó một lần; vẫn bị từ chối thì đánh dấu `parked_at`, ghi lý do vào `last_error`, log ERROR `outbox relay: parked messages the broker rejected permanently` kèm ID, rồi tiếp tục với các sự kiện khác. Lỗi mạng, topic chưa có hay thiếu quyền **không** bị coi là vĩnh viễn: relay thử lại tới khi thành công. Xử lý một bản ghi bị tách riêng: sửa nguyên nhân (ví dụ tăng `max.message.bytes` của topic), rồi đưa nó trở lại hàng đợi:
+- **Authenticated Kafka** (MSK, Confluent Cloud, Aiven, Redpanda Cloud): enable KAFKA_TLS=true and configure KAFKA_SASL_MECHANISM and credentials. MSK uses SASL/SCRAM over TLS on port 9096; IAM authentication is not implemented. Invalid credentials fail startup with kafka ping errors.
+- **Replica count:** one relay handles most workloads and normally preserves per-user order. Concurrent replicas safely use FOR UPDATE SKIP LOCKED but can reorder a user's events; consumers must follow [the event contract](events.md#consumer-guarantees).
+- **Shutdown:** SIGTERM finishes the active batch, logs `outbox relay stopped`, and exits with code 0.
+- **Topic:** the relay does not create topics. Provision cleanup.policy=delete and a retention period covering consumer recovery (for example 7 days for a weekend outage), with partitions sized for consumer parallelism. Events omit email/name; assess identifier retention under the project's own requirements.
+- **DB permissions:** relay uses the app role, needing SELECT, UPDATE, DELETE on outbox, already granted by [default privileges](#database-permissions).
+- **Cleanup:** relay purges published rows older than OUTBOX_RETENTION at most hourly. Parked rows are retained.
+- **Permanent rejections** (oversized/invalid records): retry the record alone; if still rejected, set parked_at and last_error, log ERROR `outbox relay: parked messages the broker rejected permanently` with IDs, and continue. Network, missing-topic, and permission errors are **temporary** and keep retrying. Fix the cause (such as topic max.message.bytes), then requeue:
   ```sql
   UPDATE outbox SET parked_at = NULL, last_error = NULL WHERE id = '<id trong log>';
   ```
 
-**Cảnh báo cần có:**
-- tuổi của bản ghi outbox chưa gửi cũ nhất: tăng liên tục nghĩa là relay không chạy, không tới được broker, hoặc không theo kịp tải;
-- số bản ghi bị tách riêng: lớn hơn 0 nghĩa là consumer đang thiếu sự kiện.
+**Required alerts:**
+- age of the oldest unpublished outbox row: steady growth indicates a stopped/unreachable/overloaded relay;
+- parked-row count greater than zero: consumers are missing events.
 
 ```sql
 SELECT count(*) AS backlog, now() - min(created_at) AS oldest
@@ -191,33 +193,33 @@ SELECT count(*) AS parked FROM outbox WHERE parked_at IS NOT NULL;
 
 ## Observability
 
-**Log.** JSON ra stdout (trừ lỗi cấu hình lúc khởi động, xem [Cấu hình](#cấu-hình)). Mỗi request một dòng `http_request` (trừ `/healthz`, `/readyz`): 2xx/3xx ghi mức INFO, 4xx ghi WARN, 5xx ghi ERROR kèm lỗi gốc; `latency` tính bằng nano giây. `/readyz` trả 503 thì ghi một dòng WARN `readiness check failed` mỗi lần probe. Mọi dòng log ghi bằng `slog.*Context(ctx, ...)`, ở bất kỳ tầng nào, tự mang `request_id`; `trace_id` và `span_id` có khi request có span (OpenTelemetry bật, hoặc upstream gửi `traceparent`). Tìm log của một request bằng `X-Request-Id` trong response.
+**Logs.** JSON to stdout except startup configuration errors ([Configuration](#configuration)). One http_request log per non-probe request: INFO for 2xx/3xx, WARN for 4xx, ERROR with the underlying error for 5xx; latency is nanoseconds. Failed readiness probes log WARN `readiness check failed`. slog.*Context logs at every layer include request_id; trace_id/span_id appear with active spans (OTel enabled or upstream traceparent). Find request logs using the response X-Request-Id.
 
-**Trace và metric (OpenTelemetry).** Bật bằng `OTEL_EXPORTER_OTLP_ENDPOINT` hoặc endpoint riêng cho trace/metric (OTLP/HTTP, xem bảng [Cấu hình](#cấu-hình)). Khi không đặt, provider là no-op. Lỗi export (collector không tới được) chỉ được ghi log mức INFO (`traces export: ...`), không làm app dừng; nếu lần flush cuối lúc tắt thất bại thì ghi WARN `telemetry shutdown failed`.
+**Traces and metrics (OpenTelemetry).** Enable OTLP/HTTP via OTEL_EXPORTER_OTLP_ENDPOINT or signal-specific endpoints ([Configuration](#configuration)). Otherwise providers are no-ops. Export errors log INFO (`traces export: ...`) without stopping the app; final shutdown flush failure logs WARN `telemetry shutdown failed`.
 
-| Nguồn | Thu được |
+| Source | Output |
 |---|---|
-| `otelhttp` (bọc ngoài Echo) | Span mỗi request, tên theo route (`GET /api/v1/users/:id`); metric `http.server.request.duration` có `http.route` |
-| `otelpgx` | Span mỗi query (chỉ câu SQL, **không** kèm giá trị tham số, để không lộ PII) và span chờ lấy kết nối từ pool; metric của pool |
+| otelhttp wrapping Echo | Per-request spans named by route (GET /api/v1/users/:id); http.server.request.duration metrics with http.route |
+| otelpgx | Query spans containing SQL but **no parameter values**, plus pool acquisition spans and pool metrics |
 
-Probe không bị trace. Trace context từ upstream (`traceparent`) được tiếp nhận. Version của build (`-ldflags "-X main.version=..."`) được ghi vào resource `service.version` và dòng log khởi động.
+Probes are not traced. Upstream traceparent is accepted. Build version (`-ldflags "-X main.version=..."`) populates service.version and startup logs.
 
-## Xử lý sự cố
+## Troubleshooting
 
-| Triệu chứng | Nguyên nhân thường gặp | Xử lý |
+| Symptom | Common cause | Action |
 |---|---|---|
-| App không khởi động: `database has pending migrations` | Job migration chưa chạy hoặc thất bại; hoặc database mới tinh | Chạy `userapi migrate` bằng role migrator; xem log của Job |
-| `userapi migrate` lỗi `permission denied for schema public` / `failed to create version table` | Role migrator thiếu quyền `CREATE` trên schema `public` (PostgreSQL 15+) | `GRANT USAGE, CREATE ON SCHEMA public TO userapi_migrator` (xem [Phân quyền](#phân-quyền-database)) |
-| `userapi migrate` lỗi `canceling statement due to lock timeout` | `ALTER TABLE` chờ lock quá 5s vì có transaction dài đang giữ bảng | Tìm transaction dài trong `pg_stat_activity`; chạy lại migration lúc ít tải |
-| App không khởi động: `ping database` | Sai `DATABASE_URL`, mạng, hoặc database chưa sẵn sàng | Kiểm tra URL và kết nối; pod sẽ được Kubernetes khởi động lại |
-| PostgreSQL báo `too many clients already` | Tổng `DB_MAX_CONNS` của mọi pod vượt `max_connections` | Giảm `DB_MAX_CONNS`, giới hạn số replica, hoặc thêm PgBouncer |
-| 502 rải rác **mỗi lần deploy** | Listener đóng trước khi LB gỡ pod | Đặt `SHUTDOWN_DELAY` 5s–10s và `terminationGracePeriodSeconds` đủ lớn |
-| 502 rải rác **bất kỳ lúc nào** | `HTTP_IDLE_TIMEOUT` nhỏ hơn idle timeout của LB | Đặt `HTTP_IDLE_TIMEOUT` lớn hơn của LB |
-| Nhiều 409 kèm log `user update hit a version conflict, retrying` | Nhiều request cùng sửa một user | Kiểm tra client có retry dồn dập hay xử lý trùng lặp không |
-| Nhiều 499 trong log | Client bỏ đi trước khi có response (thường do client timeout ngắn hơn latency) | Xem latency trên metric/trace; so với timeout phía client |
-| Nhiều 503 `request timed out` | Request vượt `REQUEST_TIMEOUT` hoặc câu SQL vượt `DB_STATEMENT_TIMEOUT` (log có `SQLSTATE 57014`), thường do database chậm, lock, hoặc pool cạn kết nối | Xem span chờ lấy kết nối của `otelpgx`, metric pool, và lock trong `pg_stat_activity` |
-| `remote_ip` trong log luôn là cùng một IP | Chưa đặt `TRUSTED_PROXIES` | Đặt bằng dải IP của LB/ingress |
-| `userapi relay` thoát ngay: `kafka ping: unable to dial` | Sai `KAFKA_BROKERS`, hoặc broker chưa sẵn sàng | Kiểm tra địa chỉ và mạng; Kubernetes sẽ khởi động lại pod |
-| Log ERROR `outbox relay: parked messages the broker rejected permanently` | Broker từ chối chính record đó (thường là `MESSAGE_TOO_LARGE`) | Xem `last_error` của bản ghi; sửa nguyên nhân rồi đưa lại hàng đợi (xem [Phát sự kiện](#phát-sự-kiện)) |
-| Outbox tồn đọng tăng, log relay `outbox relay: publish failed, will retry` | Broker không tới được, topic chưa được tạo (`UNKNOWN_TOPIC_OR_PARTITION`), hoặc quyền ghi topic thiếu | Xem lỗi trong log; sự kiện không mất, sẽ được gửi khi nguyên nhân được xử lý |
-| Mọi pod cùng unready khi database chập chờn | Đã bật `READINESS_CHECK_DB` | Tắt, hoặc tăng `failureThreshold` (xem [Readiness](#readiness)) |
+| Startup: database has pending migrations | Migration Job missing/failed, or empty database | Run userapi migrate as migrator; inspect Job logs |
+| migrate: permission denied for schema public / failed to create version table | Migrator lacks CREATE on public (PostgreSQL 15+) | GRANT USAGE, CREATE ON SCHEMA public TO userapi_migrator; see [Permissions](#database-permissions) |
+| migrate: canceling statement due to lock timeout | ALTER TABLE blocked for over 5s by a long transaction | Inspect pg_stat_activity and retry at lower load |
+| Startup: ping database | Wrong DATABASE_URL, network failure, or DB not ready | Check URL/connectivity; Kubernetes restarts the pod |
+| PostgreSQL: too many clients already | Sum of per-pod DB_MAX_CONNS exceeds max_connections | Reduce pool/replicas or add PgBouncer |
+| Intermittent 502s on **every deploy** | Listener closes before LB removes the pod | Set SHUTDOWN_DELAY to 5s–10s and sufficient terminationGracePeriodSeconds |
+| Intermittent 502s **at any time** | HTTP_IDLE_TIMEOUT below LB idle timeout | Set it above LB timeout |
+| Many 409s and user update hit a version conflict, retrying | Concurrent updates of one user | Check aggressive retries or duplicate processing |
+| Many 499 logs | Clients leave before responses, often due to short timeouts | Compare latency metrics/traces with client timeout |
+| Many 503 request timed out | Request or SQL timeout (SQLSTATE 57014), often slow DB, locks, or exhausted pool | Inspect otelpgx acquisition spans, pool metrics, and pg_stat_activity locks |
+| Same remote_ip on every log | TRUSTED_PROXIES unset | Configure LB/ingress CIDRs |
+| Relay exits: kafka ping: unable to dial | Wrong KAFKA_BROKERS or broker not ready | Check addresses/network; Kubernetes restarts the pod |
+| ERROR outbox relay: parked messages the broker rejected permanently | Broker rejects record content, often MESSAGE_TOO_LARGE | Inspect last_error, fix cause, and [requeue](#event-publishing) |
+| Growing backlog and publish failed, will retry | Broker unreachable, missing topic (UNKNOWN_TOPIC_OR_PARTITION), or missing write permissions | Inspect error logs; events remain queued until recovery |
+| Every pod unready during DB instability | READINESS_CHECK_DB enabled | Disable it or increase failureThreshold; see [Readiness](#readiness) |

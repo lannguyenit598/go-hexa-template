@@ -1,5 +1,5 @@
-// Package postgres là adapter lưu trữ dùng PostgreSQL qua pgx/v5.
-// Đây là nơi DUY NHẤT trong repo biết tới SQL và driver database.
+// Package postgres provides PostgreSQL storage through pgx/v5.
+// This is the ONLY storage adapter area that knows SQL and database drivers.
 package postgres
 
 import (
@@ -20,7 +20,7 @@ import (
 
 const (
 	uniqueViolation = "23505"
-	queryCanceled   = "57014" // statement_timeout hoặc pg_cancel_backend
+	queryCanceled   = "57014" // statement_timeout or pg_cancel_backend
 )
 
 type UserRepository struct {
@@ -30,12 +30,12 @@ type UserRepository struct {
 
 var _ port.UserRepository = (*UserRepository)(nil)
 
-// Option tuỳ chỉnh UserRepository.
+// Option configures UserRepository.
 type Option func(*UserRepository)
 
-// WithOutbox ghi một sự kiện vào bảng outbox trong cùng transaction với mỗi lần
-// Create/Update/Delete thành công (transactional outbox, xem docs/events.md). Hợp đồng của
-// port.UserRepository không đổi; core không biết gì về sự kiện.
+// WithOutbox writes an event in the same transaction as each successful
+// Create/Update/Delete (transactional outbox; see docs/events.md). The
+// port.UserRepository contract stays unchanged; core knows nothing about events.
 func WithOutbox() Option { return func(r *UserRepository) { r.outbox = true } }
 
 func NewUserRepository(pool *pgxpool.Pool, opts ...Option) *UserRepository {
@@ -46,23 +46,23 @@ func NewUserRepository(pool *pgxpool.Pool, opts ...Option) *UserRepository {
 	return r
 }
 
-// PoolOptions cấu hình pool kết nối. Giá trị 0 = dùng mặc định của pgx.
+// PoolOptions configures the connection pool. Zero uses pgx defaults.
 //
-// Luôn đặt MaxConns tường minh: mặc định của pgx là max(4, runtime.NumCPU()), mà
-// trong container NumCPU trả số core của NODE chứ không phải CPU limit của pod.
-// Pod 1 CPU trên node 64 core sẽ mở tới 64 kết nối; nhân với số replica là đủ
-// vượt max_connections (mặc định 100) của PostgreSQL.
+// Always set MaxConns explicitly: pgx defaults to max(4, runtime.NumCPU()), and in a
+// container NumCPU reports the NODE's core count rather than the pod CPU limit.
+// A 1-CPU pod on a 64-core node may open 64 connections; multiplied by replicas, this can
+// exceed PostgreSQL max_connections (default 100).
 type PoolOptions struct {
 	MaxConns        int32
 	MinConns        int32
 	MaxConnLifetime time.Duration
 	MaxConnIdleTime time.Duration
-	// StatementTimeout đặt statement_timeout phía server: chặn query chạy mãi kể cả
-	// khi client đã bỏ đi (context bị huỷ không phải lúc nào cũng tới được server).
+	// StatementTimeout sets the server-side statement_timeout to bound queries even after
+	// the client leaves (context cancellation does not always reach the server).
 	StatementTimeout time.Duration
 }
 
-// Connect tạo pool kết nối và kiểm tra kết nối ngay.
+// Connect creates a pool and immediately checks connectivity.
 func Connect(ctx context.Context, dsn string, opts PoolOptions) (*pgxpool.Pool, error) {
 	cfg, err := pgxpool.ParseConfig(dsn)
 	if err != nil {
@@ -84,9 +84,9 @@ func Connect(ctx context.Context, dsn string, opts PoolOptions) (*pgxpool.Pool, 
 		cfg.ConnConfig.RuntimeParams["statement_timeout"] = strconv.FormatInt(opts.StatementTimeout.Milliseconds(), 10)
 	}
 	cfg.ConnConfig.RuntimeParams["application_name"] = "userapi"
-	// Span cho mỗi query (chỉ câu SQL, KHÔNG kèm giá trị tham số để không lộ PII vào trace)
-	// và span chờ lấy kết nối từ pool: pool cạn kết nối hiện ra ngay trên trace.
-	// Dùng provider toàn cục, nên là no-op khi OpenTelemetry chưa được bật.
+	// Trace each query (SQL only, NEVER parameter values that could leak personal data)
+	// and pool acquisition waits, exposing connection pool exhaustion in traces.
+	// Global providers make this a no-op when OpenTelemetry is disabled.
 	cfg.ConnConfig.Tracer = otelpgx.NewTracer()
 
 	pool, err := pgxpool.NewWithConfig(ctx, cfg)
@@ -99,8 +99,8 @@ func Connect(ctx context.Context, dsn string, opts PoolOptions) (*pgxpool.Pool, 
 		pool.Close()
 		return nil, fmt.Errorf("ping database: %w", err)
 	}
-	// Metric của pool (số kết nối đang dùng / rảnh, thời gian chờ acquire...): chỉ số đầu tiên
-	// cần xem khi latency tăng mà CPU database vẫn thấp.
+	// Pool metrics (busy/idle connections, acquisition wait...): the first signals to check
+	// when latency rises while database CPU remains low.
 	if err := otelpgx.RecordStats(pool); err != nil {
 		pool.Close()
 		return nil, fmt.Errorf("record pool stats: %w", err)
@@ -108,7 +108,7 @@ func Connect(ctx context.Context, dsn string, opts PoolOptions) (*pgxpool.Pool, 
 	return pool, nil
 }
 
-// userRow là "persistence model": tách khỏi domain.User để schema DB và domain tiến hoá độc lập.
+// userRow is the persistence model, separate from domain.User so the schema and domain can evolve independently.
 type userRow struct {
 	ID        string    `db:"id"`
 	Email     string    `db:"email"`
@@ -175,9 +175,9 @@ func (r *UserRepository) List(ctx context.Context, limit, offset int) ([]domain.
 	return users, total, nil
 }
 
-// Update là compare-and-set trên cột version: một câu UPDATE (cùng câu INSERT outbox trong một
-// transaction khi bật outbox), không có SELECT ... FOR UPDATE, nên không giữ lock giữa lúc đọc
-// và ghi.
+// Update uses compare-and-set on version: one UPDATE (plus an outbox INSERT in the same
+// transaction when enabled), without SELECT ... FOR UPDATE, so no lock is held between
+// the initial read and the write.
 func (r *UserRepository) Update(ctx context.Context, u domain.User, expectedVersion int64) error {
 	var updated bool
 	err := r.write(ctx, func(q querier) error {
@@ -196,7 +196,7 @@ func (r *UserRepository) Update(ctx context.Context, u domain.User, expectedVers
 	if updated {
 		return nil
 	}
-	// Không dòng nào được ghi: hoặc bản ghi không tồn tại, hoặc version đã đổi.
+	// No rows updated: either the record is absent or its version changed.
 	var exists bool
 	if err := r.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM users WHERE id = $1)`, u.ID.String()).Scan(&exists); err != nil {
 		return mapError(err)
@@ -213,13 +213,13 @@ func (r *UserRepository) Delete(ctx context.Context, id domain.UserID) error {
 		if err := q.QueryRow(ctx, `DELETE FROM users WHERE id = $1 RETURNING version`, id.String()).Scan(&version); err != nil {
 			return err // pgx.ErrNoRows => port.ErrNotFound qua mapError
 		}
-		// user.deleted mang version cuối + 1: version của mọi sự kiện của một user tăng ngặt, nên
-		// consumer bỏ bản cũ theo version mà không bỏ mất lệnh xoá.
+		// user.deleted uses the last version + 1: event versions strictly increase per user,
+		// letting consumers discard stale versions without losing deletion events.
 		return r.appendEvent(ctx, q, eventUserDeleted, id, version+1, time.Now().UTC().Truncate(time.Microsecond))
 	}))
 }
 
-// mapError dịch lỗi của driver sang lỗi domain, để core không bao giờ thấy pgx.
+// mapError translates driver errors into core errors so core never sees pgx.
 func mapError(err error) error {
 	if err == nil {
 		return nil
@@ -232,8 +232,8 @@ func mapError(err error) error {
 		return domain.ErrEmailAlreadyExists
 	}
 	if errors.As(err, &pgErr) && pgErr.Code == queryCanceled {
-		// statement_timeout hết hạn: cùng bản chất với request timeout, nên lộ ra như
-		// context.DeadlineExceeded (HTTP 503) thay vì một lỗi không lường trước (500).
+		// An expired statement_timeout is equivalent to a request timeout: expose it as
+		// context.DeadlineExceeded (HTTP 503), not an unexpected error (500).
 		return fmt.Errorf("postgres: %w: %w", context.DeadlineExceeded, err)
 	}
 	return fmt.Errorf("postgres: %w", err)

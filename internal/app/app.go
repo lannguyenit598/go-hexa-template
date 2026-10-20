@@ -1,6 +1,6 @@
-// Package app là phần "bootstrap" của composition root: khởi tạo adapter, lắp chúng vào core
-// và quản lý vòng đời HTTP server (readiness, drain khi tắt, timeout). Tách khỏi cmd/userapi để
-// vòng đời này có test tự động; main chỉ còn đọc config, bắt tín hiệu và gọi Run.
+// Package app bootstraps the composition root: create adapters, wire them into core,
+// and manage the HTTP server lifecycle (readiness, shutdown drain, timeouts). Separate from
+// cmd/userapi for lifecycle tests; main only reads config, handles signals, and calls Run.
 package app
 
 import (
@@ -26,23 +26,23 @@ import (
 	"github.com/example/userapi/internal/observability"
 )
 
-// Options cho Run. Giá trị zero dùng được cho production.
+// Options configures Run. The zero value is suitable for production use.
 type Options struct {
-	Version string // ghi vào log khởi động và service.version của OTel
-	// Listener: nil = tự listen trên cfg.HTTPAddr (Run) hoặc cfg.Events.RelayHealthAddr (RunRelay);
-	// test truyền listener 127.0.0.1:0.
+	Version string // Included in startup logs and OTel service.version.
+	// Listener: nil = listen on cfg.HTTPAddr (Run) or cfg.Events.RelayHealthAddr (RunRelay);
+	// tests supply a 127.0.0.1:0 listener.
 	Listener net.Listener
 }
 
-// Run khởi tạo adapter và phục vụ HTTP cho tới khi ctx bị huỷ. Sau đó: /readyz trả 503,
-// vẫn phục vụ trong cfg.ShutdownDelay, rồi ngừng nhận kết nối và chờ request đang chạy
-// tối đa cfg.ShutdownTimeout. Trả nil khi tắt êm; trả lỗi khi khởi động thất bại hoặc drain quá hạn.
+// Run creates adapters and serves HTTP until ctx is canceled. Then /readyz returns 503,
+// requests are still served during cfg.ShutdownDelay, and the server stops accepting connections
+// and drains for cfg.ShutdownTimeout. Returns nil on clean shutdown, or a startup/drain error.
 //
-// Vì sao phải chờ ShutdownDelay: trên Kubernetes, việc gỡ pod khỏi Endpoints và cập nhật
-// kube-proxy / ingress / LB diễn ra BẤT ĐỒNG BỘ với SIGTERM. Nếu đóng listener ngay, các request
-// được định tuyến tới trong vài giây đó sẽ nhận 502 / connection refused ở mỗi lần deploy.
-// Image distroless không có lệnh `sleep` cho preStop kiểu exec. Kubernetes 1.30+ có action
-// preStop.sleep dựng sẵn, nhưng chờ trong app thì chạy được trên mọi nền tảng (ECS, Nomad...).
+// ShutdownDelay is needed because Kubernetes removes pods from Endpoints and updates
+// kube-proxy / ingress / load balancers ASYNCHRONOUSLY with SIGTERM. Closing the listener
+// immediately causes 502 / connection refused for requests still routed there during deployment.
+// Distroless has no sleep command for exec preStop. Kubernetes 1.30+ supports preStop.sleep,
+// but waiting inside the app works on other platforms too (ECS, Nomad...).
 func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, opts Options) error {
 	flushTelemetry, err := setupTelemetry(ctx, opts.Version, logger)
 	if err != nil {
@@ -68,25 +68,25 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, opts Optio
 		RequestTimeout: cfg.RequestTimeout,
 		TrustedProxies: cfg.TrustedProxies,
 	})
-	// Context gốc của mọi request: bị huỷ khi drain quá hạn, để handler còn chạy dừng lại và trả
-	// kết nối database trước khi pool đóng (nếu không, pool.Close() chờ query chạy xong).
+	// Root request context: cancel when draining times out so handlers stop and release database
+	// connections before pool.Close(), which otherwise waits for running queries.
 	baseCtx, cancelRequests := context.WithCancel(context.Background())
 	defer cancelRequests()
 	srv := &http.Server{
 		Handler:     httpapi.Instrument(e),
 		BaseContext: func(net.Listener) context.Context { return baseCtx },
-		// Chặn Slowloris: client phải gửi xong header trong 5s.
+		// Prevent Slowloris: clients must finish sending headers within 5s.
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       30 * time.Second,
-		// Lớn hơn REQUEST_TIMEOUT để handler kịp trả lỗi timeout thay vì bị cắt kết nối giữa chừng.
+		// Exceed REQUEST_TIMEOUT so handlers can return timeout errors before the connection closes.
 		WriteTimeout: cfg.RequestTimeout + 5*time.Second,
-		// Phải LỚN HƠN idle timeout của load balancer (AWS ALB mặc định 60s). Nếu nhỏ hơn, LB có
-		// thể gửi request vào một keep-alive connection mà server vừa đóng => 502 lác đác.
+		// Must EXCEED the load balancer idle timeout (AWS ALB default 60s). Otherwise the load balancer
+		// may reuse a keep-alive connection just closed by the server, causing intermittent 502s.
 		IdleTimeout: cfg.HTTPIdleTimeout,
 		ErrorLog:    slog.NewLogLogger(logger.Handler(), slog.LevelWarn),
 	}
 
-	// Listen đồng bộ để lỗi như "cổng đã bị chiếm" được trả về ngay từ Run.
+	// Listen synchronously so errors such as an occupied port return directly from Run.
 	ln := opts.Listener
 	if ln == nil {
 		if ln, err = (&net.ListenConfig{}).Listen(ctx, "tcp", cfg.HTTPAddr); err != nil {
@@ -108,12 +108,12 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, opts Optio
 	logger.Info("shutdown signal received, draining", "delay", cfg.ShutdownDelay.String())
 	time.Sleep(cfg.ShutdownDelay)
 
-	// Ngừng nhận kết nối mới, chờ request đang chạy xong (tối đa ShutdownTimeout).
+	// Stop accepting connections and wait for active requests (up to ShutdownTimeout).
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
 	defer cancel()
 	if err := srv.Shutdown(shutdownCtx); err != nil {
-		// Quá hạn: huỷ request còn lại và đóng hẳn các kết nối. Vẫn trả lỗi (exit code khác 0)
-		// để người vận hành thấy drain không kịp, nhưng tiến trình thoát ngay sau đó.
+		// On timeout, cancel remaining requests and close connections. Still return an error
+		// (nonzero exit code) to expose the failed drain, but let the process exit immediately afterward.
 		cancelRequests()
 		_ = srv.Close()
 		return fmt.Errorf("graceful shutdown: %w", err)
@@ -122,7 +122,7 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, opts Optio
 	return nil
 }
 
-// Migrate áp dụng migration rồi trả về (lệnh `userapi migrate`).
+// Migrate applies migrations and returns (`userapi migrate`).
 func Migrate(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	if cfg.DB.URL == "" {
 		return errors.New("DATABASE_URL is required for migrate")
@@ -130,8 +130,8 @@ func Migrate(ctx context.Context, cfg config.Config, logger *slog.Logger) error 
 	return postgres.Migrate(ctx, cfg.DB.URL, logger)
 }
 
-// newRepository chọn adapter lưu trữ theo cấu hình. checkDB là nil khi readiness không ping DB.
-// Mỗi giá trị Storage phải có nhánh riêng: thêm hằng mới mà quên nhánh thì app từ chối khởi động.
+// newRepository selects the configured storage adapter. checkDB is nil when readiness does not ping DB.
+// Every Storage value needs a branch: adding a constant without wiring it must fail startup.
 func newRepository(ctx context.Context, cfg config.Config, logger *slog.Logger) (repo port.UserRepository, checkDB func(context.Context) error, closeFn func(), err error) {
 	switch cfg.Storage {
 	case config.StorageMemory:
@@ -154,13 +154,13 @@ func newPostgresRepository(ctx context.Context, cfg config.Config, logger *slog.
 	}
 	var opts []postgres.Option
 	if cfg.Events.Sink != config.EventsSinkNone {
-		opts = append(opts, postgres.WithOutbox()) // relay (`userapi relay`) đẩy outbox lên broker
+		opts = append(opts, postgres.WithOutbox()) // The relay (`userapi relay`) forwards outbox events to the broker.
 	}
 	return postgres.NewUserRepository(pool, opts...), checkDB, pool.Close, nil
 }
 
-// connectPostgres mở pool, chạy migration nếu MIGRATE_ON_START, và dừng sớm, rõ ràng, nếu schema
-// cũ hơn code (Job migration chưa chạy / thất bại).
+// connectPostgres opens a pool, migrates if MIGRATE_ON_START is enabled, and fails early if the
+// schema is older than the code (migration Job did not run or failed).
 func connectPostgres(ctx context.Context, cfg config.Config, logger *slog.Logger) (*pgxpool.Pool, error) {
 	pool, err := postgres.Connect(ctx, cfg.DB.URL, postgres.PoolOptions{
 		MaxConns:         cfg.DB.MaxConns,
@@ -191,14 +191,14 @@ func connectPostgres(ctx context.Context, cfg config.Config, logger *slog.Logger
 	return pool, nil
 }
 
-// setupTelemetry bật OpenTelemetry; hàm trả về flush span/metric còn trong bộ đệm khi tắt.
+// setupTelemetry enables OpenTelemetry and returns a function that flushes buffered spans/metrics on shutdown.
 func setupTelemetry(ctx context.Context, version string, logger *slog.Logger) (flush func(), err error) {
 	shutdown, err := observability.Setup(ctx, version)
 	if err != nil {
 		return nil, err
 	}
 	return func() {
-		// ctx mới vì ctx của tiến trình đã bị huỷ lúc này.
+		// Use a fresh ctx because the process context is already canceled.
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		if err := shutdown(ctx); err != nil {
@@ -209,8 +209,8 @@ func setupTelemetry(ctx context.Context, version string, logger *slog.Logger) (f
 
 var errDraining = errors.New("shutting down")
 
-// readiness chỉ phản ánh trạng thái của chính pod. Ping database là tuỳ chọn
-// (READINESS_CHECK_DB) và có timeout ngắn, vì probe mặc định timeout sau 1s.
+// readiness reflects this pod's own state. Database ping is optional
+// (READINESS_CHECK_DB) with a short timeout because probes default to 1s.
 func readiness(draining *atomic.Bool, checkDB func(context.Context) error) func(context.Context) error {
 	return func(ctx context.Context) error {
 		if draining.Load() {

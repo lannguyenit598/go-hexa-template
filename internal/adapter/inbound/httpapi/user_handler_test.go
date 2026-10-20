@@ -177,7 +177,7 @@ func TestClientCanceledRequest_Is499AndNotLoggedAsError(t *testing.T) {
 	api := newAPIWith(t, httpapi.Options{Logger: slog.New(slog.NewJSONHandler(&logs, nil))})
 
 	ctx, cancel := context.WithCancel(context.Background())
-	cancel() // client đã đóng kết nối
+	cancel() // The client closed the connection.
 	req := httptest.NewRequestWithContext(ctx, http.MethodGet, "/api/v1/users", nil)
 	rec := httptest.NewRecorder()
 	api.h.ServeHTTP(rec, req)
@@ -267,16 +267,16 @@ func TestETagAndIfMatch(t *testing.T) {
 		t.Fatalf("GET ETag = %q", got)
 	}
 
-	// Đúng version: thành công, ETag mới.
+	// Matching version: success with a new ETag.
 	rec = api.doWithHeader(http.MethodPatch, path, `{"name":"E2"}`, "If-Match", `"1"`)
 	expectStatus(t, rec, http.StatusOK)
 	if rec.Header().Get("ETag") != `"2"` {
 		t.Fatalf("ETag after update = %q", rec.Header().Get("ETag"))
 	}
 
-	// Version cũ, weak ETag, rác: đều 412 và không ghi gì.
-	// "+2" và "02" có cùng giá trị số với version hiện tại nhưng không phải ETag đã cấp: so sánh
-	// strong của RFC 9110 là so khớp từng ký tự.
+	// Stale versions, weak ETags, and malformed values: 412 without writes.
+	// "+2" and "02" have the current numeric version but differ from the issued ETag:
+	// RFC 9110 strong comparison matches character for character.
 	for _, ifMatch := range []string{`"1"`, `W/"2"`, `garbage`, `"+2"`, `"02"`, `" 2"`} {
 		rec = api.doWithHeader(http.MethodPatch, path, `{"name":"Lost"}`, "If-Match", ifMatch)
 		expectStatus(t, rec, http.StatusPreconditionFailed)
@@ -288,8 +288,8 @@ func TestETagAndIfMatch(t *testing.T) {
 		t.Fatalf("rejected update must not be applied: %+v", got)
 	}
 
-	// Header rỗng và danh sách nhiều ETag (kể cả khi có version hiện tại): 412, an toàn hơn là
-	// coi như không có If-Match và ghi đè vô điều kiện.
+	// Empty headers and multiple ETags (even including the current version) return 412 rather than
+	// being treated as absent If-Match and permitting unconditional overwrites.
 	for _, ifMatch := range []string{``, `"2", "3"`} {
 		rec = api.doWithHeader(http.MethodPatch, path, `{"name":"Lost"}`, "If-Match", ifMatch)
 		expectStatus(t, rec, http.StatusPreconditionFailed)
@@ -305,12 +305,12 @@ func TestETagAndIfMatch(t *testing.T) {
 		t.Fatalf("rejected update must not be applied: %+v", got)
 	}
 
-	// "*" và không có If-Match: không kiểm tra version.
+	// "*" and absent If-Match: no version precondition.
 	expectStatus(t, api.doWithHeader(http.MethodPatch, path, `{"name":"E3"}`, "If-Match", "*"), http.StatusOK)
 	expectStatus(t, api.do(http.MethodPatch, path, `{"name":"E4"}`), http.StatusOK)
 }
 
-// Body chỉ nhận JSON: Echo BindBody còn nhận form và XML, khiến body bị bỏ qua âm thầm (422 khó hiểu).
+// Only JSON bodies are accepted: Echo BindBody also accepts forms/XML, silently ignoring fields (confusing 422).
 func TestRequestBody_OnlyJSONIsAccepted(t *testing.T) {
 	api := newAPI(t, nil)
 	rec := api.do(http.MethodPost, "/api/v1/users", `{"email":"ct@example.com","name":"CT"}`)
@@ -337,7 +337,7 @@ func TestRequestBody_OnlyJSONIsAccepted(t *testing.T) {
 			})
 		}
 	}
-	// Media type không phân biệt hoa thường (RFC 9110); tham số như charset được chấp nhận.
+	// Media types are case-insensitive (RFC 9110); parameters such as charset are accepted.
 	for i, ct := range []string{"application/json; charset=utf-8", "Application/JSON", "APPLICATION/JSON;charset=UTF-8"} {
 		body := fmt.Sprintf(`{"email":"cs%d@example.com","name":"CS"}`, i)
 		rec = api.doWithHeader(http.MethodPost, "/api/v1/users", body, "Content-Type", ct)
@@ -363,7 +363,7 @@ func TestRequestBody_BadRequestDetail(t *testing.T) {
 	}
 }
 
-// Body quá giới hạn gửi theo kiểu chunked (không có Content-Length) vẫn phải là 413, không phải 400.
+// An oversized chunked body (no Content-Length) must still return 413, not 400.
 func TestRequestBody_TooLargeWithoutContentLength(t *testing.T) {
 	api := newAPI(t, nil)
 	body := `{"email":"big@example.com","name":"` + strings.Repeat("a", 2<<20) + `"}`
@@ -377,7 +377,7 @@ func TestRequestBody_TooLargeWithoutContentLength(t *testing.T) {
 
 func TestRequestID_ClientValueIsSanitized(t *testing.T) {
 	api := newAPI(t, nil)
-	cases := map[string]bool{ // header gửi lên -> có được giữ nguyên không
+	cases := map[string]bool{ // Submitted header -> whether it should be preserved.
 		"0b1c2d3e-trace.id_1":        true,
 		strings.Repeat("a", 129):     false,
 		"evil\"} injected {\"x\":\"": false,

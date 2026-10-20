@@ -1,6 +1,6 @@
 -- +goose Up
--- IF NOT EXISTS: database đã được tạo bằng cơ chế migration cũ (trước goose) vẫn chạy
--- được file này mà không lỗi; goose sẽ chỉ ghi nhận version.
+-- IF NOT EXISTS supports databases created by the old pre-goose migration mechanism:
+-- this file succeeds and goose records the version.
 CREATE TABLE IF NOT EXISTS users (
     id         UUID        PRIMARY KEY,
     email      TEXT        NOT NULL,

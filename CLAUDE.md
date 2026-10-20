@@ -1,52 +1,52 @@
-# userapi: hướng dẫn cho Claude
+# userapi: instructions for Claude
 
-REST API quản lý user viết bằng Go 1.26 + Echo v5, theo kiến trúc Hexagonal. Tài liệu đầy đủ: `docs/architecture.md` (cho người phát triển), `docs/api.md` (hợp đồng HTTP), `docs/events.md` (hợp đồng sự kiện), `docs/operations.md` (cấu hình, vận hành), `docs/new-project.md` (khởi tạo dự án từ template). Quy tắc riêng cho từng khu vực code nằm trong `.claude/rules/` và tự nạp khi bạn mở file tương ứng.
+User-management REST API in Go 1.26 + Echo v5 with Hexagonal Architecture. References: `docs/architecture.md` (developers), `docs/api.md` (HTTP contract), `docs/events.md` (event contract), `docs/operations.md` (configuration and operations), and `docs/new-project.md` (using the template). Area-specific rules in `.claude/rules/` load when matching files are opened.
 
-## Lệnh
+## Commands
 
-| Việc | Lệnh |
+| Task | Command |
 |---|---|
-| Kiểm tra trước khi commit (bắt buộc) | `make check`: gofmt, `go mod tidy -diff`, golangci-lint (gồm depguard), `go test -race -count=1 ./...` |
-| Test kèm PostgreSQL | Đặt `TEST_DATABASE_URL=postgres://...` rồi `make check`. Không có biến này, test PostgreSQL bị skip: nói rõ điều đó khi báo kết quả |
-| Chạy API | `make run` (in-memory) hoặc `make run-pg` (cần Docker) |
+| Required pre-commit checks | `make check`: gofmt, `go mod tidy -diff`, golangci-lint (including depguard), `go test -race -count=1 ./...` |
+| PostgreSQL tests | Set `TEST_DATABASE_URL=postgres://...` and run `make check`. Without it, PostgreSQL tests skip; state this in results |
+| Run API | `make run` (in-memory) or `make run-pg` (requires Docker) |
 | Migration | `DATABASE_URL=... go run ./cmd/userapi migrate` |
-| Relay sự kiện (outbox → Kafka) | `STORAGE=postgres DATABASE_URL=... EVENTS_SINK=kafka KAFKA_BROKERS=... go run ./cmd/userapi relay` |
+| Event relay (outbox → Kafka) | `STORAGE=postgres DATABASE_URL=... EVENTS_SINK=kafka KAFKA_BROKERS=... go run ./cmd/userapi relay` |
 
-Công cụ: Go ≥ 1.26 và golangci-lint **v2.14.0** (phải là bản build bằng Go ≥ phiên bản trong `go.mod`, nếu không lint sẽ từ chối chạy). CI ở `.github/workflows/ci.yml` chạy đúng các bước của `make check` cộng thêm govulncheck và build Docker.
+Tools: Go >= 1.26 and golangci-lint **v2.14.0**, built with Go >= the `go.mod` version or lint refuses to run. `.github/workflows/ci.yml` runs the `make check` steps plus govulncheck and a Docker build.
 
-## Kiến trúc: quy tắc không được phá
+## Architecture: mandatory rules
 
-- Import chỉ hướng vào trong: `domain` ← `port` ← `service` ← adapter ← `internal/app` ← `cmd`. `internal/core/**` chỉ import thư viện chuẩn và chính `internal/core`. depguard trong `.golangci.yml` kiểm tra quy tắc này; **không** sửa `.golangci.yml` để lint xanh, hãy sửa code.
-- Inbound port (`port.UserService`) chỉ nhận kiểu primitive (`string`, `*string`, `int`, `int64`); service tự chuyển sang kiểu domain và validate. Kết quả trả về được dùng kiểu domain.
-- Lỗi: quy tắc nghiệp vụ ở `domain` (`ValidationError`, `ErrEmailAlreadyExists`); kết quả use case ở `port` (`ErrNotFound`, `ErrVersionConflict`, dùng chung mọi aggregate). Repository trả sentinel trần; service wrap kèm ngữ cảnh (`fmt.Errorf("get user: %w", err)`); so sánh bằng `errors.Is`/`errors.As`. Core không biết HTTP status.
-- Core không dùng state toàn cục: logger, đồng hồ, bộ sinh ID đều được truyền vào qua constructor/port (lint `forbidigo` và `gochecknoglobals` kiểm tra trong `internal/core`).
-- Chỉ composition root được biết adapter: `internal/app` lắp ráp, `cmd/userapi` chỉ gọi `internal/app`. Package mới nằm ngoài các nhóm đã có rule thì rơi vào rule depguard `everything-else` (không được import adapter).
+- Imports point inward: `domain` ← `port` ← `service` ← adapter ← `internal/app` ← `cmd`. `internal/core/**` imports only the standard library and itself. depguard in `.golangci.yml` enforces this; fix code, **not** lint rules, when it fails.
+- Inbound ports (`port.UserService`) accept primitives (`string`, `*string`, `int`, `int64`); services convert and validate domain types. Results may use domain types.
+- Errors: business rules in `domain` (`ValidationError`, `ErrEmailAlreadyExists`); shared use-case outcomes in `port` (`ErrNotFound`, `ErrVersionConflict`). Repositories return bare sentinels; services wrap context (`fmt.Errorf("get user: %w", err)`). Compare with `errors.Is`/`errors.As`. Core does not know HTTP status codes.
+- No global core state: inject loggers, clocks, and ID generators through constructors/ports (`forbidigo` and `gochecknoglobals` enforce this in `internal/core`).
+- Only the composition root knows adapters: `internal/app` wires them; `cmd/userapi` calls only `internal/app`. Unclassified new packages use depguard `everything-else`, which forbids adapter imports.
 
-## Quy ước
+## Conventions
 
-- Comment trong code và tài liệu trong `docs/`: tiếng Việt. Commit message: tiếng Anh, dòng đầu ở thể mệnh lệnh, thân giải thích *vì sao*.
-- Không thêm abstraction chưa có use case dùng (ví dụ Unit of Work: chỉ thêm khi thật sự cần, theo mẫu trong `docs/architecture.md`).
-- Dependency mới: ưu tiên phiên bản đã phát hành ít nhất 2 tuần; trước khi nâng, kiểm tra dòng `go` trong `go.mod` của module đó (`go mod download -json <module>@<version>` rồi đọc file `GoMod`). Một bản nâng cấp có thể kéo mức Go tối thiểu của cả repo lên. Bản vá bảo mật được phép mới hơn 2 tuần.
-- Nhánh và PR: PR luôn có **base `main`**, compare là nhánh làm việc. Không push thẳng lên `main`.
+- All repository content must be in English: code comments, documentation, examples, configuration guidance, and agent instructions. **Only `README.vi.md` may use Vietnamese.** Commit subjects are imperative English; bodies explain *why*.
+- Do not add abstractions without a use case (for example, add Unit of Work only when needed, following `docs/architecture.md`).
+- Prefer dependency releases at least 2 weeks old. Before upgrading, inspect their Go directive (`go mod download -json <module>@<version>`, then read `GoMod`): an upgrade may raise the repository minimum. Security fixes may be newer.
+- Branches and PRs: **base is always `main`**, compare is the working branch. Do not push directly to `main`.
 
-## Hoàn thành nghĩa là
+## Definition of done
 
-1. `make check` xanh; nêu rõ test PostgreSQL đã chạy hay bị skip.
-2. Hành vi mới có test đã được thấy **fail trước** khi sửa (TDD).
-3. Tài liệu được cập nhật cùng commit khi đổi:
-   - hợp đồng HTTP → `docs/api.md` và `api.http`;
-   - loại hoặc schema sự kiện → `docs/events.md`;
-   - biến môi trường → `docs/operations.md`, `.env.example`, `internal/config/config_test.go`;
-   - kiến trúc hoặc quy tắc phụ thuộc → `docs/architecture.md` và `.golangci.yml`;
-   - nội dung README → sửa **cả** `README.md` (tiếng Anh) và `README.vi.md` (tiếng Việt).
-4. Mọi khẳng định trong tài liệu về hành vi (status code, thông báo lỗi, lệnh) đã được kiểm chứng bằng cách chạy thật, không suy ra từ việc đọc code.
+1. `make check` passes; report whether PostgreSQL tests ran or skipped.
+2. Observe tests for new behavior **fail before implementation** (TDD).
+3. Update documentation in the same commit for changes to:
+   - HTTP contracts → `docs/api.md` and `api.http`;
+   - event types/schemas → `docs/events.md`;
+   - environment variables → `docs/operations.md`, `.env.example`, `internal/config/config_test.go`;
+   - architecture/dependency rules → `docs/architecture.md` and `.golangci.yml`;
+   - README behavior/content → keep English `README.md` and Vietnamese `README.vi.md` aligned. Pure English translations may leave `README.vi.md` unchanged.
+4. Verify new behavioral documentation claims (statuses, error messages, commands) by execution rather than source inspection alone.
 
-## Quy trình có sẵn
+## Available workflows
 
-| Khi | Dùng skill |
+| When | Skill |
 |---|---|
-| Thêm hoặc đổi một use case / endpoint | `/add-use-case` |
-| Thêm migration hoặc đổi schema | `/add-migration` |
-| Theo dõi, sửa CI, trả lời review trên PR | `steward` (tự nạp khi làm việc với PR) |
+| Add/change a use case or endpoint | `/add-use-case` |
+| Add migration or change schema | `/add-migration` |
+| Monitor/fix CI and address PR reviews | `steward` (loaded for PR work) |
 
-`docs/superpowers/` là tài liệu lịch sử (spec và plan cũ), không dùng làm nguồn sự thật.
+`docs/superpowers/` contains historical specs and plans, not the current source of truth. Translations must preserve that historical meaning.

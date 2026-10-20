@@ -1,159 +1,159 @@
-# Kiến trúc
+# Architecture
 
-Tài liệu cho người phát triển trên template: kiến trúc Hexagonal, quy tắc phụ thuộc, luồng xử lý một request, các quyết định thiết kế và cách mở rộng.
+Developer reference: Hexagonal Architecture, dependency rules, request flow, design decisions, and extension points.
 
-## Tổng quan
+## Overview
 
 ```mermaid
 flowchart LR
     subgraph Inbound["Adapter inbound (driving)"]
         HTTP["httpapi<br/>Echo v5"]
     end
-    subgraph Core["Core (không phụ thuộc framework)"]
+    subgraph Core["Core (framework-independent)"]
         IP(["port.UserService"])
         SVC["service.UserService"]
-        DOM["domain.User, Email<br/>validation, lỗi nghiệp vụ"]
+        DOM["domain.User, Email<br/>validation, business errors"]
         OP(["port.UserRepository<br/>port.IDGenerator<br/>port.Clock"])
     end
     subgraph Outbound["Adapter outbound (driven)"]
         MEM["memory"]
-        PG["postgres (pgx, goose)<br/>+ bảng outbox"]
+        PG["postgres (pgx, goose)<br/>+ outbox table"]
         SYS["system<br/>UUIDv7, Clock"]
         KAFKA["kafka (franz-go)"]
     end
     RELAY["internal/outbox<br/>Relay: userapi relay"]
     HTTP --> IP
-    IP -.hiện thực bởi.-> SVC
+    IP -.implemented by.-> SVC
     SVC --> DOM
     SVC --> OP
-    MEM -.hiện thực.-> OP
-    PG -.hiện thực.-> OP
-    SYS -.hiện thực.-> OP
-    PG -.đọc outbox.-> RELAY
+    MEM -.implements.-> OP
+    PG -.implements.-> OP
+    SYS -.implements.-> OP
+    PG -.outbox reads.-> RELAY
     RELAY --> KAFKA
     ROOT["cmd/userapi + internal/app<br/>composition root"] --> HTTP & SVC & MEM & PG & SYS & RELAY & KAFKA
 ```
 
-## Quy tắc phụ thuộc
+## Dependency rules
 
-Mũi tên import luôn hướng vào trong:
-- `domain` không import gì của dự án;
-- `port` chỉ import `domain`;
-- `service` chỉ import `domain` và `port`;
-- adapter import core, còn core không bao giờ import adapter.
+Imports always point inward:
+- `domain` imports no project packages;
+- `port` imports only `domain`;
+- `service` imports only `domain` and `port`;
+- adapters import core; core never imports adapters.
 
-Chỉ composition root biết tất cả. `cmd/userapi/main.go` chỉ đọc config, tạo logger (và đặt nó làm logger mặc định cho thư viện), bắt tín hiệu, rồi gọi `app.Run`, `app.Migrate` hoặc `app.RunRelay` tuỳ lệnh. `internal/app` lắp adapter vào core và quản lý vòng đời server, để phần này có test tự động.
+Only the composition root knows all components. `cmd/userapi/main.go` reads config, creates a logger (also setting the default for libraries), handles signals, and calls `app.Run`, `app.Migrate`, or `app.RunRelay`. `internal/app` wires adapters into core and manages the server lifecycle so it can be tested.
 
-Quy tắc được **CI thực thi tự động** bằng `depguard` (`.golangci.yml`); chạy `make lint` để kiểm tra local:
+CI **automatically enforces** these rules through `depguard` (`.golangci.yml`); run `make lint` locally:
 
-| Rule | Ràng buộc |
+| Rule | Constraint |
 |---|---|
-| `core` | `internal/core/**` chỉ được import thư viện chuẩn và chính `internal/core/...`, trừ `net/http`, `database/sql` và `os` (HTTP, SQL và biến môi trường thuộc về adapter và composition root) |
-| `inbound-adapters` | Không import adapter outbound, `internal/app`, bất kỳ package database nào (`pgx`, `database/sql`, `goose`, `otelpgx`), client Kafka (`franz-go`) hay `internal/outbox` |
-| `outbound-adapters` | Không import adapter inbound, Echo, adapter outbound khác, bộ test `repotest` hay `internal/app` |
-| `outbound-adapters-no-broker` | Adapter outbound, trừ `kafka`, không import `franz-go`: sự kiện đi qua outbox, không publish thẳng |
-| `outbox` | `internal/outbox` chỉ dùng thư viện chuẩn: không biết database, broker hay domain |
-| `platform` | `internal/config`, `internal/observability` không import core, adapter, `internal/outbox` hay `internal/app` |
-| `cmd` | `cmd/**` không import adapter, core, `pgx`, `goose`, Echo hay `franz-go`: việc lắp ráp nằm trong `internal/app` |
-| `everything-else` | Mọi package còn lại, kể cả `internal/outbox` và package mới (ví dụ `internal/worker`), không import adapter, `internal/app`, `pgx`, `goose`, Echo hay `franz-go`. Package mới cần quyền đó thì phải có rule riêng |
+| `core` | `internal/core/**` imports only the standard library and `internal/core/...`, excluding `net/http`, `database/sql`, and `os` (HTTP, SQL, and environment access belong to adapters/composition root) |
+| `inbound-adapters` | No outbound adapters, `internal/app`, database packages (`pgx`, `database/sql`, `goose`, `otelpgx`), Kafka clients (`franz-go`), or `internal/outbox` |
+| `outbound-adapters` | No inbound adapters, Echo, other outbound adapters, shared `repotest`, or `internal/app` |
+| `outbound-adapters-no-broker` | Outbound adapters except `kafka` cannot import `franz-go`: events go through the outbox, never direct publishing |
+| `outbox` | `internal/outbox` uses only the standard library: no database, broker, or domain |
+| `platform` | `internal/config` and `internal/observability` cannot import core, adapters, `internal/outbox`, or `internal/app` |
+| `cmd` | `cmd/**` cannot import adapters, core, `pgx`, `goose`, Echo, or `franz-go`: wiring belongs in `internal/app` |
+| `everything-else` | All remaining packages, including `internal/outbox` and new packages such as `internal/worker`, cannot import adapters, `internal/app`, `pgx`, `goose`, Echo, or `franz-go`. New package categories needing access require their own rule |
 
-Mọi rule đều bỏ qua file `*_test.go`, vì test được phép dùng adapter làm test double (ví dụ test của service dùng repository in-memory). Hướng import *bên trong* core (`domain` ← `port` ← `service`) không cần rule: import ngược sẽ tạo vòng import, và Go từ chối biên dịch.
+Rules exclude `*_test.go` because tests may use adapters as test doubles (such as memory repositories in service tests). Reverse imports *inside* core (`domain` ← `port` ← `service`) would create import cycles rejected by Go.
 
-Ngoài depguard, hai linter chỉ áp dụng cho `internal/core` (trừ test) giữ quy tắc "core không có state toàn cục":
-- `forbidigo` cấm `time.Now` (dùng `port.Clock`) và logger toàn cục `slog.Info`/`slog.Default`... (dùng `*slog.Logger` được inject);
-- `gochecknoglobals` cấm biến package-level, trừ sentinel error (`ErrXxx`) và `var _ Interface = ...`.
+Two additional linters apply only to non-test `internal/core` code to enforce no global state:
+- `forbidigo` bans `time.Now` (use `port.Clock`) and global logging such as `slog.Info`/`slog.Default` (inject `*slog.Logger`);
+- `gochecknoglobals` bans package-level variables except sentinel errors (`ErrXxx`) and `var _ Interface = ...` assertions.
 
-## Luồng một request `POST /api/v1/users`
+## Flow of `POST /api/v1/users`
 
-1. `otelhttp` (bọc ngoài Echo) mở span.
-2. Echo chạy middleware theo thứ tự:
-   - `dropInvalidRequestID` bỏ `X-Request-Id` không hợp lệ do client gửi;
-   - RequestID gắn `request_id` vào ctx;
-   - đặt tên span theo route;
+1. `otelhttp`, wrapping Echo, starts a span.
+2. Echo runs middleware in order:
+   - `dropInvalidRequestID` removes invalid client-supplied `X-Request-Id`;
+   - RequestID attaches `request_id` to ctx;
+   - name the span after its route;
    - request logger;
    - Recover;
    - BodyLimit (1 MiB);
    - ContextTimeout (`REQUEST_TIMEOUT`).
-3. `httpapi.userHandler.create` bind JSON vào DTO `createUserRequest` rồi gọi `port.UserService.Register`. Handler không chứa logic nghiệp vụ.
-4. `service.UserService.Register` lấy ID từ `IDGenerator`, thời gian từ `Clock`, rồi gọi `domain.NewUser` để chuẩn hoá và validate.
-5. `UserRepository.Create` lưu bản ghi. Adapter postgres dịch lỗi unique violation (`23505`) trên constraint `users_email_key` thành `domain.ErrEmailAlreadyExists`; unique violation trên constraint khác vẫn là lỗi không lường trước (500).
-6. Handler trả 201 kèm `Location` và `ETag`. Nếu có lỗi, handler chỉ cần `return err`; `HTTPErrorHandler` tập trung dùng `httpapi.toProblem` để ánh xạ lỗi sang problem+json. Handler chỉ tự tạo lỗi của tầng HTTP: body hoặc query sai định dạng (400, 413, 415), `If-Match` sai định dạng (412), và 412 khi client gửi `If-Match` mà version xung đột. Mọi lỗi nghiệp vụ đến từ core.
+3. `httpapi.userHandler.create` binds JSON to `createUserRequest` and calls `port.UserService.Register`. The handler contains no business logic.
+4. `service.UserService.Register` obtains an ID from `IDGenerator` and time from `Clock`, then calls `domain.NewUser` to normalize and validate.
+5. `UserRepository.Create` stores the record. PostgreSQL maps unique violation `23505` on `users_email_key` to `domain.ErrEmailAlreadyExists`; violations of other constraints remain unexpected errors (500).
+6. The handler returns 201 with `Location` and `ETag`. For errors, `return err` lets the central `HTTPErrorHandler` use `httpapi.toProblem` to produce problem+json. Handlers create only HTTP-layer errors: malformed bodies/queries (400, 413, 415), invalid If-Match (412), and version conflicts with If-Match (412). Business errors originate in core.
 
-## Phân loại lỗi
+## Error classification
 
-| Lỗi | Thuộc về | Ý nghĩa |
+| Error | Owner | Meaning |
 |---|---|---|
-| `domain.ValidationError` | Domain | Dữ liệu vi phạm invariant, kèm danh sách field |
-| `domain.ErrEmailAlreadyExists` | Domain | Quy tắc nghiệp vụ: email là duy nhất |
-| `port.ErrNotFound` | Application | Không tìm thấy, dùng chung cho mọi aggregate |
-| `port.ErrVersionConflict` | Application | Bản ghi bị thay đổi kể từ lúc đọc (optimistic locking) |
+| `domain.ValidationError` | Domain | Input violates invariants, with field details |
+| `domain.ErrEmailAlreadyExists` | Domain | Business rule: unique email |
+| `port.ErrNotFound` | Application | Not found, shared across aggregates |
+| `port.ErrVersionConflict` | Application | Record changed since read (optimistic locking) |
 
-Repository trả sentinel trần; service wrap kèm ngữ cảnh (`fmt.Errorf("get user: %w", err)`; ID sai định dạng thành `fmt.Errorf("user %s: %w", raw, port.ErrNotFound)`). Luôn so sánh bằng `errors.Is`/`errors.As`. Core không biết HTTP status; mỗi adapter inbound tự ánh xạ lỗi sang giao thức của mình.
+Repositories return bare sentinels; services wrap context (`fmt.Errorf("get user: %w", err)`; invalid IDs use `fmt.Errorf("user %s: %w", raw, port.ErrNotFound)`). Always compare with `errors.Is`/`errors.As`. Core knows no HTTP statuses; inbound adapters map errors to their protocols.
 
-## Quyết định thiết kế
+## Design decisions
 
-**Validate trong domain, không dùng thư viện validator qua struct tag.** Quy tắc nghiệp vụ (email hợp lệ, name tối đa 100 ký tự Unicode) thuộc về domain, nên mọi adapter inbound (gRPC, CLI, consumer từ queue) được hưởng cùng một quy tắc, và repo bớt khoảng chục dependency gián tiếp.
+**Domain validation, not struct-tag validators.** Business rules (valid email, name up to 100 Unicode characters) belong in domain so every inbound adapter (gRPC, CLI, queue consumer) shares them, while avoiding roughly a dozen indirect dependencies.
 
-**DTO và persistence model tách khỏi entity.** `userResponse` (JSON) và `userRow` (SQL) là hai struct riêng. Đổi tên cột hay đổi định dạng JSON không đụng tới domain. `domain.FieldError` cũng không mang tag JSON; `httpapi` map nó sang DTO riêng.
+**DTOs and persistence models are separate from entities.** `userResponse` (JSON) and `userRow` (SQL) are distinct structs. Column or JSON changes do not affect domain. `domain.FieldError` has no JSON tags; httpapi maps it to a DTO.
 
-**Inbound port chỉ nhận primitive.** `port.UpdateUserCmd`, `port.ListUsersQuery` và tham số của `Get`/`Delete` là `string`, `*string`, `int`, `int64`, không phải `domain.UserID` hay `domain.Changes`. Mọi transport dùng chung một hợp đồng mà không phải tự dựng kiểu domain, và việc validate ID nằm ở một chỗ duy nhất trong core. Kết quả trả về vẫn là `domain.User`; adapter được phép đọc kiểu domain.
+**Inbound ports accept primitives.** `port.UpdateUserCmd`, `port.ListUsersQuery`, and Get/Delete parameters use `string`, `*string`, `int`, `int64`, not `domain.UserID` or `domain.Changes`. Transports share one contract without constructing domain values; ID validation stays centralized in core. Results remain `domain.User`, which adapters may read.
 
-**ID không hợp lệ trả 404 thay vì 400.** Service validate ID trước khi gọi repository. Cách này tránh gửi chuỗi rác xuống PostgreSQL (vốn gây lỗi `22P02`) và không tiết lộ định dạng ID cho client.
+**Malformed IDs return 404 rather than 400.** Service validation keeps malformed strings out of PostgreSQL (which would return `22P02`) and avoids exposing ID-format validation to clients.
 
-**`Email` là value object.** Field bên trong không exported, nên ngoài package `domain` chỉ có hai cách tạo: `domain.ParseEmail` (chuẩn hoá và validate, dùng cho input) và `domain.EmailFromStore` (chỉ dành cho adapter lưu trữ). Code nghiệp vụ không thể gán chuỗi rác vào `User.Email`. `EmailFromStore` **cố ý không validate lại**: nếu sau này quy tắc được thắt chặt, bản ghi cũ vẫn đọc được thay vì làm mọi request liên quan lỗi 500. Các field khác của `User` vẫn exported: trong Go, private hoá toàn bộ kèm getter tạo nhiều boilerplate mà lợi ích không tương xứng.
+**`Email` is a value object.** Its private field blocks direct arbitrary string assignment. Use `domain.ParseEmail` for normalized, validated input and `domain.EmailFromStore` for persisted values; the zero value remains empty and unvalidated. `EmailFromStore` **intentionally does not revalidate**, so stricter future rules do not make legacy reads fail with 500. Other `User` fields stay exported: making every field private with getters adds disproportionate boilerplate.
 
-**`Clock` và `IDGenerator` là port.** Test của service hoàn toàn tất định. Đồng hồ thật làm tròn thời gian xuống micro giây để khớp độ chính xác của PostgreSQL. ID là UUIDv7 qua `google/uuid`: tăng dần theo thời gian nên index B-tree ít bị phân mảnh.
+**`Clock` and `IDGenerator` are ports.** Service tests are deterministic. The real clock truncates to microseconds for PostgreSQL precision. UUIDv7 from `google/uuid` is time-ordered to reduce B-tree fragmentation.
 
-**Logger được truyền vào service, không dùng logger toàn cục.** Test bắt được log, và mỗi instance có thể ghi log ra nơi khác nhau.
+**Inject service loggers instead of using globals.** Tests can capture logs and instances can use different destinations.
 
-**Optimistic locking thay vì `SELECT ... FOR UPDATE`.** Compare-and-set trên cột `version` chỉ cần một câu `UPDATE` (khi bật sự kiện: câu đó và câu ghi outbox trong một transaction ngắn), không giữ lock hay transaction giữa lúc đọc và ghi, và cùng cơ chế đó cung cấp luôn `ETag`. Khi `UPDATE` không ghi được dòng nào, một câu `SELECT EXISTS` riêng phân biệt "không tồn tại" (404) với "version đã đổi" (409); câu này không cần nằm chung transaction, vì cả hai kết quả đều có nghĩa là lần ghi không xảy ra. Đánh đổi: khi rất nhiều request cùng sửa *một* bản ghi, một phần sẽ nhận 409. Với dữ liệu kiểu hồ sơ user (tranh chấp thấp) đây là lựa chọn phù hợp.
+**Optimistic locking instead of `SELECT ... FOR UPDATE`.** Version compare-and-set needs one UPDATE (plus the outbox insert in a short transaction when enabled), without holding locks or transactions between reads and writes; the same version supplies ETags. If no row is updated, a separate SELECT EXISTS distinguishes missing records (404) from version conflicts (409). It need not share the transaction because neither outcome committed a write. Heavy contention on one record may yield 409s; user profiles generally have low contention.
 
-**Migration bằng goose, chạy tách khỏi app.** App chỉ đọc trạng thái migration lúc khởi động; DDL chỉ chạy bằng lệnh `userapi migrate` với role riêng. `MIGRATE_ON_START=true` cho app tự migrate lúc khởi động, chỉ để tiện khi phát triển local. Xem [operations.md](operations.md#migration).
+**Separate goose migrations from application startup.** The app reads migration status; `userapi migrate` runs DDL under a separate role. `MIGRATE_ON_START=true` is a local-development convenience. See [operations.md](operations.md#migration).
 
-**Integration test dùng PostgreSQL thật qua `TEST_DATABASE_URL`, không dùng testcontainers-go.** CI (service container) và `docker compose` đã dựng sẵn PostgreSQL; testcontainers kéo thêm vài chục dependency gián tiếp chỉ để làm việc đó. Kafka được test bằng `kfake`, cluster in-memory của chính franz-go, nên không cần broker thật hay container. Khi test cần loại hạ tầng không có bản in-memory như vậy (Redis...), testcontainers mới đáng giá.
+**Real PostgreSQL via `TEST_DATABASE_URL`, without testcontainers-go.** CI service containers and docker compose already provide PostgreSQL; testcontainers would add dozens of indirect dependencies for the same job. Kafka tests use franz-go's in-memory `kfake`, without a broker container. Revisit testcontainers for infrastructure without an in-memory alternative, such as Redis.
 
-## Phát sự kiện qua transactional outbox
+## Publishing events through a transactional outbox
 
-Sự kiện `user.registered` / `user.updated` / `user.deleted` (hợp đồng: [events.md](events.md)) được thêm **mà không sửa dòng nào trong `internal/core`**:
+Events `user.registered` / `user.updated` / `user.deleted` ([contract](events.md)) were added **without changing `internal/core`**:
 
-1. Adapter postgres, khi được lắp với `postgres.WithOutbox()`, ghi một bản ghi vào bảng `outbox` trong cùng transaction với mỗi lần `Create`/`Update`/`Delete` thành công. Hợp đồng của `port.UserRepository` không đổi; `repotest` chạy cho cả hai chế độ.
-2. `internal/outbox` định nghĩa `Source` và `Sink` cùng vòng lặp `Relay`, không biết PostgreSQL hay Kafka. `postgres.OutboxSource` hiện thực `Source` (`FOR UPDATE SKIP LOCKED`); `kafka.Sink` hiện thực `Sink`. Kết quả được xử lý theo từng message: thành công thì đánh dấu đã gửi, bị broker từ chối vĩnh viễn thì tách riêng (`parked_at`) để không chặn hàng đợi, lỗi tạm thời thì thử lại.
-3. `internal/app` lắp chúng thành lệnh `userapi relay`, chạy như một tiến trình riêng.
+1. With `postgres.WithOutbox()`, each successful Create/Update/Delete writes one outbox row in the same transaction. `port.UserRepository` stays unchanged; `repotest` runs in both modes.
+2. `internal/outbox` defines Source, Sink, and the Relay loop without PostgreSQL/Kafka knowledge. `postgres.OutboxSource` implements Source with FOR UPDATE SKIP LOCKED; `kafka.Sink` implements Sink. Results are per message: mark success, park permanent rejections (`parked_at`) without blocking the queue, retry temporary failures.
+3. `internal/app` wires `userapi relay` as a separate process.
 
-Vì sao sinh sự kiện trong adapter mà không phải trong domain: mỗi lần repository ghi thành công tương ứng đúng một thay đổi nghiệp vụ (service không gọi `Update` khi dữ liệu không đổi, và lần ghi gặp xung đột version không ghi gì), nên adapter có đủ thông tin cho "loại thao tác + user + version". Sự kiện là **sự kiện mỏng**, không có email hay tên, để xoá user không kéo theo việc xoá dữ liệu trên broker.
+Why events originate in the adapter: each successful repository write maps to one business change (the service skips unchanged updates; version-conflicting writes change nothing). The adapter therefore knows operation, user, and version. **Thin events** omit email/name, avoiding copies of these fields on the broker when users are deleted.
 
-Giới hạn của cách này, và lúc phải đổi sang sự kiện trong domain:
-- sự kiện cần thông tin chỉ service biết: ai thực hiện, lý do, giá trị cũ để audit;
-- một thay đổi trải qua nhiều aggregate;
-- thêm một adapter lưu trữ khác, vì adapter đó phải tự ghi outbox và `repotest` không kiểm tra được điều đó.
+Limits and triggers for moving events into domain:
+- events need service-only data: actor, reason, or old values for auditing;
+- a change spans multiple aggregates;
+- another storage adapter is added: it must implement its own outbox writes, which repotest does not verify.
 
-Khi đó: sự kiện thành kiểu trong `domain`, thêm port `UnitOfWork` (mẫu ở mục [Mở rộng](#mở-rộng)) và `OutboxRepository`, service ghi user và sự kiện trong cùng `uow.Do(...)`. Chuyển hẳn, đừng để hai nguồn sự kiện cùng tồn tại.
+Then define domain event types, a `UnitOfWork` port ([example below](#extending-the-template)), and `OutboxRepository`; write users and events inside one `uow.Do(...)`. Migrate fully rather than keeping two event sources.
 
-## Mở rộng
+## Extending the template
 
-**Thêm adapter lưu trữ mới** (ví dụ MySQL):
-1. Tạo `internal/adapter/outbound/mysql`, hiện thực `port.UserRepository`.
-2. Viết test gọi `repotest.Run`. Adapter chỉ được coi là đúng khi vượt qua bộ contract test này.
-3. Trong `internal/config/config.go`, thêm hằng `StorageMySQL` và nhánh tương ứng trong phần validate `STORAGE`; nếu không, config sẽ từ chối giá trị mới.
-4. Trong `newRepository` (`internal/app/app.go`), thêm nhánh dựng adapter mới. Quên bước này thì app từ chối khởi động với lỗi `unsupported storage "mysql"`.
-5. Thêm đường dẫn package mới vào danh sách deny của rule `outbound-adapters` trong `.golangci.yml`, để các adapter outbound khác không import nó.
+**Add a storage adapter**, such as MySQL:
+1. Create `internal/adapter/outbound/mysql` implementing `port.UserRepository`.
+2. Add tests calling `repotest.Run`; passing that contract suite is required.
+3. Add `StorageMySQL` and a corresponding STORAGE validation branch in `internal/config/config.go`, or config rejects it.
+4. Add the constructor branch in `newRepository` (`internal/app/app.go`), or startup fails with `unsupported storage "mysql"`.
+5. Add its package path to the `outbound-adapters` deny list in `.golangci.yml` so other adapters cannot import it.
 
-Không cần sửa dòng nào trong `internal/core`.
+No changes to `internal/core` are needed.
 
-**Thêm transport mới** (ví dụ gRPC): tạo `internal/adapter/inbound/grpcapi` nhận vào `port.UserService`, ánh xạ lỗi của core (`port.ErrNotFound` → `codes.NotFound`, `domain.ErrEmailAlreadyExists` → `codes.AlreadyExists`, `port.ErrVersionConflict` → `codes.Aborted`, `domain.ValidationError` → `codes.InvalidArgument`), rồi khởi động song song trong `app.Run`.
+**Add a transport**, such as gRPC: create `internal/adapter/inbound/grpcapi` accepting `port.UserService`; map core errors (`port.ErrNotFound` → `codes.NotFound`, `domain.ErrEmailAlreadyExists` → `codes.AlreadyExists`, `port.ErrVersionConflict` → `codes.Aborted`, `domain.ValidationError` → `codes.InvalidArgument`), then start it alongside HTTP in `app.Run`.
 
-**Thêm broker khác** (ví dụ RabbitMQ, SQS): tạo adapter hiện thực `outbox.Sink`, thêm hằng vào `EventsSink` trong `internal/config/config.go` cùng nhánh validate, thêm nhánh trong `newSink` (`internal/app/relay.go`; quên thì relay từ chối khởi động với `unsupported events sink`), và thêm đường dẫn package vào rule `outbound-adapters` cùng ngoại lệ trong rule `outbound-adapters-no-broker`. Nhánh validate của sink mới phải yêu cầu `STORAGE=postgres` như nhánh `kafka`: outbox nằm trong PostgreSQL, thiếu điều kiện này thì `STORAGE=memory` lọt qua và API âm thầm không ghi sự kiện. Sink trả lỗi theo từng message và chỉ bọc `outbox.ErrPermanent` khi broker từ chối chính message đó. Payload và header được chuyển nguyên vẹn, nên adapter không cần biết schema sự kiện.
+**Add a broker**, such as RabbitMQ/SQS: implement `outbox.Sink`, add EventsSink and validation in `internal/config/config.go`, wire `newSink` in `internal/app/relay.go` (otherwise startup reports `unsupported events sink`), and update `outbound-adapters` and `outbound-adapters-no-broker` rules. Require STORAGE=postgres as Kafka does; otherwise memory mode silently omits events. Return per-message errors, wrapping ErrPermanent only for rejected message content. Payloads/headers pass through unchanged; adapters need no event-schema knowledge.
 
-**Nhận lệnh qua message** (consumer): tạo adapter inbound mới, ví dụ `internal/adapter/inbound/kafkaconsumer`, gọi `port.UserService` giống `httpapi` và ánh xạ lỗi của core (`domain.ValidationError` → dead-letter; `context.DeadlineExceeded`, lỗi kết nối → thử lại). Use case hiện có đã đủ cho idempotency: gặp lại lệnh tạo user trả `ErrEmailAlreadyExists`, lệnh sửa kèm `ExpectedVersion` trả `ErrVersionConflict`, lệnh xoá trả `ErrNotFound`. Commit offset sau khi xử lý xong. Cần một rule depguard riêng cho package này, vì `inbound-adapters` cấm `franz-go`.
+**Consume commands from messages:** add an inbound adapter such as `internal/adapter/inbound/kafkaconsumer` calling `port.UserService`; map validation errors to dead-letter and timeouts/connection errors to retries. Existing use cases expose duplicate-command outcomes: create → ErrEmailAlreadyExists, versioned update → ErrVersionConflict, delete → ErrNotFound. Commit offsets after processing. Add a dedicated depguard rule because `inbound-adapters` bans franz-go.
 
-**Cache đọc** (Redis), chỉ khi số đo cho thấy cần: decorator hiện thực `port.UserRepository` và bọc repository thật, lắp trong `newRepository`. Phải vượt qua `repotest.Run`. Chỉ cache `GetByID`; xoá key sau khi `Update`/`Delete` thành công **và cả khi `Update` trả `ErrVersionConflict`**, nếu không vòng retry của service đọc lại bản cũ và trả 409 giả. Redis lỗi thì đọc thẳng database, không đưa Redis vào `/readyz`.
+**Read caching**, only if measurements justify it: a Redis decorator implements `port.UserRepository`, wraps storage in `newRepository`, and passes `repotest.Run`. Cache only GetByID; invalidate after successful Update/Delete **and Update returning ErrVersionConflict**, or service retries keep reading stale values and produce false 409s. On Redis failure, read the database; do not add Redis to readiness.
 
-**Thêm use case** (ví dụ tìm theo email):
-1. Thêm method vào `port.UserService`, với tham số là kiểu primitive.
-2. Nếu cần, thêm method vào `port.UserRepository` và thêm test vào `repotest`, để mọi adapter cùng bị kiểm tra.
-3. Hiện thực ở service và thêm handler.
+**Add a use case**, such as lookup by email:
+1. Add a primitive-input method to `port.UserService`.
+2. If needed, extend `port.UserRepository` and repotest to cover every adapter.
+3. Implement the service method and handler.
 
-**Use case ghi nhiều repository trong một transaction** (ví dụ tạo user và tạo luôn workspace mặc định cho user đó): thêm port Unit of Work *tường minh*, trong đó transaction được truyền qua kiểu dữ liệu, không giấu trong `context`:
+**Write multiple repositories in one transaction**, such as creating a user and default workspace: add an *explicit* Unit of Work port, passing transaction-bound repositories through types rather than hiding the transaction in context:
 
 ```go
 // port
@@ -162,21 +162,21 @@ type Repos struct {
     Outbox OutboxRepository
 }
 type UnitOfWork interface {
-    // Do chạy fn trong một transaction; fn trả lỗi thì rollback.
+    // Do runs fn in a transaction and rolls back if fn returns an error.
     Do(ctx context.Context, fn func(ctx context.Context, r Repos) error) error
 }
 ```
 
-Adapter postgres hiện thực `Do` bằng `pgx.BeginTxFunc` và dựng `Repos` trên `pgx.Tx`; adapter memory khoá mutex rồi gọi `fn`. Template chưa thêm port này vì chưa có use case nào cần (thêm abstraction không được dùng là nợ kỹ thuật). Không nên giấu `pgx.Tx` trong `context`: repository quên lấy tx từ context sẽ âm thầm chạy ngoài transaction, và goroutine con có thể dùng tx sau khi đã commit.
+The postgres adapter uses `pgx.BeginTxFunc` and constructs Repos over `pgx.Tx`; memory locks its mutex and calls fn. The template does not add this unused abstraction before a use case needs it. Do not hide pgx.Tx in context: forgetting to retrieve it silently writes outside the transaction, and child goroutines may use it after commit.
 
-**Khi có aggregate thứ hai:** cân nhắc tổ chức package theo bounded context (`internal/user/{domain,app,adapter}`, `internal/order/...`, hạ tầng dùng chung ở `internal/platform`) thay vì theo layer như hiện tại.
+**With a second aggregate:** evaluate bounded-context packages (`internal/user/{domain,app,adapter}`, `internal/order/...`, shared infrastructure in `internal/platform`) instead of the current layer organization.
 
-## Ghi chú khi chuyển từ Echo v4 sang v5
+## Echo v4 to v5 migration notes
 
-| Echo v4 | Echo v5 (repo này dùng) |
+| Echo v4 | Echo v5 (used here) |
 |---|---|
 | `func(c echo.Context) error` (interface) | `func(c *echo.Context) error` (struct) |
-| `e.Start(addr)` + `e.Shutdown(ctx)` thủ công | `echo.StartConfig{Address, GracefulTimeout}.Start(ctx, e)`. Repo này vẫn tự dựng `http.Server` để đặt `ReadHeaderTimeout`/`IdleTimeout` và bọc `otelhttp` bên ngoài Echo |
-| `e.Logger` riêng của Echo | `e.Logger` là `*slog.Logger` |
+| Manual `e.Start(addr)` + `e.Shutdown(ctx)` | `echo.StartConfig{Address, GracefulTimeout}.Start(ctx, e)`. This repo still constructs `http.Server` to set ReadHeaderTimeout/IdleTimeout and wrap Echo in otelhttp |
+| Echo-specific `e.Logger` | `e.Logger` is `*slog.Logger` |
 | `c.Bind` + `strconv` cho query | `echo.BindBody`, generic `echo.QueryParamOr[int](c, "limit", 0)` |
-| Kiểu lỗi chỉ có `*echo.HTTPError` | Thêm interface `HTTPStatusCoder`; dùng `echo.StatusCode(err)` để lấy status |
+| Only `*echo.HTTPError` | Adds `HTTPStatusCoder`; use `echo.StatusCode(err)` |

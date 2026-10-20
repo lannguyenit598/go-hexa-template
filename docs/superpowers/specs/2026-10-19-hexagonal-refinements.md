@@ -1,38 +1,38 @@
-# Spec: Tinh chỉnh kiến trúc Hexagonal (mục 1–5 của bản review 2026-10-19)
+# Spec: Hexagonal Architecture Refinements (Review Items 1–5, 2026-10-19)
 
-Nguồn: bản review kiến trúc Hexagonal sau 7 commit trên branch `claude/vibrant-keller-k2m8al`.
-Phạm vi: chỉ mục 1–5. ADR-001 (tổ chức package theo bounded context) **không** thuộc phạm vi;
-chỉ làm khi xuất hiện aggregate thứ hai.
+Source: architecture review after seven commits on claude/vibrant-keller-k2m8al.
+Scope: items 1–5 only. ADR-001 (bounded-context package organization) is **out of scope**;
+implement only when a second aggregate exists.
 
-## R1. Composition root mỏng, lifecycle có test
-- `cmd/userapi/main.go` chỉ còn: đọc config, tạo logger, bắt tín hiệu, chọn lệnh (`""` hoặc `migrate`).
-- Toàn bộ khởi tạo adapter, readiness, drain khi shutdown, timeout của `http.Server`, flush telemetry,
-  kiểm tra migration tồn đọng chuyển sang package `internal/app`, có test tự động cho:
-  - trong `SHUTDOWN_DELAY` sau khi ctx bị huỷ: `/readyz` = 503, API vẫn = 200;
-  - sau shutdown: listener đã đóng, `Run` trả `nil`;
-  - không khởi động được (cổng bị chiếm) thì `Run` trả lỗi, không treo;
-  - database còn migration chưa chạy (kể cả database trống hoàn toàn) thì `Run` trả lỗi chứa
-    `pending migrations`; với `MIGRATE_ON_START=true` thì chạy bình thường.
-- Hành vi giữ nguyên: tín hiệu thứ hai kết thúc tiến trình ngay.
+## R1. Thin composition root with tested lifecycle
+- cmd/userapi/main.go only reads config, creates a logger, handles signals, and selects the default or migrate command.
+- Move adapter creation, readiness, shutdown drain, HTTP server timeouts, telemetry flushing,
+  and pending-migration checks into internal/app, with automated tests for:
+  - after cancellation during SHUTDOWN_DELAY: /readyz=503 while API remains 200;
+  - after shutdown: listener closed and Run returns nil;
+  - startup failure such as an occupied port returns an error without hanging;
+  - pending migrations, including an entirely empty database, cause an error containing
+    pending migrations; MIGRATE_ON_START=true permits normal startup.
+- Preserve immediate termination on the second signal.
 
-## R2. Inbound port chỉ dùng kiểu primitive
-- Command/query đầu vào của `port.UserService` chỉ chứa kiểu primitive (`string`, `*string`, `int64`...);
-  không chứa `domain.UserID`, `domain.Changes`.
-- Service chịu trách nhiệm chuyển sang kiểu domain và validate ID (ID sai định dạng thì trả not found).
-- Kết quả trả về vẫn là `domain.User` (adapter được phép đọc kiểu domain).
-- Hợp đồng HTTP (status, JSON) không đổi.
+## R2. Primitive-only inbound inputs
+- port.UserService commands/queries contain only primitives (string, *string, int64...);
+  no domain.UserID or domain.Changes.
+- Services convert to domain types and validate IDs; malformed IDs return not found.
+- Results remain domain.User, which adapters may read.
+- Preserve HTTP statuses and JSON.
 
-## R3. Service không dùng logger toàn cục
-- `service.UserService` nhận `*slog.Logger` qua constructor; `nil` = không log.
-- Dòng log khi retry vì xung đột version đi qua logger được inject, vẫn dùng `*Context(ctx, ...)`.
+## R3. No global service logger
+- Inject *slog.Logger into service.UserService; nil discards logs.
+- Version-conflict retry logs use the injected logger and *Context(ctx, ...).
 
-## R4. depguard bịt các chỗ hở
-- `internal/observability`, `internal/config` không được import adapter, core, app.
-- Adapter outbound không import adapter outbound khác, không import bộ test `repotest`.
-- Không package nào ngoài `cmd` import `internal/app`.
+## R4. Close depguard gaps
+- internal/observability and internal/config cannot import adapters, core, or app.
+- Outbound adapters cannot import one another or repotest.
+- No package outside cmd imports internal/app.
 
-## R5. Lỗi kết quả use case nằm ở tầng application
-- `ErrNotFound`, `ErrVersionConflict` chuyển từ `domain` sang `port` và dùng chung cho mọi aggregate
-  (không có `ErrUserNotFound`). Ngữ cảnh được thêm bằng wrap (`fmt.Errorf("user %s: %w", ...)`).
-- `domain` chỉ giữ lỗi của nghiệp vụ: `ValidationError`, `ErrEmailAlreadyExists`.
-- Ánh xạ HTTP không đổi: not found = 404, version conflict = 409 (412 khi có `If-Match`).
+## R5. Application owns use-case outcome errors
+- Move ErrNotFound and ErrVersionConflict from domain to port, shared by all aggregates
+  without ErrUserNotFound. Add context through fmt.Errorf("user %s: %w", ...).
+- Domain retains only business errors: ValidationError and ErrEmailAlreadyExists.
+- Preserve HTTP mapping: not found=404, version conflict=409 (412 with If-Match).

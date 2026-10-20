@@ -19,28 +19,28 @@ import (
 //go:embed migrations/*.sql
 var embedded embed.FS
 
-// migrationLockTimeout là lock_timeout cho phiên chạy migration. Một câu ALTER TABLE phải
-// chờ lock ACCESS EXCLUSIVE; trong lúc chờ, MỌI query khác trên bảng xếp hàng sau nó.
-// Thà migration thất bại sớm (rồi chạy lại) còn hơn làm treo toàn bộ traffic.
+// migrationLockTimeout sets lock_timeout for migration sessions. ALTER TABLE waits for
+// ACCESS EXCLUSIVE; while waiting, EVERY other query on the table queues behind it.
+// Fail migrations early and retry later rather than blocking all traffic.
 const migrationLockTimeout = 5 * time.Second
 
 func migrationsFS() fs.FS {
 	sub, err := fs.Sub(embedded, "migrations")
 	if err != nil {
-		panic(err) // chỉ xảy ra khi đường dẫn embed sai: lỗi lập trình
+		panic(err) // Only an incorrect embed path can cause this programming error.
 	}
 	return sub
 }
 
-// Migrate áp dụng các migration còn thiếu bằng goose:
-//   - Bảng goose_db_version ghi lại version đã chạy, mỗi file chạy đúng một lần.
-//   - Advisory lock (giữ trên MỘT kết nối, do goose quản lý) đảm bảo nhiều replica hoặc
-//     nhiều Job chạy cùng lúc không đè lên nhau.
-//   - Mỗi file chạy trong transaction riêng, trừ file đánh dấu "-- +goose NO TRANSACTION"
-//     (bắt buộc cho CREATE INDEX CONCURRENTLY).
+// Migrate applies pending migrations using goose:
+//   - goose_db_version tracks applied versions; each file runs exactly once.
+//   - An advisory lock on ONE connection, managed by goose, prevents concurrent replicas
+//     or Jobs from running migrations over one another.
+//   - Each file runs in its own transaction unless marked "-- +goose NO TRANSACTION"
+//     (required for CREATE INDEX CONCURRENTLY).
 //
-// Migration dùng kết nối riêng với statement_timeout = 0 (tạo index có thể lâu) và
-// lock_timeout ngắn, KHÔNG dùng chung pool của ứng dụng.
+// Migrations use a separate connection with statement_timeout = 0 (index creation may be slow)
+// and a short lock_timeout, NOT the application pool.
 func Migrate(ctx context.Context, dsn string, logger *slog.Logger) error {
 	db, err := openMigrationDB(dsn)
 	if err != nil {
@@ -69,13 +69,13 @@ func Migrate(ctx context.Context, dsn string, logger *slog.Logger) error {
 	return nil
 }
 
-// PendingMigrations báo database còn migration chưa chạy hay không. Ứng dụng gọi hàm này lúc
-// khởi động để dừng sớm với thông báo rõ ràng, thay vì chạy rồi lỗi "column does not exist".
+// PendingMigrations reports whether migrations remain. Startup uses it to fail early with a
+// clear message rather than starting and later returning "column does not exist".
 //
-// Hàm này chỉ đọc. goose.HasPending tự tạo bảng goose_db_version nếu chưa có, tức là chạy DDL
-// bằng role của app; với role chỉ có quyền DML (khuyến nghị cho production) việc đó lỗi
-// "permission denied". Vì vậy database chưa từng được migrate được nhận diện trước, bằng
-// to_regclass (tôn trọng search_path), và coi là còn migration chưa chạy.
+// This function is read-only. goose.HasPending creates goose_db_version if absent, running DDL
+// as the application role; a DML-only role (recommended for production) would receive
+// "permission denied". Detect an unmigrated database first with to_regclass
+// (respecting search_path) and treat it as having pending migrations.
 func PendingMigrations(ctx context.Context, pool *pgxpool.Pool) (bool, error) {
 	var hasVersionTable bool
 	if err := pool.QueryRow(ctx, `SELECT to_regclass('goose_db_version') IS NOT NULL`).Scan(&hasVersionTable); err != nil {
@@ -86,7 +86,7 @@ func PendingMigrations(ctx context.Context, pool *pgxpool.Pool) (bool, error) {
 	}
 
 	db := stdlib.OpenDBFromPool(pool)
-	defer func() { _ = db.Close() }() // không đóng pool, chỉ đóng wrapper
+	defer func() { _ = db.Close() }() // Close only the wrapper, not the pool.
 	provider, err := goose.NewProvider(goose.DialectPostgres, db, migrationsFS())
 	if err != nil {
 		return false, fmt.Errorf("create migration provider: %w", err)

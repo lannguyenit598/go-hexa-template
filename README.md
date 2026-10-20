@@ -1,6 +1,6 @@
 # userapi: Go + Echo v5 + Hexagonal Architecture
 
-**English** | [Tiếng Việt](README.vi.md)
+**English** | [Vietnamese](README.vi.md)
 
 A production-ready template for a user-management REST API, organized as a Hexagonal (Ports & Adapters) architecture. It includes:
 - a domain layer with input validation;
@@ -25,7 +25,7 @@ A production-ready template for a user-management REST API, organized as a Hexag
 
 ## Documentation
 
-The detailed documents are currently written in Vietnamese.
+All documentation is in English; README.vi.md is the Vietnamese overview.
 
 | If you are | Read |
 |---|---|
@@ -70,7 +70,7 @@ curl 'localhost:8080/api/v1/users?limit=10'
 
 [`api.http`](api.http) contains sample requests for REST Client (VS Code) or the JetBrains HTTP Client.
 
-> The template has **no authentication**. Read [operations.md › Xác thực](docs/operations.md#xác-thực) (Authentication) before deploying it anywhere real.
+> The template has **no authentication**. Read [operations.md › Authentication](docs/operations.md#authentication) before deploying it anywhere real.
 
 ## Architecture
 

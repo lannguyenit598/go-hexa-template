@@ -1,6 +1,6 @@
-// Package observability gom phần hạ tầng quan sát dùng chung: log theo ngữ cảnh request và
-// OpenTelemetry (trace, metric). Chỉ phụ thuộc thư viện chuẩn và OpenTelemetry, không phụ
-// thuộc adapter nào, nên mọi tầng đều có thể log bằng slog.*Context(ctx, ...).
+// Package observability provides shared infrastructure for request-context logging and
+// OpenTelemetry (traces, metrics). It depends only on the standard library and OpenTelemetry,
+// not adapters, so all layers can log through slog.*Context(ctx, ...).
 package observability
 
 import (
@@ -12,8 +12,8 @@ import (
 
 type logAttrsKey struct{}
 
-// WithLogAttrs gắn thêm attribute vào ctx; mọi dòng log ghi bằng ctx này (qua ContextHandler)
-// sẽ tự mang các attribute đó, ví dụ request_id.
+// WithLogAttrs attaches attributes to ctx; every log using this context through ContextHandler
+// automatically includes them, for example request_id.
 func WithLogAttrs(ctx context.Context, attrs ...slog.Attr) context.Context {
 	existing, _ := ctx.Value(logAttrsKey{}).([]slog.Attr)
 	merged := make([]slog.Attr, 0, len(existing)+len(attrs))
@@ -22,9 +22,9 @@ func WithLogAttrs(ctx context.Context, attrs ...slog.Attr) context.Context {
 	return context.WithValue(ctx, logAttrsKey{}, merged)
 }
 
-// ContextHandler bọc một slog.Handler, thêm vào mỗi bản ghi:
-//   - attribute đã gắn bằng WithLogAttrs (request_id...);
-//   - trace_id và span_id của span hiện tại, để nhảy từ log sang trace và ngược lại.
+// ContextHandler wraps a slog.Handler, adding to each record:
+//   - attributes attached with WithLogAttrs (request_id...);
+//   - the current span's trace_id and span_id for navigation between logs and traces.
 type ContextHandler struct {
 	slog.Handler
 }

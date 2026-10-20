@@ -1,4 +1,4 @@
-// Package pgtest chứa helper cho integration test với PostgreSQL. Chỉ dùng trong test.
+// Package pgtest provides PostgreSQL integration test helpers. For tests only.
 package pgtest
 
 import (
@@ -12,9 +12,9 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// FreshSchemaDSN tạo schema rỗng tên "t_<unixnano>" và trả DSN có search_path trỏ vào đó, để
-// test chạy trên một database "mới tinh" mà không ảnh hưởng dữ liệu của test khác.
-// t.Cleanup sẽ DROP SCHEMA ... CASCADE. Skip test nếu TEST_DATABASE_URL trống.
+// FreshSchemaDSN creates an empty schema named "t_<unixnano>" and returns a DSN pointing
+// search_path to it, giving each test a fresh database view without affecting other tests.
+// t.Cleanup runs DROP SCHEMA ... CASCADE. Skip if TEST_DATABASE_URL is empty.
 func FreshSchemaDSN(t testing.TB) string {
 	t.Helper()
 	base := os.Getenv("TEST_DATABASE_URL")
@@ -30,7 +30,7 @@ func FreshSchemaDSN(t testing.TB) string {
 		t.Fatalf("parse TEST_DATABASE_URL: %v", err)
 	}
 	q := u.Query()
-	q.Set("search_path", schema) // pgx đưa tham số lạ trong DSN thành runtime param
+	q.Set("search_path", schema) // pgx passes unknown DSN parameters as runtime parameters.
 	u.RawQuery = q.Encode()
 	return u.String()
 }

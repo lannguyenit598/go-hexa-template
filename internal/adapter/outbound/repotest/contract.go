@@ -1,6 +1,6 @@
-// Package repotest chứa bộ "contract test" cho port.UserRepository.
-// Mọi adapter lưu trữ (memory, postgres, ...) chạy CÙNG bộ test này, nhờ vậy
-// ta chắc chắn có thể thay adapter mà core không bị ảnh hưởng.
+// Package repotest provides the shared contract test suite for port.UserRepository.
+// Every storage adapter (memory, postgres, ...) runs the SAME suite,
+// checking that adapters can be swapped without affecting core behavior.
 package repotest
 
 import (
@@ -14,7 +14,7 @@ import (
 	"github.com/example/userapi/internal/core/port"
 )
 
-// Factory trả về một repository RỖNG cho mỗi test con.
+// Factory returns an EMPTY repository for each subtest.
 type Factory func(t *testing.T) port.UserRepository
 
 var base = time.Date(2026, 3, 1, 8, 0, 0, 0, time.UTC)
@@ -84,7 +84,7 @@ func Run(t *testing.T, newRepo Factory) {
 
 	t.Run("list paginates in creation order with total", func(t *testing.T) {
 		r := newRepo(t)
-		for _, n := range []int{3, 1, 5, 2, 4} { // chèn lộn xộn
+		for _, n := range []int{3, 1, 5, 2, 4} { // Insert out of order.
 			if err := r.Create(ctx, mkUser(t, n)); err != nil {
 				t.Fatal(err)
 			}
@@ -155,7 +155,7 @@ func Run(t *testing.T, newRepo Factory) {
 		if err := r.Update(ctx, first, 1); err != nil {
 			t.Fatal(err)
 		}
-		// Ghi lần hai dựa trên bản đọc cũ (version 1) phải thất bại, không ghi đè "First".
+		// A second write based on the stale version 1 must fail without overwriting "First".
 		stale := u
 		stale.Email, stale.Version = mustEmail(t, "stale@example.com"), 2
 		if err := r.Update(ctx, stale, 1); !errors.Is(err, port.ErrVersionConflict) {

@@ -1,11 +1,11 @@
-// Command userapi là điểm vào của composition root: đọc config, tạo logger, bắt tín hiệu rồi
-// giao cho internal/app (nơi lắp adapter vào core và quản lý vòng đời server).
+// Command userapi is the composition root entry point: read config, create a logger, handle signals,
+// and delegate to internal/app, which wires adapters into core and manages the server lifecycle.
 //
-// Cách dùng:
+// Usage:
 //
-//	userapi           chạy HTTP API
-//	userapi migrate   áp dụng migration PostgreSQL rồi thoát (dùng cho Job / initContainer)
-//	userapi relay     chuyển sự kiện từ outbox lên broker (EVENTS_SINK), chạy như Deployment riêng
+//	userapi           run the HTTP API
+//	userapi migrate   apply PostgreSQL migrations and exit (Job / initContainer)
+//	userapi relay     forward outbox events to the broker (EVENTS_SINK), as a separate Deployment
 package main
 
 import (
@@ -22,7 +22,7 @@ import (
 	"github.com/example/userapi/internal/observability"
 )
 
-// version được gán lúc build: go build -ldflags "-X main.version=$(git describe --tags)".
+// version is set at build time: go build -ldflags "-X main.version=$(git describe --tags)".
 var version = "dev"
 
 func main() {
@@ -31,7 +31,7 @@ func main() {
 		slog.Error("invalid configuration", "error", err)
 		os.Exit(1)
 	}
-	// ContextHandler thêm request_id, trace_id, span_id từ ctx vào mọi dòng log *Context(ctx, ...).
+	// ContextHandler adds request_id, trace_id, and span_id from ctx to every *Context(ctx, ...) log.
 	logger := slog.New(observability.NewContextHandler(
 		slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: cfg.LogLevel}),
 	))
@@ -39,7 +39,7 @@ func main() {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	// Sau tín hiệu đầu tiên thì bỏ đăng ký: tín hiệu thứ hai (Ctrl+C lần nữa) kết thúc tiến trình ngay.
+	// Unregister after the first signal: the second signal (another Ctrl+C) terminates immediately.
 	context.AfterFunc(ctx, stop)
 
 	switch cmd := strings.Join(os.Args[1:], " "); cmd {

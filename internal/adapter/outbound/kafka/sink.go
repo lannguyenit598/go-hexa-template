@@ -1,6 +1,6 @@
-// Package kafka là adapter gửi sự kiện từ outbox lên Kafka (hoặc broker tương thích giao thức
-// Kafka: Redpanda, MSK, Confluent, Event Hubs) qua franz-go. Adapter không biết schema của sự
-// kiện: payload và header được chuyển nguyên vẹn.
+// Package kafka forwards outbox events to Kafka or compatible brokers
+// (Redpanda, MSK, Confluent, Event Hubs) through franz-go. The adapter does not know event schemas:
+// payloads and headers pass through unchanged.
 package kafka
 
 import (
@@ -24,18 +24,18 @@ import (
 	"github.com/example/userapi/internal/outbox"
 )
 
-// deliveryTimeout giới hạn thời gian franz-go tự thử lại một record: broker sập thì Publish
-// trả lỗi (relay thử lại lô sau) thay vì treo và giữ khoá outbox mãi.
+// deliveryTimeout bounds franz-go record retries: if the broker is down, Publish returns an error
+// for a later relay retry instead of hanging while holding outbox locks indefinitely.
 const deliveryTimeout = 20 * time.Second
 
-// Sink hiện thực outbox.Sink.
+// Sink implements outbox.Sink.
 type Sink struct {
 	client *kgo.Client
 }
 
 var _ outbox.Sink = (*Sink)(nil)
 
-// Option tuỳ chỉnh kết nối tới broker.
+// Option configures the broker connection.
 type Option func(*options) error
 
 type options struct {
@@ -43,13 +43,13 @@ type options struct {
 	sasl sasl.Mechanism
 }
 
-// WithTLS mã hoá kết nối bằng cfg (xem TLSConfig).
+// WithTLS encrypts connections using cfg (see TLSConfig).
 func WithTLS(cfg *tls.Config) Option {
 	return func(o *options) error { o.tls = cfg; return nil }
 }
 
-// WithSASL xác thực với broker. mechanism: PLAIN, SCRAM-SHA-256 hoặc SCRAM-SHA-512 (Amazon MSK,
-// Confluent Cloud, Aiven... đều hỗ trợ ít nhất một cơ chế SCRAM hoặc PLAIN qua TLS).
+// WithSASL authenticates to the broker using PLAIN, SCRAM-SHA-256, or SCRAM-SHA-512 (Amazon MSK,
+// Confluent Cloud, Aiven... support at least one SCRAM mechanism or PLAIN over TLS).
 func WithSASL(mechanism, username, password string) Option {
 	return func(o *options) error {
 		switch strings.ToUpper(mechanism) {
@@ -66,14 +66,14 @@ func WithSASL(mechanism, username, password string) Option {
 	}
 }
 
-// TLSConfig tạo cấu hình TLS cho client: TLS 1.2 trở lên, tin CA của hệ thống, hoặc chỉ CA trong
-// caFile (PEM) nếu được chỉ định. Không có tuỳ chọn bỏ qua kiểm tra chứng chỉ.
+// TLSConfig creates a TLS 1.2+ client config trusting system CAs, or only CAs in
+// caFile (PEM) when specified. Certificate verification cannot be disabled.
 func TLSConfig(caFile string) (*tls.Config, error) {
 	cfg := &tls.Config{MinVersion: tls.VersionTLS12}
 	if caFile == "" {
 		return cfg, nil
 	}
-	pemBytes, err := os.ReadFile(filepath.Clean(caFile)) // đường dẫn do người vận hành cấu hình
+	pemBytes, err := os.ReadFile(filepath.Clean(caFile)) // The operator configures this path.
 	if err != nil {
 		return nil, fmt.Errorf("kafka CA file: %w", err)
 	}
@@ -85,8 +85,8 @@ func TLSConfig(caFile string) (*tls.Config, error) {
 	return cfg, nil
 }
 
-// NewSink tạo producer gửi vào topic. franz-go mặc định bật idempotent producer và acks=all:
-// broker không ghi trùng khi producer thử lại, và thứ tự trong một partition được giữ.
+// NewSink creates a topic producer. franz-go enables idempotent production and acks=all by default:
+// producer retries do not duplicate broker records, and partition ordering is preserved.
 func NewSink(brokers []string, topic string, opts ...Option) (*Sink, error) {
 	var o options
 	for _, opt := range opts {
@@ -112,7 +112,7 @@ func NewSink(brokers []string, topic string, opts ...Option) (*Sink, error) {
 	return &Sink{client: client}, nil
 }
 
-// Ping kiểm tra kết nối tới broker; dùng lúc khởi động để cấu hình sai lộ ra ngay.
+// Ping checks broker connectivity at startup to expose configuration errors early.
 func (s *Sink) Ping(ctx context.Context) error {
 	if err := s.client.Ping(ctx); err != nil {
 		return fmt.Errorf("kafka ping: %w", err)
@@ -120,10 +120,10 @@ func (s *Sink) Ping(ctx context.Context) error {
 	return nil
 }
 
-// Publish gửi cả lô và chờ broker trả kết quả cho từng record. Key là ID của aggregate, nên mọi
-// sự kiện của một user nằm trên cùng partition, theo đúng thứ tự trong lô. Record bị broker từ
-// chối vì nội dung được trả lỗi bọc outbox.ErrPermanent; lỗi khác (mạng, leader đổi, topic chưa
-// có, thiếu quyền) là tạm thời và sẽ được thử lại.
+// Publish sends a batch and waits for each record result. The aggregate ID is the key, placing
+// a user's events in one partition in batch order. Content-based broker rejections wrap
+// outbox.ErrPermanent; other failures (network, leader changes, missing topics,
+// missing permissions) are temporary and retried.
 func (s *Sink) Publish(ctx context.Context, msgs []outbox.Message) []error {
 	records := make([]*kgo.Record, len(msgs))
 	index := make(map[*kgo.Record]int, len(msgs))
@@ -136,7 +136,7 @@ func (s *Sink) Publish(ctx context.Context, msgs []outbox.Message) []error {
 		for k := range m.Headers {
 			keys = append(keys, k)
 		}
-		sort.Strings(keys) // thứ tự header ổn định giữa các lần gửi
+		sort.Strings(keys) // Keep header order stable across sends.
 		for _, k := range keys {
 			headers = append(headers, kgo.RecordHeader{Key: k, Value: []byte(m.Headers[k])})
 		}
@@ -145,7 +145,7 @@ func (s *Sink) Publish(ctx context.Context, msgs []outbox.Message) []error {
 	}
 	errs := make([]error, len(msgs))
 	var rejected []int
-	// ProduceSync trả kết quả theo thứ tự hoàn thành, không theo thứ tự gửi: ghép lại bằng record.
+	// ProduceSync returns completion order, not send order: match results by record.
 	for _, r := range s.client.ProduceSync(ctx, records...) {
 		if r.Err == nil {
 			continue
@@ -156,9 +156,9 @@ func (s *Sink) Publish(ctx context.Context, msgs []outbox.Message) []error {
 			rejected = append(rejected, i)
 		}
 	}
-	// Broker áp giới hạn kích thước lên cả batch, nên một record quá lớn kéo theo mọi record đi
-	// chung batch với nó. Gửi lại riêng từng record bị từ chối: chỉ record vẫn bị từ chối khi đứng
-	// một mình mới là lỗi vĩnh viễn.
+	// Broker size limits apply to batches, so one oversized record can reject every record in its
+	// batch. Retry rejected records individually: only a record still rejected on its own
+	// is a permanent failure.
 	for _, i := range rejected {
 		retry := &kgo.Record{Key: records[i].Key, Value: records[i].Value, Headers: records[i].Headers}
 		switch err := s.client.ProduceSync(ctx, retry).FirstErr(); {
@@ -173,11 +173,11 @@ func (s *Sink) Publish(ctx context.Context, msgs []outbox.Message) []error {
 	return errs
 }
 
-// isPermanent: broker từ chối chính record này; gửi lại y nguyên cũng sẽ bị từ chối.
+// isPermanent means this record was rejected and an unchanged retry would also fail.
 func isPermanent(err error) bool {
 	return errors.Is(err, kerr.MessageTooLarge) || errors.Is(err, kerr.RecordListTooLarge) ||
 		errors.Is(err, kerr.InvalidRecord) || errors.Is(err, kerr.CorruptMessage)
 }
 
-// Close đóng kết nối tới broker.
+// Close closes the broker connection.
 func (s *Sink) Close() { s.client.Close() }

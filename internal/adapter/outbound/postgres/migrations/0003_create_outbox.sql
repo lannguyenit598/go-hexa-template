@@ -1,22 +1,22 @@
 -- +goose Up
--- Transactional outbox: sự kiện được ghi cùng transaction với thay đổi dữ liệu, rồi relay
--- (`userapi relay`) đẩy lên broker. Bảng mới, nên an toàn khi rolling deploy: code cũ không biết
--- tới nó. aggregate_id không có foreign key tới users vì sự kiện user.deleted phải còn sau khi
--- user đã bị xoá.
+-- Transactional outbox: events and data changes share a transaction; the relay
+-- (`userapi relay`) forwards them to the broker. This new table is safe for rolling deployments:
+-- old code does not use it. aggregate_id has no users foreign key because user.deleted events
+-- must survive deletion of the user.
 CREATE TABLE IF NOT EXISTS outbox (
     id           UUID        PRIMARY KEY,
     aggregate_id UUID        NOT NULL,
     event_type   TEXT        NOT NULL,
-    -- JSON (không phải JSONB): giữ nguyên từng byte adapter đã ghi, để broker nhận đúng bản đó.
+    -- JSON, not JSONB: preserve the adapter's exact bytes for delivery to the broker.
     payload      JSON        NOT NULL,
     headers      JSONB       NOT NULL DEFAULT '{}',
     created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
     published_at TIMESTAMPTZ
 );
 
--- Relay chỉ đọc bản ghi chưa publish, theo thứ tự ghi: partial index giữ nhỏ dù bảng lớn.
+-- Relay reads unpublished rows in write order: the partial index stays small as the table grows.
 CREATE INDEX IF NOT EXISTS outbox_unpublished_idx ON outbox (created_at, id) WHERE published_at IS NULL;
--- Dọn bản ghi đã publish quá OUTBOX_RETENTION.
+-- Purge published rows older than OUTBOX_RETENTION.
 CREATE INDEX IF NOT EXISTS outbox_published_at_idx ON outbox (published_at) WHERE published_at IS NOT NULL;
 
 -- +goose Down

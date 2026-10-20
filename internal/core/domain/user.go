@@ -1,6 +1,6 @@
-// Package domain chứa entity, value object và lỗi nghiệp vụ.
-// Package này KHÔNG import bất kỳ framework, driver hay adapter nào:
-// nó là trung tâm của kiến trúc Hexagonal.
+// Package domain contains entities, value objects, and business errors.
+// It imports NO frameworks, drivers, or adapters:
+// it is the center of the hexagonal architecture.
 package domain
 
 import (
@@ -11,11 +11,11 @@ import (
 
 const MaxNameLength = 100
 
-// UserID là định danh của User, dạng UUID chuẩn (36 ký tự, chữ thường).
+// UserID identifies a user using canonical UUID format (36 characters, lowercase).
 type UserID string
 
-// Valid kiểm tra UserID có đúng dạng UUID chuẩn hay không.
-// Service dùng nó để từ chối sớm ID rác thay vì gửi xuống database.
+// Valid checks whether UserID has canonical UUID format.
+// The service rejects malformed IDs early instead of sending them to the database.
 func (id UserID) Valid() bool {
 	s := string(id)
 	if len(s) != 36 {
@@ -39,18 +39,18 @@ func (id UserID) Valid() bool {
 
 func (id UserID) String() string { return string(id) }
 
-// User là aggregate root. Mọi thay đổi trạng thái đi qua method để giữ invariant.
+// User is an aggregate root. Use NewUser and Apply for business changes; exported fields do not enforce invariants.
 type User struct {
 	ID        UserID
 	Email     Email
 	Name      string
 	CreatedAt time.Time
 	UpdatedAt time.Time
-	// Version tăng 1 sau mỗi thay đổi; dùng cho optimistic locking và ETag.
+	// Version increments on each change, for optimistic locking and ETags.
 	Version int64
 }
 
-// NewUser tạo User mới sau khi chuẩn hoá và kiểm tra dữ liệu đầu vào.
+// NewUser constructs a user after normalizing and validating input.
 func NewUser(id UserID, email, name string, now time.Time) (User, error) {
 	v := &ValidationError{}
 	normEmail := collectEmail(email, v)
@@ -68,14 +68,14 @@ func NewUser(id UserID, email, name string, now time.Time) (User, error) {
 	}, nil
 }
 
-// Changes mô tả một cập nhật từng phần (PATCH): field nil nghĩa là giữ nguyên.
+// Changes describes a partial update (PATCH): nil fields remain unchanged.
 type Changes struct {
 	Email *string
 	Name  *string
 }
 
-// Apply áp dụng thay đổi lên bản sao của User và trả về bản mới.
-// Nếu không có gì thay đổi thì UpdatedAt và Version giữ nguyên.
+// Apply applies changes to a copy of User and returns the result.
+// If nothing changes, UpdatedAt and Version remain unchanged.
 func (u User) Apply(c Changes, now time.Time) (User, error) {
 	v := &ValidationError{}
 	next := u
@@ -95,7 +95,7 @@ func (u User) Apply(c Changes, now time.Time) (User, error) {
 	return next, nil
 }
 
-// collectEmail parse email và gom lỗi (nếu có) vào v, để báo mọi field sai cùng lúc.
+// collectEmail parses email and collects errors in v so all invalid fields are reported together.
 func collectEmail(raw string, v *ValidationError) Email {
 	e, msg := parseEmail(raw)
 	if msg != "" {
@@ -105,7 +105,7 @@ func collectEmail(raw string, v *ValidationError) Email {
 }
 
 func normalizeName(raw string, v *ValidationError) string {
-	name := strings.Join(strings.Fields(raw), " ") // gộp khoảng trắng thừa
+	name := strings.Join(strings.Fields(raw), " ") // Collapse excess whitespace.
 	switch n := utf8.RuneCountInString(name); {
 	case n == 0:
 		v.Add("name", "is required")

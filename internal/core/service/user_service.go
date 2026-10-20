@@ -1,5 +1,5 @@
-// Package service hiện thực inbound port bằng cách điều phối domain và outbound port.
-// Nó chỉ phụ thuộc vào domain và port, nên test được bằng adapter in-memory.
+// Package service implements inbound ports by coordinating domain and outbound ports.
+// It depends only on domain and port, enabling tests with in-memory adapters.
 package service
 
 import (
@@ -15,8 +15,8 @@ import (
 const (
 	DefaultPageSize = 20
 	MaxPageSize     = 100
-	// MaxOffset chặn phân trang quá sâu: OFFSET n buộc database đọc rồi bỏ đi n dòng,
-	// nên ?offset=50000000 là một request rất đắt. Cần duyệt sâu hơn thì dùng keyset/cursor.
+	// MaxOffset prevents deep pagination: OFFSET n reads and discards n rows,
+	// making ?offset=50000000 expensive. Use keyset/cursor pagination for deeper traversal.
 	MaxOffset = 10_000
 )
 
@@ -27,11 +27,11 @@ type UserService struct {
 	logger *slog.Logger
 }
 
-// Kiểm tra lúc compile rằng UserService hiện thực đúng inbound port.
+// Compile-time check that UserService implements the inbound port.
 var _ port.UserService = (*UserService)(nil)
 
-// NewUserService nhận logger qua tham số thay vì dùng logger toàn cục của slog, để test bắt được
-// log và mỗi instance có thể ghi log ra nơi khác nhau. logger nil = không ghi log.
+// NewUserService receives a logger rather than using global slog, allowing log capture in tests
+// and separate destinations per instance. A nil logger discards logs.
 func NewUserService(repo port.UserRepository, ids port.IDGenerator, clock port.Clock, logger *slog.Logger) *UserService {
 	if logger == nil {
 		logger = slog.New(slog.DiscardHandler)
@@ -50,9 +50,9 @@ func (s *UserService) Register(ctx context.Context, cmd port.RegisterUserCmd) (d
 	return u, nil
 }
 
-// parseUserID chuyển ID dạng chuỗi từ inbound adapter sang domain.UserID. ID sai định dạng
-// được coi là không tồn tại (404): không gửi chuỗi rác xuống storage (PostgreSQL sẽ lỗi 22P02)
-// và không tiết lộ định dạng ID cho client.
+// parseUserID converts inbound string IDs to domain.UserID. Malformed IDs are treated as absent
+// (404), keeping invalid strings out of storage (PostgreSQL would return 22P02)
+// and avoiding disclosure of the ID format through validation errors.
 func parseUserID(raw string) (domain.UserID, error) {
 	id := domain.UserID(raw)
 	if !id.Valid() {
@@ -100,8 +100,8 @@ func (s *UserService) List(ctx context.Context, q port.ListUsersQuery) (port.Use
 	return port.UserPage{Users: users, Total: total, Limit: limit, Offset: offset}, nil
 }
 
-// maxUpdateAttempts: số lần thử khi xung đột version mà client không gửi If-Match.
-// Apply là hàm thuần (pure), nên đọc lại rồi áp dụng lại thay đổi là an toàn.
+// maxUpdateAttempts limits retries on version conflicts without client If-Match.
+// Apply is pure, so reading again and reapplying changes is safe.
 const maxUpdateAttempts = 3
 
 func (s *UserService) Update(ctx context.Context, cmd port.UpdateUserCmd) (domain.User, error) {
@@ -123,14 +123,14 @@ func (s *UserService) Update(ctx context.Context, cmd port.UpdateUserCmd) (domai
 			return domain.User{}, err
 		}
 		if next == current {
-			return current, nil // không có gì thay đổi, khỏi ghi xuống storage
+			return current, nil // Nothing changed; skip the storage write.
 		}
 		err = s.repo.Update(ctx, next, current.Version)
 		switch {
 		case err == nil:
 			return next, nil
 		case errors.Is(err, port.ErrVersionConflict) && cmd.ExpectedVersion == 0 && attempt < maxUpdateAttempts:
-			// Ai đó vừa ghi giữa lúc đọc và ghi: đọc lại và áp dụng lại. Log để thấy được mức tranh chấp.
+			// A concurrent write occurred between read and write: read again and reapply. Log contention.
 			s.logger.InfoContext(ctx, "user update hit a version conflict, retrying", "user_id", id.String(), "attempt", attempt)
 			continue
 		default:

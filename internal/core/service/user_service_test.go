@@ -141,10 +141,10 @@ func TestUpdate(t *testing.T) {
 	}
 }
 
-// racingRepo mô phỏng một request khác ghi vào bản ghi NGAY GIỮA lúc service đọc và ghi.
+// racingRepo simulates another request writing BETWEEN the service read and write.
 type racingRepo struct {
 	*memory.UserRepository
-	races int // số lần còn chen ngang
+	races int // Remaining injected races.
 }
 
 func (r *racingRepo) Update(ctx context.Context, u domain.User, expected int64) error {
@@ -177,7 +177,7 @@ func TestUpdate_ConcurrentWriteIsNotLost(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Không có optimistic locking, email do request kia ghi sẽ bị ghi đè về "a@example.com".
+	// Without optimistic locking, the concurrent email change would be overwritten with "a@example.com".
 	if got.Name != "Renamed" || got.Email.String() != "other1@example.com" || got.Version != 3 {
 		t.Fatalf("concurrent change lost: %+v", got)
 	}
@@ -208,7 +208,7 @@ func TestUpdate_ExpectedVersion(t *testing.T) {
 		t.Fatalf("stale If-Match: want ErrVersionConflict, got %v", err)
 	}
 
-	// Khi client gửi version, xung đột lúc ghi KHÔNG được retry: client phải đọc lại.
+	// A client-supplied version disables conflict retries: the client must read again.
 	repo.races = 1
 	_, err = svc.Update(ctx, port.UpdateUserCmd{ID: u.ID.String(), Name: &name, ExpectedVersion: 1})
 	if !errors.Is(err, port.ErrVersionConflict) {
@@ -239,7 +239,7 @@ func TestUpdate_LogsRetriesThroughInjectedLogger(t *testing.T) {
 func TestNewUserService_NilLoggerIsSafe(t *testing.T) {
 	svc, repo := newRacingSUT(nil)
 	u, _ := svc.Register(ctx, port.RegisterUserCmd{Email: "a@example.com", Name: "A"})
-	repo.races = 1 // buộc đi qua đường ghi log
+	repo.races = 1 // Force the logging path.
 	name := "Renamed"
 	if _, err := svc.Update(ctx, port.UpdateUserCmd{ID: u.ID.String(), Name: &name}); err != nil {
 		t.Fatal(err)
@@ -258,7 +258,7 @@ func TestUpdate_EmptyPatchIsNoOp(t *testing.T) {
 	}
 }
 
-// spyRepo đếm số lần các method nhận ID của repository bị gọi.
+// spyRepo counts repository method calls that accept an ID.
 type spyRepo struct {
 	port.UserRepository
 	calls int
@@ -279,8 +279,8 @@ func (r *spyRepo) Delete(ctx context.Context, id domain.UserID) error {
 	return r.UserRepository.Delete(ctx, id)
 }
 
-// ID không hợp lệ phải bị chặn ở service, trước khi tới repository: PostgreSQL sẽ báo lỗi
-// 22P02 (thành 500) thay vì "không tìm thấy" nếu nhận chuỗi rác.
+// Reject invalid IDs in the service before reaching the repository: PostgreSQL would return
+// 22P02 (mapped to 500) for malformed input rather than "not found".
 func TestInvalidIDsAreNotFoundForEveryUseCase(t *testing.T) {
 	repo := &spyRepo{UserRepository: memory.NewUserRepository()}
 	svc := service.NewUserService(repo, &seqIDs{}, &fakeClock{}, nil)

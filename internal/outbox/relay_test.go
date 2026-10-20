@@ -12,9 +12,9 @@ import (
 	"github.com/example/userapi/internal/outbox"
 )
 
-// memSource là Source in-memory với cùng ngữ nghĩa adapter postgres: message publish thành công
-// được đánh dấu, message bị từ chối vĩnh viễn (ErrPermanent) bị tách riêng, message lỗi tạm thời
-// ở lại hàng đợi theo đúng thứ tự cũ.
+// memSource implements Source in memory with PostgreSQL semantics: mark published messages,
+// park permanent rejections (ErrPermanent), and keep temporary failures
+// in their original queue order.
 type memSource struct {
 	mu        sync.Mutex
 	pending   []outbox.Message
@@ -70,7 +70,7 @@ type sinkFunc func(context.Context, []outbox.Message) []error
 
 func (f sinkFunc) Publish(ctx context.Context, msgs []outbox.Message) []error { return f(ctx, msgs) }
 
-// each trả cùng một lỗi cho mọi message (nil = tất cả thành công).
+// each returns the same error for all messages (nil = all successful).
 func each(msgs []outbox.Message, err error) []error {
 	errs := make([]error, len(msgs))
 	for i := range errs {
@@ -94,7 +94,7 @@ func newRelay(src outbox.Source, sink outbox.Sink) *outbox.Relay {
 	}
 }
 
-// startRelay chạy relay trong goroutine; trả hàm huỷ ctx và hàm chờ Run trả về.
+// startRelay starts Run in a goroutine and returns cancellation and completion-wait functions.
 func startRelay(r *outbox.Relay) (cancel context.CancelFunc, wait func() error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
@@ -151,7 +151,7 @@ func TestRelay_PublishesEverythingInOrder(t *testing.T) {
 	}
 }
 
-// Broker lỗi: message không mất, relay thử lại ở lần poll sau.
+// Broker failure: messages remain and are retried after the poll interval.
 func TestRelay_RetriesAfterSinkFailure(t *testing.T) {
 	src := &memSource{pending: messages(1)}
 	var mu sync.Mutex
@@ -171,18 +171,18 @@ func TestRelay_RetriesAfterSinkFailure(t *testing.T) {
 	}
 }
 
-// Tắt relay giữa lúc đang publish: lô đó vẫn được publish xong và đánh dấu, để lần chạy sau
-// không gửi trùng.
+// Shutdown during publishing still completes and marks the batch, avoiding duplicates
+// on the next run.
 func TestRelay_FinishesInFlightBatchOnShutdown(t *testing.T) {
 	src := &memSource{pending: messages(1)}
 	entered, release := make(chan struct{}), make(chan struct{})
 	cancel, wait := startRelay(newRelay(src, sinkFunc(func(ctx context.Context, msgs []outbox.Message) []error {
 		close(entered)
 		<-release
-		return each(msgs, ctx.Err()) // lỗi nếu ctx của lô bị huỷ theo ctx của Run
+		return each(msgs, ctx.Err()) // Fails if Run's context cancellation reaches the batch context.
 	})))
 	<-entered
-	cancel() // tín hiệu tắt tới trong lúc lô đang publish
+	cancel() // Shutdown arrives while publishing.
 	close(release)
 	if err := wait(); err != nil {
 		t.Fatal(err)
@@ -206,8 +206,8 @@ func TestRelay_PurgesPublishedMessagesOlderThanRetention(t *testing.T) {
 	}
 }
 
-// Một message bị broker từ chối vĩnh viễn (ví dụ quá lớn) bị tách riêng: nó không chặn các message
-// phía sau, và các message đã gửi thành công trong cùng lô không bị gửi lại.
+// A permanent broker rejection (for example, an oversized message) is parked without blocking
+// later messages or resending successful messages in the same batch.
 func TestRelay_PermanentFailureIsParkedAndDoesNotBlockOthers(t *testing.T) {
 	src := &memSource{pending: messages(5)}
 	var mu sync.Mutex
@@ -241,7 +241,7 @@ func TestRelay_PermanentFailureIsParkedAndDoesNotBlockOthers(t *testing.T) {
 	}
 }
 
-// Lỗi tạm thời chỉ của một message: message đó được thử lại, message đã thành công không bị gửi lại.
+// A single temporary failure is retried without resending successful messages.
 func TestRelay_PartialTransientFailureOnlyRetriesTheFailedMessage(t *testing.T) {
 	src := &memSource{pending: messages(2)}
 	var mu sync.Mutex
@@ -272,14 +272,14 @@ func TestRelay_PartialTransientFailureOnlyRetriesTheFailedMessage(t *testing.T) 
 	}
 }
 
-// Liveness: heartbeat tiến lên khi vòng lặp chạy; khi một lô bị treo, heartbeat đứng yên và relay
-// được coi là không khoẻ sau ngưỡng HealthThreshold (để Kubernetes khởi động lại pod).
+// Liveness: the heartbeat advances with the loop. A stuck batch stops the heartbeat, making
+// the relay unhealthy after HealthThreshold so Kubernetes can restart the pod.
 func TestRelay_HealthFollowsLoopProgress(t *testing.T) {
 	src := &memSource{pending: messages(1)}
 	entered, release := make(chan struct{}), make(chan struct{})
 	r := newRelay(src, sinkFunc(func(_ context.Context, msgs []outbox.Message) []error {
 		close(entered)
-		<-release // lô đầu tiên bị treo tới khi test cho chạy tiếp
+		<-release // Hold the first batch until the test releases it.
 		return each(msgs, nil)
 	}))
 	if r.Healthy(time.Now()) {

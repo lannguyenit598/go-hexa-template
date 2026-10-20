@@ -15,7 +15,7 @@ import (
 	"github.com/example/userapi/internal/outbox"
 )
 
-// fakeCluster chạy một cluster Kafka in-memory (kfake): test không cần broker thật.
+// fakeCluster runs an in-memory Kafka cluster (kfake); no real broker is needed.
 func fakeCluster(t *testing.T, topic string) []string {
 	t.Helper()
 	c, err := kfake.NewCluster(kfake.NumBrokers(1), kfake.SeedTopics(3, topic))
@@ -100,7 +100,7 @@ func TestSink_PublishesWithKeyAndHeaders(t *testing.T) {
 	if got := header(byID["e1"], "traceparent"); got != "00-abc-def-01" {
 		t.Fatalf("traceparent = %q", got)
 	}
-	// Cùng key thì giữ thứ tự ghi.
+	// Records with the same key retain write order.
 	u1 := []string{}
 	for _, r := range recs {
 		if string(r.Key) == "u1" {
@@ -112,9 +112,9 @@ func TestSink_PublishesWithKeyAndHeaders(t *testing.T) {
 	}
 }
 
-// Broker không tới được: Publish phải trả lỗi trong thời hạn của ctx, không treo mãi.
+// An unreachable broker must make Publish return within the context deadline, not hang indefinitely.
 func TestSink_PublishFailsWhenBrokerIsDown(t *testing.T) {
-	sink, err := kafka.NewSink([]string{"127.0.0.1:1"}, "users") // không có gì lắng nghe
+	sink, err := kafka.NewSink([]string{"127.0.0.1:1"}, "users") // Nothing is listening here.
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -125,14 +125,14 @@ func TestSink_PublishFailsWhenBrokerIsDown(t *testing.T) {
 	if len(errs) != 1 || errs[0] == nil {
 		t.Fatalf("Publish without a broker = %v, want an error", errs)
 	}
-	// Broker không tới được là lỗi tạm thời: message phải được thử lại, không bị tách riêng.
+	// An unreachable broker is temporary: retry the message rather than parking it.
 	if errors.Is(errs[0], outbox.ErrPermanent) {
 		t.Fatalf("broker down classified as permanent: %v", errs[0])
 	}
 }
 
-// Record bị broker từ chối vì nội dung (ở đây: lớn hơn message.max.bytes) là lỗi vĩnh viễn, và
-// không kéo theo các record khác trong cùng lô.
+// Content rejection (here, exceeding message.max.bytes) is permanent and must not
+// affect the other records in the batch.
 func TestSink_ClassifiesRejectedRecordsAsPermanent(t *testing.T) {
 	c, err := kfake.NewCluster(kfake.NumBrokers(1), kfake.SeedTopics(1, "users"),
 		kfake.BrokerConfigs(map[string]string{"message.max.bytes": "3000"}))
@@ -146,8 +146,8 @@ func TestSink_ClassifiesRejectedRecordsAsPermanent(t *testing.T) {
 	}
 	t.Cleanup(sink.Close)
 
-	// Dữ liệu ngẫu nhiên để nén không làm nó nhỏ lại dưới giới hạn. Cả ba record cùng partition nên
-	// thường đi chung một batch: broker từ chối cả batch, và sink phải tìm ra record thật sự lỗi.
+	// Random data prevents compression below the limit. All three records share a partition and
+	// usually a batch: the broker rejects the batch, and the sink must identify the offending record.
 	random := make([]byte, 6000)
 	if _, err := rand.Read(random); err != nil {
 		t.Fatal(err)

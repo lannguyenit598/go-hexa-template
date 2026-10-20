@@ -1,4 +1,4 @@
-// Package config đọc cấu hình từ biến môi trường (12-factor).
+// Package config reads configuration from environment variables (12-factor).
 package config
 
 import (
@@ -19,7 +19,7 @@ const (
 	StoragePostgres Storage = "postgres"
 )
 
-// EventsSink là nơi relay đẩy sự kiện từ outbox tới. "none" = không ghi outbox, không phát sự kiện.
+// EventsSink is the relay destination. "none" disables both outbox writes and event publishing.
 type EventsSink string
 
 const (
@@ -32,27 +32,27 @@ type Config struct {
 	Storage  Storage
 	LogLevel slog.Level
 
-	// ShutdownDelay: thời gian chờ sau SIGTERM trước khi ngừng nhận kết nối, để
-	// load balancer / kube-proxy kịp gỡ pod khỏi danh sách endpoint.
+	// ShutdownDelay waits after SIGTERM before stopping new connections, allowing
+	// the load balancer / kube-proxy to remove the pod from its endpoints.
 	ShutdownDelay   time.Duration
 	ShutdownTimeout time.Duration
 	RequestTimeout  time.Duration
-	// HTTPIdleTimeout: thời gian giữ keep-alive connection rảnh. Phải lớn hơn idle timeout
-	// của load balancer phía trước (AWS ALB: 60s), nếu không sẽ có 502 lác đác.
+	// HTTPIdleTimeout keeps idle keep-alive connections open. Must exceed the upstream
+	// load balancer idle timeout (AWS ALB: 60s) to avoid intermittent 502s.
 	HTTPIdleTimeout time.Duration
 
-	// TrustedProxies: các dải CIDR của proxy tin cậy. Rỗng = lấy IP từ kết nối TCP.
+	// TrustedProxies lists trusted proxy CIDRs. Empty = use the TCP connection IP.
 	TrustedProxies []*net.IPNet
 
-	// ReadinessCheckDB: /readyz có ping database hay không. Mặc định tắt để một sự cố
-	// database ngắn không làm MỌI pod cùng lúc bị gỡ khỏi load balancer.
+	// ReadinessCheckDB controls /readyz database pings. Disabled by default so a brief database
+	// outage does not remove EVERY pod from the load balancer simultaneously.
 	ReadinessCheckDB bool
 
 	DB     DB
 	Events Events
 }
 
-// DB là cấu hình pool kết nối PostgreSQL.
+// DB configures the PostgreSQL connection pool.
 type DB struct {
 	URL              string
 	MaxConns         int32
@@ -60,33 +60,33 @@ type DB struct {
 	MaxConnLifetime  time.Duration
 	MaxConnIdleTime  time.Duration
 	StatementTimeout time.Duration
-	// MigrateOnStart: chạy migration khi app khởi động. Tiện cho dev; production nên chạy
-	// `userapi migrate` như một Job / initContainer riêng (xem docs/operations.md).
+	// MigrateOnStart runs migrations at startup for development. In production, run
+	// `userapi migrate` as a separate Job / initContainer (see docs/operations.md).
 	MigrateOnStart bool
 }
 
-// Events là cấu hình phát sự kiện qua transactional outbox (xem docs/events.md).
+// Events configures transactional outbox publishing (see docs/events.md).
 type Events struct {
 	Sink         EventsSink
 	KafkaBrokers []string
 	KafkaTopic   string
-	// KafkaTLS mã hoá kết nối tới broker; KafkaTLSCAFile (PEM) thay CA của hệ thống khi broker dùng CA nội bộ.
+	// KafkaTLS encrypts broker connections; KafkaTLSCAFile (PEM) replaces system CAs for a private broker CA.
 	KafkaTLS       bool
 	KafkaTLSCAFile string
-	// KafkaSASLMechanism: "" (không xác thực), PLAIN, SCRAM-SHA-256 hoặc SCRAM-SHA-512.
+	// KafkaSASLMechanism: "" (no authentication), PLAIN, SCRAM-SHA-256, or SCRAM-SHA-512.
 	KafkaSASLMechanism string
 	KafkaSASLUsername  string
 	KafkaSASLPassword  string
-	// PollInterval: relay chờ bao lâu giữa hai lần đọc outbox khi không còn gì tồn đọng.
+	// PollInterval is the wait between outbox reads when there is no backlog.
 	PollInterval time.Duration
 	BatchSize    int
-	// Retention: bản ghi outbox đã publish được giữ bao lâu trước khi relay xoá.
+	// Retention controls how long published outbox rows remain before the relay deletes them.
 	Retention time.Duration
-	// RelayHealthAddr: địa chỉ HTTP của `userapi relay` cho liveness probe (GET /healthz).
+	// RelayHealthAddr is the `userapi relay` liveness HTTP address (GET /healthz).
 	RelayHealthAddr string
 }
 
-// Load đọc env với lookup có thể thay thế (os.LookupEnv khi chạy thật, map khi test).
+// Load reads env through a replaceable lookup (os.LookupEnv in production, a map in tests).
 func Load(lookup func(string) (string, bool)) (Config, error) {
 	p := parser{lookup: lookup}
 
@@ -144,7 +144,7 @@ func Load(lookup func(string) (string, bool)) (Config, error) {
 	if cfg.DB.MinConns < 0 || cfg.DB.MinConns > cfg.DB.MaxConns {
 		p.fail("DB_MIN_CONNS must be between 0 and DB_MAX_CONNS")
 	}
-	// statement_timeout được gửi theo mili giây: 0 < giá trị < 1ms sẽ thành 0, tức tắt timeout của server.
+	// statement_timeout is sent in milliseconds: 0 < value < 1ms becomes 0, disabling the server timeout.
 	if t := cfg.DB.StatementTimeout; t > 0 && t < time.Millisecond {
 		p.fail("DB_STATEMENT_TIMEOUT must be 0 or at least 1ms")
 	}
@@ -197,7 +197,7 @@ func Load(lookup func(string) (string, bool)) (Config, error) {
 
 func FromEnv() (Config, error) { return Load(os.LookupEnv) }
 
-// parser gom lỗi của mọi biến để báo một lần, thay vì dừng ở lỗi đầu tiên.
+// parser collects errors from all variables instead of stopping at the first error.
 type parser struct {
 	lookup func(string) (string, bool)
 	errs   []error
@@ -246,7 +246,7 @@ func (p *parser) bool(key string, def bool) bool {
 	return b
 }
 
-// list tách giá trị theo dấu phẩy, bỏ phần tử rỗng.
+// list splits comma-separated values and discards empty entries.
 func (p *parser) list(key string) []string {
 	var out []string
 	for _, part := range strings.Split(p.str(key, ""), ",") {

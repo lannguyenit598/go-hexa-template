@@ -27,7 +27,7 @@ import (
 	"github.com/example/userapi/internal/outbox"
 )
 
-// freshPool trả pool trên một schema riêng đã migrate (skip nếu không có TEST_DATABASE_URL).
+// freshPool returns a pool on a fresh migrated schema (skips without TEST_DATABASE_URL).
 func freshPool(t *testing.T) *pgxpool.Pool {
 	t.Helper()
 	dsn := pgtest.FreshSchemaDSN(t)
@@ -86,9 +86,9 @@ const (
 	userB = "01a15359-aa28-7a00-a380-c47e52905708"
 )
 
-// Mỗi lần ghi THÀNH CÔNG sinh đúng một sự kiện; lần ghi thất bại không sinh sự kiện nào.
-// version của các sự kiện của một user tăng ngặt (user.deleted = version cuối + 1), để consumer
-// bỏ bản trùng hoặc bản cũ bằng "version không lớn hơn version đã xử lý" mà không bỏ mất lệnh xoá.
+// Each SUCCESSFUL write creates exactly one event; failed writes create none.
+// Event versions strictly increase per user (user.deleted = last version + 1), letting consumers
+// drop versions no greater than the processed version without losing deletions.
 func TestOutbox_OneEventPerSuccessfulWrite(t *testing.T) {
 	pool := freshPool(t)
 	repo := postgres.NewUserRepository(pool, postgres.WithOutbox())
@@ -139,7 +139,7 @@ func TestOutbox_OneEventPerSuccessfulWrite(t *testing.T) {
 		if _, err := time.Parse(time.RFC3339Nano, p["occurred_at"].(string)); err != nil {
 			t.Fatalf("occurred_at: %v", err)
 		}
-		// Sự kiện mỏng: không mang PII.
+		// Thin events: no personal data fields.
 		for _, k := range []string{"email", "name"} {
 			if _, ok := p[k]; ok {
 				t.Fatalf("payload must not contain %q: %v", k, p)
@@ -161,8 +161,8 @@ func TestOutbox_DisabledWritesNothing(t *testing.T) {
 	}
 }
 
-// Ghi outbox thất bại thì thay đổi dữ liệu cũng không được commit: không bao giờ có dữ liệu
-// đổi mà thiếu sự kiện.
+// If writing the outbox fails, the data change must not commit:
+// never change data without its event.
 func TestOutbox_IsAtomicWithTheWrite(t *testing.T) {
 	pool := freshPool(t)
 	ctx := context.Background()
@@ -178,10 +178,10 @@ func TestOutbox_IsAtomicWithTheWrite(t *testing.T) {
 	}
 }
 
-// Header của sự kiện chỉ mang trace context (traceparent/tracestate). Baggage do client tự đặt
-// (có thể chứa email, tên, giá trị tuỳ ý) không được lưu vào outbox hay gửi lên broker.
+// Event headers contain only trace context (traceparent/tracestate). Client-supplied baggage
+// (which may include email, names, or arbitrary values) must not enter the outbox or broker.
 func TestOutbox_CarriesTraceContextButNotBaggage(t *testing.T) {
-	// Như production: observability.Setup đặt propagator gồm cả TraceContext và Baggage.
+	// As in production: observability.Setup configures both TraceContext and Baggage propagation.
 	prev := otel.GetTextMapPropagator()
 	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(propagation.TraceContext{}, propagation.Baggage{}))
 	t.Cleanup(func() { otel.SetTextMapPropagator(prev) })
@@ -227,7 +227,7 @@ func TestOutboxSource_ProcessInOrderAndOnlyMarksOnSuccess(t *testing.T) {
 	}
 	src := postgres.NewOutboxSource(pool)
 
-	// Broker lỗi: không message nào bị đánh dấu.
+	// Broker failure: no messages are marked published.
 	res, err := src.Process(ctx, 10, func(_ context.Context, msgs []outbox.Message) []error {
 		return allErr(msgs, errors.New("down"))
 	})
@@ -261,7 +261,7 @@ func TestOutboxSource_ProcessInOrderAndOnlyMarksOnSuccess(t *testing.T) {
 	}
 }
 
-// Hai relay chạy song song không bao giờ lấy cùng một message (FOR UPDATE SKIP LOCKED).
+// Two concurrent relays never select the same message (FOR UPDATE SKIP LOCKED).
 func TestOutboxSource_ConcurrentRelaysDoNotShareMessages(t *testing.T) {
 	pool := freshPool(t)
 	ctx := context.Background()
@@ -283,13 +283,13 @@ func TestOutboxSource_ConcurrentRelaysDoNotShareMessages(t *testing.T) {
 			ids = append(ids, msgs[0].ID)
 			mu.Unlock()
 			close(entered)
-			<-release // giữ khoá trên message đầu tiên
+			<-release // Hold the lock on the first message.
 			return allErr(msgs, nil)
 		})
 		first <- err
 	}()
 	<-entered
-	// Có timeout: nếu thiếu SKIP LOCKED, relay thứ hai sẽ chờ khoá mãi thay vì lấy message kế tiếp.
+	// Use a timeout: without SKIP LOCKED, the second relay would wait instead of taking the next message.
 	ctx2, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	res, err := src.Process(ctx2, 1, func(_ context.Context, msgs []outbox.Message) []error {
@@ -321,7 +321,7 @@ func TestOutboxSource_PurgeDeletesOnlyPublished(t *testing.T) {
 	if _, err := src.Process(ctx, 10, func(_ context.Context, msgs []outbox.Message) []error { return allErr(msgs, nil) }); err != nil {
 		t.Fatal(err)
 	}
-	if err := repo.Create(ctx, newUser(t, userB, "b@example.com")); err != nil { // chưa publish
+	if err := repo.Create(ctx, newUser(t, userB, "b@example.com")); err != nil { // Not yet published.
 		t.Fatal(err)
 	}
 	if n, err := src.Purge(ctx, time.Now().Add(-time.Hour)); err != nil || n != 0 {
@@ -337,7 +337,7 @@ func TestOutboxSource_PurgeDeletesOnlyPublished(t *testing.T) {
 
 func ptr(s string) *string { return &s }
 
-// allErr trả cùng một kết quả cho mọi message (nil = broker đã nhận tất cả).
+// allErr returns the same result for all messages (nil = the broker accepted all of them).
 func allErr(msgs []outbox.Message, err error) []error {
 	errs := make([]error, len(msgs))
 	for i := range errs {
@@ -346,8 +346,8 @@ func allErr(msgs []outbox.Message, err error) []error {
 	return errs
 }
 
-// Kết quả từng message: thành công được đánh dấu, bị từ chối vĩnh viễn được tách riêng (không bao
-// giờ được lấy lại, không bị purge), lỗi tạm thời ở lại hàng đợi.
+// Per-message results: mark successes, park permanent rejections (never selected again or purged),
+// and leave temporary failures in the queue.
 func TestOutboxSource_MarksEachMessageByItsOwnResult(t *testing.T) {
 	pool := freshPool(t)
 	ctx := context.Background()
@@ -383,7 +383,7 @@ func TestOutboxSource_MarksEachMessageByItsOwnResult(t *testing.T) {
 		t.Fatalf("last_error = %q", parkedErr)
 	}
 
-	// Lần sau chỉ còn message lỗi tạm thời; message đã tách riêng không quay lại.
+	// Only the temporary failure remains next time; parked messages do not return.
 	var keys []string
 	if _, err := src.Process(ctx, 10, func(_ context.Context, msgs []outbox.Message) []error {
 		for _, m := range msgs {
@@ -401,8 +401,8 @@ func TestOutboxSource_MarksEachMessageByItsOwnResult(t *testing.T) {
 	}
 }
 
-// pauseDelete giữ câu DELETE ở phía client cho tới khi test cho phép chạy tiếp: transaction của
-// Delete đã BEGIN nhưng chưa giữ khoá dòng, đúng khoảng hở mà một Update khác có thể commit trước.
+// pauseDelete holds DELETE on the client until the test releases it: the transaction has
+// begun but has not locked the row, allowing another Update to commit first.
 type pauseDelete struct {
 	reached, release chan struct{}
 }
@@ -417,8 +417,8 @@ func (p pauseDelete) TraceQueryStart(ctx context.Context, _ *pgx.Conn, d pgx.Tra
 
 func (pauseDelete) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
 
-// Thứ tự sự kiện của một user phải theo thứ tự commit, kể cả khi transaction của Delete bắt đầu
-// trước một Update commit trước nó (relay sắp xếp theo thời điểm ghi bản ghi outbox).
+// A user's events must follow commit order even when Delete starts before an Update that
+// commits first (the relay sorts by outbox insertion time).
 func TestOutbox_EventOrderFollowsCommitOrder(t *testing.T) {
 	dsn := pgtest.FreshSchemaDSN(t)
 	ctx := context.Background()
@@ -444,12 +444,12 @@ func TestOutbox_EventOrderFollowsCommitOrder(t *testing.T) {
 	}
 	deleted := make(chan error, 1)
 	go func() { deleted <- repo.Delete(ctx, u.ID) }()
-	<-pause.reached // Delete đã BEGIN, chưa chạy DELETE
+	<-pause.reached // Delete has begun but has not executed DELETE.
 	next, err := u.Apply(domain.Changes{Name: ptr("Renamed")}, u.UpdatedAt.Add(time.Second))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := repo.Update(ctx, next, u.Version); err != nil { // commit trước Delete
+	if err := repo.Update(ctx, next, u.Version); err != nil { // Commit before Delete.
 		t.Fatal(err)
 	}
 	close(pause.release)
@@ -471,8 +471,8 @@ func TestOutbox_EventOrderFollowsCommitOrder(t *testing.T) {
 	}
 }
 
-// Thao tác qua service không làm dữ liệu đổi thì không sinh sự kiện: PATCH giữ nguyên giá trị,
-// If-Match lệch version (412), dữ liệu không hợp lệ (422), email trùng (409).
+// Service operations that do not change data emit no event: unchanged PATCH values,
+// If-Match version mismatch (412), invalid input (422), and duplicate email (409).
 func TestOutbox_NoEventWhenNothingChanges(t *testing.T) {
 	pool := freshPool(t)
 	ctx := context.Background()
@@ -506,7 +506,7 @@ func TestOutbox_NoEventWhenNothingChanges(t *testing.T) {
 	}
 }
 
-// Update và Delete cũng nguyên tử với sự kiện của chúng (Create được kiểm ở TestOutbox_IsAtomicWithTheWrite).
+// Update and Delete are atomic with their events too (Create is covered by TestOutbox_IsAtomicWithTheWrite).
 func TestOutbox_UpdateAndDeleteAreAtomicWithTheirEvents(t *testing.T) {
 	pool := freshPool(t)
 	ctx := context.Background()

@@ -4,7 +4,7 @@
 FROM golang:1.26-alpine AS build
 WORKDIR /src
 
-# Tải dependency trước để tận dụng cache layer.
+# Download dependencies first to reuse cached layers.
 COPY go.mod go.sum ./
 RUN go mod download
 
@@ -13,7 +13,7 @@ ARG VERSION=dev
 RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X main.version=${VERSION}" -o /out/userapi ./cmd/userapi
 
 # ---- runtime ----
-# distroless/static: không shell, không package manager, chạy user không phải root.
+# distroless/static: no shell or package manager; runs as a non-root user.
 FROM gcr.io/distroless/static-debian12:nonroot
 COPY --from=build /out/userapi /userapi
 EXPOSE 8080

@@ -6,7 +6,7 @@ services:
       POSTGRES_PASSWORD: userapi
       POSTGRES_DB: userapi
     ports:
-      - "127.0.0.1:5432:5432" # chỉ máy local, không mở ra mạng
+      - "127.0.0.1:5432:5432" # Local machine only; do not expose to the network.
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -15,7 +15,7 @@ services:
       timeout: 3s
       retries: 15
 
-  # Chạy migration một lần rồi thoát, giống một Job / initContainer trên Kubernetes.
+  # Run migrations once and exit, like a Kubernetes Job / initContainer.
   migrate:
     build:
       context: .

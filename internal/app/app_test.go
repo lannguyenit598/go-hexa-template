@@ -18,7 +18,7 @@ import (
 	"github.com/example/userapi/internal/config"
 )
 
-// client không giữ keep-alive: dùng lại connection cũ sẽ che mất việc listener đã đóng.
+// Disable client keep-alive: reusing an existing connection would hide a closed listener.
 var client = &http.Client{
 	Transport: &http.Transport{DisableKeepAlives: true},
 	Timeout:   time.Second,
@@ -85,7 +85,7 @@ func runWithTimeout(t *testing.T, ctx context.Context, cfg config.Config, opts a
 	return waitDone(t, done, timeout)
 }
 
-// startApp chạy app trên 127.0.0.1:<cổng ngẫu nhiên> và chờ tối đa readyWithin tới khi /healthz trả 200.
+// startApp listens on 127.0.0.1:<random port> and waits up to readyWithin for /healthz to return 200.
 func startApp(t *testing.T, env map[string]string, readyWithin time.Duration) (base string, cancel context.CancelFunc, done <-chan error) {
 	t.Helper()
 	ln := listen(t)
@@ -120,8 +120,8 @@ func TestRun_DrainsBeforeClosingListener(t *testing.T) {
 	expectGET(t, base+"/readyz", http.StatusOK)
 	cancel()
 	time.Sleep(100 * time.Millisecond)
-	expectGET(t, base+"/readyz", http.StatusServiceUnavailable) // LB ngừng gửi traffic mới
-	expectGET(t, base+"/api/v1/users", http.StatusOK)           // nhưng vẫn phục vụ
+	expectGET(t, base+"/readyz", http.StatusServiceUnavailable) // The load balancer stops routing new traffic.
+	expectGET(t, base+"/api/v1/users", http.StatusOK)           // Existing traffic is still served.
 	if err := waitDone(t, done, 3*time.Second); err != nil {
 		t.Fatalf("Run = %v, want nil", err)
 	}
@@ -150,8 +150,8 @@ func TestRun_CanceledBeforeStartReturnsPromptly(t *testing.T) {
 	}
 }
 
-// Thêm hằng Storage mới mà quên nhánh trong newRepository thì phải lỗi khi khởi động,
-// không được âm thầm chạy bằng repository in-memory.
+// A new Storage constant without a newRepository branch must fail startup,
+// not silently fall back to in-memory storage.
 func TestRun_RejectsUnknownStorage(t *testing.T) {
 	cfg := mustConfig(t, nil)
 	cfg.Storage = "mysql"
@@ -161,16 +161,16 @@ func TestRun_RejectsUnknownStorage(t *testing.T) {
 	}
 }
 
-// Request vẫn chạy khi hết SHUTDOWN_TIMEOUT bị huỷ, để Run trả về ngay thay vì chờ
-// pool.Close() đợi query xong; tiến trình không được sống quá ngân sách đã khai báo.
+// Cancel requests still running after SHUTDOWN_TIMEOUT so Run returns rather than waiting for
+// pool.Close() to wait for queries; the process must not exceed its shutdown budget.
 func TestRun_CancelsInFlightRequestsWhenDrainTimesOut(t *testing.T) {
-	dsn := pgtest.FreshSchemaDSN(t) // skip nếu không có TEST_DATABASE_URL
+	dsn := pgtest.FreshSchemaDSN(t) // Skip without TEST_DATABASE_URL.
 	base, cancel, done := startApp(t, map[string]string{
 		"STORAGE": "postgres", "DATABASE_URL": dsn, "MIGRATE_ON_START": "true",
 		"SHUTDOWN_TIMEOUT": "200ms", "REQUEST_TIMEOUT": "30s", "DB_STATEMENT_TIMEOUT": "30s",
 	}, 15*time.Second)
 
-	// Khoá bảng users để request GET /api/v1/users bị treo.
+	// Lock users so GET /api/v1/users blocks.
 	ctx := context.Background()
 	conn, err := pgx.Connect(ctx, dsn)
 	if err != nil {
@@ -212,7 +212,7 @@ func TestRun_CancelsInFlightRequestsWhenDrainTimesOut(t *testing.T) {
 	<-inFlight
 }
 
-// waitForLockWaiter chờ tới khi có một truy vấn đang đợi khoá (request đã tới database).
+// waitForLockWaiter waits for a query waiting on a lock (the request has reached the database).
 func waitForLockWaiter(t *testing.T, conn *pgx.Conn) {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
@@ -234,7 +234,7 @@ func waitForLockWaiter(t *testing.T, conn *pgx.Conn) {
 }
 
 func TestRun_RefusesToStartWithPendingMigrations(t *testing.T) {
-	dsn := pgtest.FreshSchemaDSN(t) // skip nếu không có TEST_DATABASE_URL
+	dsn := pgtest.FreshSchemaDSN(t) // Skip without TEST_DATABASE_URL.
 	env := map[string]string{"STORAGE": "postgres", "DATABASE_URL": dsn}
 	ln := listen(t)
 	err := runWithTimeout(t, context.Background(), mustConfig(t, env), app.Options{Listener: ln}, 5*time.Second)
@@ -243,8 +243,8 @@ func TestRun_RefusesToStartWithPendingMigrations(t *testing.T) {
 	}
 
 	env["MIGRATE_ON_START"] = "true"
-	// Advisory lock của goose dùng chung cho cả database: khi package khác (go test ./...) đang
-	// migrate cùng lúc, goose chờ lock và thử lại mỗi 5s, nên phải chờ lâu hơn một chu kỳ đó.
+	// The goose advisory lock is database-wide. Concurrent package migrations (go test ./...)
+	// retry lock acquisition every 5s, so allow longer than one retry interval.
 	base, cancel, done := startApp(t, env, 15*time.Second)
 	expectGET(t, base+"/api/v1/users", http.StatusOK)
 	cancel()
@@ -253,10 +253,10 @@ func TestRun_RefusesToStartWithPendingMigrations(t *testing.T) {
 	}
 }
 
-// Đường đi đầy đủ của một sự kiện: API ghi user + outbox trong một transaction, relay đọc
-// outbox và gửi lên Kafka (cluster in-memory kfake), key là ID của user.
+// Full event flow: the API writes user + outbox atomically; the relay reads the outbox
+// and publishes to an in-memory kfake Kafka cluster, using the user ID as the key.
 func TestRelay_DeliversEventsWrittenByTheAPI(t *testing.T) {
-	dsn := pgtest.FreshSchemaDSN(t) // skip nếu không có TEST_DATABASE_URL
+	dsn := pgtest.FreshSchemaDSN(t) // Skip without TEST_DATABASE_URL.
 	cluster, err := kfake.NewCluster(kfake.NumBrokers(1), kfake.SeedTopics(1, "users"))
 	if err != nil {
 		t.Fatal(err)
@@ -323,8 +323,8 @@ func TestRunRelay_RefusesWhenEventsAreDisabled(t *testing.T) {
 	}
 }
 
-// Thêm hằng EventsSink mà quên nhánh trong newSink thì relay phải từ chối khởi động, trước cả khi
-// kết nối database.
+// Adding an EventsSink constant without a newSink branch must fail relay startup before
+// database connection.
 func TestRunRelay_RejectsUnknownSink(t *testing.T) {
 	cfg := mustConfig(t, nil)
 	cfg.Events.Sink = "rabbitmq"
@@ -334,8 +334,8 @@ func TestRunRelay_RejectsUnknownSink(t *testing.T) {
 	}
 }
 
-// Cấu hình KAFKA_SASL_* phải tới được kafka client: với đúng mật khẩu, relay vượt qua bước kết nối
-// broker và chỉ dừng ở database (cố ý không tới được); sai mật khẩu thì dừng ở broker.
+// KAFKA_SASL_* settings must reach the Kafka client: valid credentials pass broker connection
+// and fail only at the intentionally unreachable database; invalid credentials fail at the broker.
 func TestRunRelay_PassesSASLCredentialsToKafka(t *testing.T) {
 	cluster, err := kfake.NewCluster(kfake.NumBrokers(1), kfake.SeedTopics(1, "users"),
 		kfake.EnableSASL(), kfake.Superuser("SCRAM-SHA-256", "relay", "s3cret"))
@@ -360,7 +360,7 @@ func TestRunRelay_PassesSASLCredentialsToKafka(t *testing.T) {
 }
 
 func TestRunRelay_ServesHealthWhileRunning(t *testing.T) {
-	dsn := pgtest.FreshSchemaDSN(t) // skip nếu không có TEST_DATABASE_URL
+	dsn := pgtest.FreshSchemaDSN(t) // Skip without TEST_DATABASE_URL.
 	cluster, err := kfake.NewCluster(kfake.NumBrokers(1), kfake.SeedTopics(1, "users"))
 	if err != nil {
 		t.Fatal(err)
@@ -376,7 +376,7 @@ func TestRunRelay_ServesHealthWhileRunning(t *testing.T) {
 	go func() { done <- app.RunRelay(ctx, cfg, quiet, app.Options{Listener: health}) }()
 
 	url := "http://" + health.Addr().String() + "/healthz"
-	deadline := time.Now().Add(15 * time.Second) // MIGRATE_ON_START có thể chờ advisory lock của goose
+	deadline := time.Now().Add(15 * time.Second) // MIGRATE_ON_START may wait for the goose advisory lock.
 	for {
 		if resp, err := get(url); err == nil {
 			_ = resp.Body.Close()

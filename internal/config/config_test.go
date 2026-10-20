@@ -48,9 +48,9 @@ func TestLoad_Errors(t *testing.T) {
 		{"READINESS_CHECK_DB": "maybe"},
 		{"TRUSTED_PROXIES": "10.0.0.0/8,not-a-cidr"},
 		{"EVENTS_SINK": "rabbitmq"},
-		// statement_timeout tính theo mili giây: giá trị nhỏ hơn 1ms sẽ thành 0, tức TẮT timeout của server.
+		// statement_timeout uses milliseconds: values below 1ms become 0, DISABLING the server timeout.
 		{"DB_STATEMENT_TIMEOUT": "500us"},
-		// Outbox nằm trong PostgreSQL: phát sự kiện cần STORAGE=postgres.
+		// The outbox lives in PostgreSQL: events require STORAGE=postgres.
 		{"EVENTS_SINK": "kafka", "KAFKA_BROKERS": "localhost:9092"},
 		{"EVENTS_SINK": "kafka", "STORAGE": "postgres", "DATABASE_URL": "postgres://x"},
 		{"OUTBOX_BATCH_SIZE": "0"},
@@ -58,9 +58,9 @@ func TestLoad_Errors(t *testing.T) {
 		{"OUTBOX_POLL_INTERVAL": "0s"},
 		{"OUTBOX_RETENTION": "0s"},
 		{"KAFKA_SASL_MECHANISM": "GSSAPI"},
-		{"KAFKA_SASL_MECHANISM": "SCRAM-SHA-512"}, // thiếu username/password
-		{"KAFKA_SASL_MECHANISM": "PLAIN", "KAFKA_SASL_USERNAME": "u", "KAFKA_SASL_PASSWORD": "p"}, // PLAIN gửi mật khẩu dạng rõ: cần TLS
-		{"KAFKA_TLS_CA_FILE": "/etc/ca.pem"},                                                      // CA mà không bật TLS
+		{"KAFKA_SASL_MECHANISM": "SCRAM-SHA-512"}, // Missing username/password.
+		{"KAFKA_SASL_MECHANISM": "PLAIN", "KAFKA_SASL_USERNAME": "u", "KAFKA_SASL_PASSWORD": "p"}, // PLAIN sends the password in cleartext and requires TLS.
+		{"KAFKA_TLS_CA_FILE": "/etc/ca.pem"},                                                      // CA configured without TLS.
 		{"KAFKA_TLS": "maybe"},
 	}
 	for _, c := range cases {

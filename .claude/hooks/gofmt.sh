@@ -1,5 +1,5 @@
 #!/bin/bash
-# PostToolUse hook: chạy gofmt trên file .go vừa được Edit/Write. Không bao giờ chặn tool call.
+# PostToolUse hook: run gofmt on the .go file just edited/written. Never block the tool call.
 set -uo pipefail
 
 file="$(jq -r '.tool_input.file_path // empty' 2>/dev/null)"

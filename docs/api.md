@@ -1,30 +1,30 @@
 # API reference
 
-Tài liệu cho người gọi API. Base URL mặc định khi chạy local: `http://localhost:8080`. Request mẫu có trong [`api.http`](../api.http).
+Reference for API clients. Default local base URL: `http://localhost:8080`. Example requests: [`api.http`](../api.http).
 
-## Quy ước chung
+## General conventions
 
-| Mục | Quy ước |
+| Item | Convention |
 |---|---|
-| Định dạng | JSON (`application/json`). Request có body (POST, PATCH) **phải** gửi `Content-Type: application/json` (không phân biệt hoa thường, được kèm tham số, ví dụ `; charset=utf-8`). Thiếu header hoặc mọi media type khác, kể cả form và XML, nhận 415 |
-| Kích thước body | Tối đa 1 MiB, vượt quá trả 413 (kể cả body gửi chunked, không có `Content-Length`) |
-| Field lạ trong body | Bị bỏ qua, không báo lỗi |
-| ID | UUID v7 dạng chuẩn, chữ thường (`01a15359-aa28-7a00-a380-c47e52905707`). ID sai định dạng (kể cả UUID chữ hoa) được coi là không tồn tại: 404 |
-| Thời gian | RFC 3339, UTC, độ chính xác micro giây (`2026-10-19T08:49:07.624656Z`). Số 0 ở cuối phần thập phân bị lược (`…07.5722Z`, `…07Z`), nên số chữ số thay đổi từ 0 tới 6: parse bằng bộ parse RFC 3339, đừng dùng định dạng cố định 6 chữ số |
-| Lỗi | `application/problem+json` theo RFC 9457, xem [Lỗi](#lỗi) |
-| Xác thực | Template **không có xác thực**. Xem [operations.md](operations.md#xác-thực) để gắn thêm |
-| Timeout | Mỗi request có timeout `REQUEST_TIMEOUT` (mặc định 10s); mỗi câu SQL có timeout `DB_STATEMENT_TIMEOUT` (mặc định 5s). Hết hạn ở bên nào cũng trả 503 |
+| Format | JSON (`application/json`). Requests with bodies (POST, PATCH) **must** send `Content-Type: application/json` (case-insensitive; parameters such as `; charset=utf-8` are allowed). Missing headers and other media types, including forms/XML, return 415 |
+| Body size | Maximum 1 MiB; larger bodies return 413, including chunked bodies without `Content-Length` |
+| Unknown body fields | Ignored without errors |
+| ID | Canonical lowercase UUID v7 (`01a15359-aa28-7a00-a380-c47e52905707`). Malformed IDs, including uppercase UUIDs, are treated as absent: 404 |
+| Time | RFC 3339, UTC, microsecond precision (`2026-10-19T08:49:07.624656Z`). Trailing fractional zeros are omitted (`…07.5722Z`, `…07Z`), so precision varies from 0 to 6 digits: use an RFC 3339 parser, not a fixed six-digit format |
+| Errors | RFC 9457 `application/problem+json`; see [Errors](#errors) |
+| Authentication | The template has **no authentication**. See [operations.md](operations.md#authentication) to add it |
+| Timeout | Each request uses `REQUEST_TIMEOUT` (default 10s); each SQL statement uses `DB_STATEMENT_TIMEOUT` (default 5s). Either timeout returns 503 |
 
 ### Header
 
-| Header | Chiều | Ý nghĩa |
+| Header | Direction | Meaning |
 |---|---|---|
-| `X-Request-Id` | Request (tuỳ chọn) / Response (luôn có) | ID để đối chiếu log. Client có thể tự gửi; giá trị chỉ được giữ nếu dài tối đa 128 ký tự và chỉ gồm `A-Z a-z 0-9 - _ .`, nếu không server sinh ID mới. Response luôn trả lại ID đang dùng |
-| `ETag` | Response của POST, GET một user, PATCH | Version hiện tại của user, dạng `"<version>"`, ví dụ `"3"` |
-| `If-Match` | Request PATCH (tuỳ chọn) | Chỉ cập nhật nếu version hiện tại khớp. Xem [Cập nhật đồng thời](#cập-nhật-đồng-thời) |
-| `Location` | Response của POST | Đường dẫn tới user vừa tạo |
+| `X-Request-Id` | Request (optional) / Response (always) | Log correlation ID. Client values are preserved only if at most 128 characters using `A-Z a-z 0-9 - _ .`; otherwise the server generates one. Responses always return the ID in use |
+| `ETag` | POST, single-user GET, PATCH responses | Current user version as `"<version>"`, for example `"3"` |
+| `If-Match` | PATCH request (optional) | Update only if the current version matches. See [Concurrent updates](#concurrent-updates) |
+| `Location` | POST response | Path to the newly created user |
 
-## Tài nguyên `User`
+## The `User` resource
 
 ```json
 {
@@ -37,16 +37,16 @@ Tài liệu cho người gọi API. Base URL mặc định khi chạy local: `ht
 }
 ```
 
-| Field | Quy tắc |
+| Field | Rules |
 |---|---|
-| `email` | Bắt buộc; bỏ khoảng trắng hai đầu và chuyển chữ thường; tối đa 254 ký tự; phải là địa chỉ trần (`a@b.com`, không nhận `Tên <a@b.com>`); duy nhất trong hệ thống (so sánh sau khi chuẩn hoá) |
-| `name` | Bắt buộc; khoảng trắng thừa (kể cả tab, xuống dòng, khoảng trắng Unicode) được gộp thành một dấu cách (`"  Lan   Nguyen "` → `"Lan Nguyen"`); tối đa 100 ký tự, đếm theo Unicode code point (một chữ viết bằng ký tự gốc + dấu tổ hợp tính là 2) |
-| `version` | Bắt đầu từ 1, tăng 1 sau mỗi lần thay đổi thực sự |
-| `updated_at` | Chỉ đổi khi dữ liệu thực sự thay đổi |
+| `email` | Required; trim and lowercase; maximum 254 characters; bare address only (`a@b.com`, not `Name <a@b.com>`); unique after normalization |
+| `name` | Required; collapse whitespace (including tabs, newlines, Unicode spaces) to single spaces (`"  Lan   Nguyen "` → `"Lan Nguyen"`); maximum 100 Unicode code points (a base character plus combining mark counts as 2) |
+| `version` | Starts at 1 and increments by 1 on each actual change |
+| `updated_at` | Changes only when data changes |
 
 ## Endpoint
 
-### `POST /api/v1/users`: tạo user
+### `POST /api/v1/users`: create a user
 
 ```http
 POST /api/v1/users
@@ -55,18 +55,18 @@ Content-Type: application/json
 {"email": " Lan@Example.COM ", "name": "  Lan   Nguyen "}
 ```
 
-**201 Created**, kèm `Location: /api/v1/users/<id>` và `ETag: "1"`. Body là user vừa tạo (email và name đã được chuẩn hoá).
+**201 Created**, with `Location: /api/v1/users/<id>` and `ETag: "1"`. The body is the new user with normalized email and name.
 
-Lỗi thường gặp: 422 (dữ liệu không hợp lệ), 409 (email đã tồn tại), 400 (body không phải JSON hợp lệ), 413 (body quá lớn), 415 (`Content-Type` không phải `application/json`).
+Common errors: 422 (invalid input), 409 (duplicate email), 400 (invalid JSON), 413 (oversized body), 415 (`Content-Type` is not `application/json`).
 
-### `GET /api/v1/users`: danh sách
+### `GET /api/v1/users`: list users
 
-| Query | Mặc định | Quy tắc |
+| Query | Default | Rules |
 |---|---|---|
-| `limit` | 20 | `≤ 0` dùng 20; lớn hơn 100 được **giới hạn thành 100**, không báo lỗi; không phải số trả 400 |
-| `offset` | 0 | Âm thì dùng 0; lớn hơn 10.000 trả 422; không phải số trả 400 |
+| `limit` | 20 | `≤ 0` uses 20; values above 100 are **capped at 100** without errors; non-integers return 400 |
+| `offset` | 0 | Negative values use 0; above 10,000 returns 422; non-integers return 400 |
 
-Sắp xếp theo `created_at` tăng dần (rồi tới `id`). Response cho biết giá trị `limit`/`offset` **thực sự được áp dụng**:
+Ordered by `created_at` ascending, then `id`. The response reports the **effective** `limit`/`offset`:
 
 ```json
 {
@@ -75,13 +75,13 @@ Sắp xếp theo `created_at` tăng dần (rồi tới `id`). Response cho biế
 }
 ```
 
-Phân trang theo offset phù hợp với màn hình quản trị cần nhảy tới trang N. Không dùng để duyệt hết dữ liệu lớn (giới hạn offset 10.000 tồn tại vì lý do đó).
+Offset pagination suits admin screens that jump to page N. Do not use it to scan large datasets; that is why offset is capped at 10,000.
 
-### `GET /api/v1/users/{id}`: lấy một user
+### `GET /api/v1/users/{id}`: get a user
 
-**200 OK**, kèm `ETag`. Không tồn tại hoặc ID sai định dạng: 404.
+**200 OK**, with `ETag`. Missing user or malformed ID: 404.
 
-### `PATCH /api/v1/users/{id}`: cập nhật từng phần
+### `PATCH /api/v1/users/{id}`: partial update
 
 ```http
 PATCH /api/v1/users/01a15359-aa28-7a00-a380-c47e52905707
@@ -91,43 +91,43 @@ If-Match: "1"
 {"name": "Lan Pham"}
 ```
 
-- Chỉ field có mặt trong body mới được cập nhật. Field vắng mặt hoặc có giá trị `null` được giữ nguyên.
-- Body rỗng hoặc `{}`: trả 200 với user hiện tại, không tăng `version`.
-- **200 OK**, kèm `ETag` mới.
+- Only supplied fields are updated. Omitted or `null` fields remain unchanged.
+- Empty body or `{}`: return 200 with the current user without incrementing `version`.
+- **200 OK**, with the resulting `ETag`.
 
-Lỗi thường gặp: 404, 422, 409 (email đã tồn tại, hoặc xung đột version), 412 (`If-Match` không khớp), 400, 413, 415 (như POST).
+Common errors: 404, 422, 409 (duplicate email or version conflict), 412 (`If-Match` mismatch), 400, 413, 415 (as for POST).
 
-### `DELETE /api/v1/users/{id}`: xoá
+### `DELETE /api/v1/users/{id}`: delete
 
-**204 No Content**. Không tồn tại hoặc ID sai định dạng: 404. Email của user đã xoá có thể dùng lại.
+**204 No Content**. Missing user or malformed ID: 404. Deleted users' email addresses can be reused.
 
-> `DELETE` **không** kiểm tra `If-Match`: header này bị bỏ qua và user vẫn bị xoá.
+> `DELETE` does **not** check `If-Match`: the header is ignored and the user is deleted.
 
 ### Probe
 
-| Endpoint | Ý nghĩa | Response |
+| Endpoint | Meaning | Response |
 |---|---|---|
-| `GET /healthz` | Liveness: tiến trình còn sống | 200 `{"status":"ok"}` |
-| `GET /readyz` | Readiness: pod sẵn sàng nhận traffic | 200 `{"status":"ready"}`; 503 khi đang shutdown (hoặc database không phản hồi, nếu bật `READINESS_CHECK_DB`) |
+| `GET /healthz` | Liveness: process is alive | 200 `{"status":"ok"}` |
+| `GET /readyz` | Readiness: pod can receive traffic | 200 `{"status":"ready"}`; 503 during shutdown (or database failure when `READINESS_CHECK_DB` is enabled) |
 
-Probe không có tiền tố `/api/v1`, không đi qua middleware xác thực và không sinh dòng log truy cập `http_request`. `/readyz` trả 503 thì server ghi một dòng WARN `readiness check failed`.
+Probes have no `/api/v1` prefix, bypass authentication middleware, and do not generate `http_request` access logs. A failed `/readyz` emits one WARN log: `readiness check failed`.
 
-## Cập nhật đồng thời
+## Concurrent updates
 
-Mỗi lần ghi kiểm tra `version` (optimistic locking), nên hai PATCH chạy song song không bao giờ âm thầm ghi đè thay đổi của nhau.
+Each write checks `version` (optimistic locking), preventing concurrent PATCH requests from silently overwriting changes based on stale reads.
 
-| Client gửi | Khi có xung đột |
+| Client sends | On conflict |
 |---|---|
-| Không có `If-Match` (hoặc `If-Match: *`) | Server tự đọc lại và áp dụng lại thay đổi, tổng cộng tối đa 3 lần thử. Vẫn xung đột thì trả **409** |
-| `If-Match: "<version>"` | Version hiện tại khác thì trả **412**, không thử lại. Client nên GET lại, cho người dùng xem dữ liệu mới, rồi quyết định |
-| `If-Match` là weak ETag (`W/"2"`) hoặc không đúng nguyên văn dạng `"<số>"` mà server cấp (ví dụ `"+2"`, `"02"`) | Luôn trả **412** (theo RFC 9110, `If-Match` dùng so sánh strong: so từng ký tự) |
-| `If-Match` rỗng, hoặc nhiều ETag (danh sách `"1", "2"` hay nhiều dòng header) | Luôn trả **412**, kể cả khi danh sách có version hiện tại. Server chỉ nhận **một** ETag; từ chối an toàn hơn là coi như không có `If-Match` rồi ghi đè vô điều kiện |
+| No `If-Match` (or `If-Match: *`) | Server rereads and reapplies changes, up to 3 total attempts. Remaining conflicts return **409** |
+| `If-Match: "<version>"` | A different current version returns **412** without retry. Client should GET again, show fresh data, and let the user decide |
+| Weak ETag (`W/"2"`) or a value differing from the issued `"<number>"` form (such as `"+2"`, `"02"`) | Always **412**: RFC 9110 If-Match uses character-for-character strong comparison |
+| Empty `If-Match` or multiple ETags (`"1", "2"` or repeated header lines) | Always **412**, even if the current version appears. Only **one** ETag is accepted; rejection is safer than treating it as absent and overwriting unconditionally |
 
-Client hiển thị form sửa cho người dùng nên lưu `ETag` từ lúc GET và gửi lại trong `If-Match`. Đó là cách duy nhất phát hiện việc người dùng sửa trên dữ liệu đã cũ.
+Edit forms should retain the ETag from GET and send it as If-Match. This detects edits based on stale user-visible data.
 
-## Lỗi
+## Errors
 
-Mọi lỗi trả `Content-Type: application/problem+json`:
+All errors use `Content-Type: application/problem+json`:
 
 ```json
 {
@@ -143,29 +143,29 @@ Mọi lỗi trả `Content-Type: application/problem+json`:
 }
 ```
 
-`errors` chỉ có ở lỗi 422. Lỗi 5xx không bao giờ chứa chi tiết nội bộ; dùng `X-Request-Id` để tìm lỗi gốc trong log.
+`errors` appears only for 422. 5xx responses never expose internal details; use `X-Request-Id` to locate the underlying error in logs.
 
-| Status | Khi nào | `detail` |
+| Status | When | `detail` |
 |---|---|---|
-| 400 | Body không phải JSON hợp lệ | `request body is not valid JSON` |
-| 400 | Field sai kiểu, ví dụ `{"email": 5}` | `field "email" has the wrong type` |
-| 400 | Body là JSON nhưng không phải object, ví dụ `[]` | `request body must be a JSON object` |
-| 400 | `limit`/`offset` không phải số nguyên | `limit must be an integer` / `offset must be an integer` |
-| 404 | User không tồn tại, hoặc ID sai định dạng | `resource not found` |
-| 404 | Route không tồn tại (kể cả có `/` ở cuối, như `/api/v1/users/`) | (trống) |
-| 405 | Sai method cho route; response có header `Allow` | |
-| 409 | Email đã thuộc về user khác | `a user with this email already exists` |
-| 409 | Xung đột version sau 3 lần thử (không có `If-Match`) | `the user was modified concurrently, please retry` |
-| 412 | `If-Match` không khớp version hiện tại | `If-Match does not match the current version of the resource` |
-| 413 | Body lớn hơn 1 MiB | |
-| 415 | POST/PATCH có body nhưng `Content-Type` không phải `application/json` (thiếu, form, XML...) | |
-| 422 | Dữ liệu không hợp lệ, kèm `errors` theo từng field | `request failed validation` |
-| 499 | Client đóng kết nối trước khi có response, hoặc request bị huỷ khi server tắt quá hạn. Client không nhận được response này; chỉ thấy status 499 trong log | |
-| 500 | Lỗi không lường trước | (trống) |
-| 503 | Request vượt `REQUEST_TIMEOUT`, hoặc câu SQL vượt `DB_STATEMENT_TIMEOUT` | `request timed out` |
-| 503 | `/readyz` khi pod chưa sẵn sàng | (trống) |
+| 400 | Invalid JSON body | `request body is not valid JSON` |
+| 400 | Wrong field type, such as `{"email": 5}` | `field "email" has the wrong type` |
+| 400 | JSON body is not an object, such as `[]` | `request body must be a JSON object` |
+| 400 | Non-integer `limit`/`offset` | `limit must be an integer` / `offset must be an integer` |
+| 404 | Missing user or malformed ID | `resource not found` |
+| 404 | Unknown route, including trailing `/`, such as `/api/v1/users/` | (empty) |
+| 405 | Wrong method for the route; response includes `Allow` | |
+| 409 | Email belongs to another user | `a user with this email already exists` |
+| 409 | Version conflict after 3 attempts without `If-Match` | `the user was modified concurrently, please retry` |
+| 412 | `If-Match` does not match the current version | `If-Match does not match the current version of the resource` |
+| 413 | Body exceeds 1 MiB | |
+| 415 | POST/PATCH has a body without `application/json` Content-Type (missing, form, XML...) | |
+| 422 | Invalid input with per-field `errors` | `request failed validation` |
+| 499 | Client disconnects before response, or requests are canceled after shutdown timeout. The client receives no such response; 499 appears only in logs | |
+| 500 | Unexpected error | (empty) |
+| 503 | Request exceeds `REQUEST_TIMEOUT` or SQL exceeds `DB_STATEMENT_TIMEOUT` | `request timed out` |
+| 503 | `/readyz` when the pod is not ready | (empty) |
 
-Thông báo lỗi theo field (`errors[].message`):
+Field error messages (`errors[].message`):
 
 | Field | Message |
 |---|---|

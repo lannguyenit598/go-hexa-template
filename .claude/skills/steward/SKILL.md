@@ -3,35 +3,35 @@ name: steward
 description: Use when driving a pull request of this userapi repo to green or mergeable — a CI job (lint, test, vulncheck, docker) failed, a review comment arrived, the branch has a merge conflict, or a PR is about to be opened.
 ---
 
-# Đưa PR tới trạng thái xanh
+# Get a PR to green
 
-## Trước khi mở PR
+## Before opening a PR
 
-- Base là `main`, compare là nhánh làm việc. (Một PR mở ngược chiều sẽ merge `main` vào nhánh và không thay đổi gì trên `main`.)
-- Nếu PR trước của nhánh đã merge: tạo lại nhánh từ `origin/main` mới nhất trước khi làm tiếp. Không chồng commit mới lên lịch sử đã merge.
-- `make check` xanh trên máy, kèm `TEST_DATABASE_URL` nếu có PostgreSQL. Ghi rõ trong mô tả PR phần nào chưa kiểm chứng được trên máy (ví dụ govulncheck khi không truy cập được `vuln.go.dev`).
+- Base is `main`; compare is the working branch. A reversed PR merges main into the branch without changing main.
+- If the branch's previous PR was merged, start a fresh branch from current `origin/main`; do not stack new commits onto merged history.
+- Run `make check` locally, with `TEST_DATABASE_URL` when available. State unverified checks in the PR, such as govulncheck when `vuln.go.dev` is unreachable.
 
-## Khi một job CI đỏ
+## When a CI job fails
 
-Đọc log của đúng job đó trước. Tái hiện trên máy, sửa, chạy lại `make check`, rồi mới push.
+Read that job's logs first. Reproduce locally, fix it, rerun `make check`, then push.
 
-| Job | Tái hiện trên máy | Nguyên nhân hay gặp và cách sửa |
+| Job | Local reproduction | Common causes and fixes |
 |---|---|---|
-| `lint` | `golangci-lint run ./...` (đúng phiên bản trong `ci.yml`) và `go mod tidy -diff` | **Lint từ chối chạy vì phiên bản Go**: golangci-lint phải được build bằng Go ≥ dòng `go` trong `go.mod`, nên nâng phiên bản trong `ci.yml` và `CLAUDE.md`. **`noctx` báo lỗi mới sau khi nâng lint**: dùng `httptest.NewRequestWithContext`, `net.ListenConfig{}.Listen(ctx, …)`. **depguard báo lỗi**: import sai hướng, sửa code, không sửa `.golangci.yml` |
-| `test` | `TEST_DATABASE_URL=... go test -race -count=1 ./...`, rồi `DATABASE_URL=$TEST_DATABASE_URL go run ./cmd/userapi migrate` hai lần (CI kiểm tra migration chạy lặp lại được) | **Test lifecycle timeout khi chạy cùng package khác**: advisory lock của goose (`4097083626`) dùng chung cả database và thử lại mỗi 5s, nên deadline của test phải ≥ 15s. Tái hiện bằng cách giữ lock: `SELECT pg_advisory_lock(4097083626); SELECT pg_sleep(8);` trong psql, rồi chạy test. **Dữ liệu lẫn giữa các test**: package `postgres` TRUNCATE bảng chung; test cần database sạch dùng `pgtest.FreshSchemaDSN` |
-| `vulncheck` | `go run golang.org/x/vuln/cmd/govulncheck@<phiên bản trong ci.yml> ./...` (cần truy cập `vuln.go.dev`; nếu bị chặn thì đọc log CI) | Nâng module bị báo lên phiên bản "Fixed in" (`go get <module>@<version>`, `go mod tidy`). Kiểm tra dòng `go` trong `go.mod` của phiên bản mới: nếu cao hơn của repo, cập nhật đồng thời README (cả hai bản), CI và phiên bản golangci-lint |
-| `docker` | `docker build .` | Image build trong `Dockerfile` (`golang:X-alpine`) phải có Go ≥ dòng `go` trong `go.mod` |
+| `lint` | `golangci-lint run ./...` (version from `ci.yml`) and `go mod tidy -diff` | **Go version mismatch**: golangci-lint must be built with Go >= `go.mod`; update `ci.yml` and `CLAUDE.md`. **New `noctx` errors**: use `httptest.NewRequestWithContext` and `net.ListenConfig{}.Listen(ctx, …)`. **depguard errors**: fix imports, not `.golangci.yml` |
+| `test` | `TEST_DATABASE_URL=... go test -race -count=1 ./...`, then run `DATABASE_URL=$TEST_DATABASE_URL go run ./cmd/userapi migrate` twice (CI checks idempotency) | **Lifecycle timeout with other packages**: goose advisory lock `4097083626` is database-wide and retries every 5s; allow at least 15s. Reproduce by holding `SELECT pg_advisory_lock(4097083626); SELECT pg_sleep(8);` in psql. **Shared data interference**: postgres tests truncate shared tables; use `pgtest.FreshSchemaDSN` for isolation |
+| `vulncheck` | `go run golang.org/x/vuln/cmd/govulncheck@<version from ci.yml> ./...` (requires `vuln.go.dev`; use CI logs if blocked) | Upgrade flagged modules to "Fixed in" versions (`go get <module>@<version>`, `go mod tidy`). If their Go directive raises the minimum, update both READMEs, CI, and golangci-lint |
+| `docker` | `docker build .` | The build image (`golang:X-alpine`) must use Go >= the `go.mod` directive |
 
-**Flaky không phải là nguyên nhân.** Chỉ chạy lại job một lần khi lỗi xảy ra trước khi test chạy (checkout, cài đặt, runner mất). Lỗi lặp lại là lỗi thật: tìm nguyên nhân. Không skip hay tắt test để CI xanh.
+**Flaky is not a root cause.** Retry a job once only for failures before tests (checkout, installation, lost runner). Repeated failures need diagnosis; never skip or disable tests to make CI green.
 
 ## Merge conflict
 
-- Merge `main` vào nhánh (không rebase hay force-push nhánh người khác đang dùng).
-- `go.sum` bị conflict: lấy bản của một bên rồi chạy `go mod tidy`; không sửa tay.
-- Conflict ở `README.md`/`README.vi.md`: giải quyết cả hai bản theo cùng một nội dung.
+- Merge `main` into the branch; do not rebase or force-push branches others use.
+- For `go.sum` conflicts, take one side and run `go mod tidy`; do not edit manually.
+- Resolve `README.md`/`README.vi.md` conflicts consistently across both versions.
 
 ## Review comment
 
-- Yêu cầu nhỏ, cục bộ (đổi tên, thêm test, sửa một hàm): làm, push, trả lời ngắn trên thread.
-- Yêu cầu lớn (đổi hợp đồng API, đổi port, refactor nhiều file): đề xuất cách làm trong thread, chờ chủ PR quyết định.
-- Comment cho rằng có bug: tự dựng một test tái hiện trước khi sửa. Không tái hiện được thì trả lời kèm bằng chứng.
+- Small local review requests (rename, test, one-function fix): implement, push, and reply briefly in the thread.
+- Large requests (API/port changes, multi-file refactors): propose an approach in the thread and wait for the PR owner.
+- For reported bugs, write a reproducer first. If it cannot be reproduced, reply with evidence.

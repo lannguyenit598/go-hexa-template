@@ -1,75 +1,75 @@
 ---
 name: add-use-case
 description: Use when adding or changing a use case, endpoint, or repository method in this Go hexagonal userapi repo — e.g. "add search by email", "add a field to users", "new endpoint under /api/v1", or changing what an existing endpoint accepts or returns.
-argument-hint: "[mô tả use case]"
+argument-hint: "[use case description]"
 ---
 
-# Thêm hoặc đổi một use case
+# Add or change a use case
 
-Đi từ trong ra ngoài (domain → port → adapter → HTTP → docs), mỗi tầng theo TDD: viết test, **chạy và thấy nó fail đúng lý do**, rồi mới sửa code. Use case cần làm: $ARGUMENTS
+Work from inside out (domain → port → adapter → HTTP → docs), using TDD at every layer: write the test, **observe the intended failure**, then implement. Requested use case: $ARGUMENTS
 
-## 0. Chốt hợp đồng trước khi code
+## 0. Define the contract before coding
 
-Viết ra (trong câu trả lời hoặc PR), rồi giữ đúng như vậy:
-- endpoint và method;
-- request: field nào, kiểu primitive gì, bắt buộc hay không;
-- response: status thành công, body;
-- mọi lỗi: lỗi nào của core ánh xạ sang status nào.
+Write down the following in the response or PR and follow it:
+- endpoint and method;
+- request fields, primitive types, and whether they are required;
+- success status and response body;
+- every error and its core-error-to-status mapping.
 
-So với hợp đồng hiện tại trong `docs/api.md`. Nếu đổi hành vi đang có (status, `detail`, field), nói rõ đây là thay đổi phá vỡ tương thích.
+Compare against `docs/api.md`. Explicitly flag existing status, `detail`, or field changes as breaking changes.
 
-## 1. Domain (`internal/core/domain`), chỉ khi có quy tắc nghiệp vụ mới
+## 1. Domain (`internal/core/domain`), only for new business rules
 
-- Invariant mới đặt trong constructor/method hoặc một value object; lỗi validate dùng `ValidationError` với tên field đúng như trong JSON.
-- Test trong `*_test.go` cùng package `domain_test`.
+- Put new invariants in constructors/methods or a value object; use `ValidationError` with JSON field names.
+- Add `*_test.go` tests in package `domain_test`.
 
 ## 2. Port (`internal/core/port/port.go`)
 
-- Thêm method vào `UserService`. Input chỉ là primitive; nhiều tham số thì gom vào struct `XxxCmd`/`XxxQuery`.
-- Cần storage mới thì thêm method vào `UserRepository` và **ghi hợp đồng lỗi** vào comment của interface (khi nào trả `ErrNotFound`, `ErrVersionConflict`, `domain.ErrEmailAlreadyExists`).
+- Add a `UserService` method. Use primitive inputs; group multiple parameters into `XxxCmd`/`XxxQuery`.
+- Add storage methods to `UserRepository` as needed and **document error contracts** in interface comments (`ErrNotFound`, `ErrVersionConflict`, `domain.ErrEmailAlreadyExists`).
 
-## 3. Repository: contract test trước
+## 3. Repository: contract tests first
 
-1. Thêm subtest vào `internal/adapter/outbound/repotest/contract.go`.
-2. Chạy và thấy fail: `go test ./internal/adapter/outbound/memory/`.
-3. Hiện thực trong `memory`, rồi `postgres` (SQL có tham số, dịch lỗi qua `mapError`; cần đổi schema thì dùng `/add-migration`). Lệnh **ghi** mới trong `postgres` đi qua `r.write` và gọi `r.appendEvent` khi thành công, kèm test trong `outbox_test.go` (xem `.claude/rules/messaging.md`).
-4. Chạy cả hai, kèm PostgreSQL: `TEST_DATABASE_URL=... go test ./internal/adapter/outbound/...`
+1. Add a subtest to `internal/adapter/outbound/repotest/contract.go`.
+2. Observe failure: `go test ./internal/adapter/outbound/memory/`.
+3. Implement in `memory`, then `postgres` (parameterized SQL, `mapError`; use `/add-migration` for schema changes). New postgres **writes** use `r.write` and call `r.appendEvent` on success, with `outbox_test.go` coverage (see `.claude/rules/messaging.md`).
+4. Run both, including PostgreSQL: `TEST_DATABASE_URL=... go test ./internal/adapter/outbound/...`
 
 ## 4. Service (`internal/core/service`)
 
-1. Test trong `user_service_test.go`, dùng `newSUT()`; gồm cả ID sai định dạng và lỗi từ repository.
-2. Hiện thực:
-   - parse/validate input trước khi gọi repository (`parseUserID`);
-   - wrap lỗi bằng `fmt.Errorf("...: %w", err)`;
+1. Test in `user_service_test.go` using `newSUT()`, including malformed IDs and repository errors.
+2. Implement:
+   - parse/validate input before repository access (`parseUserID`);
+   - wrap errors with `fmt.Errorf("...: %w", err)`;
    - log qua `s.logger`.
 
 ## 5. HTTP (`internal/adapter/inbound/httpapi`)
 
-1. Test trong `user_handler_test.go`: status thành công, body, và mỗi lỗi ở bước 0 (status + `Content-Type: application/problem+json`). Tạo request bằng `NewRequestWithContext`.
-2. Hiện thực:
+1. Test success status/body and every error from step 0 in `user_handler_test.go`, including `Content-Type: application/problem+json`. Use `NewRequestWithContext`.
+2. Implement:
    - route trong `server.go`;
-   - handler trong `user_handler.go`, chỉ bind DTO → gọi port → map DTO;
-   - lỗi mới của core thì thêm nhánh vào `toProblem` trong `errors.go`.
+   - handlers in `user_handler.go`: bind DTO → call port → map DTO;
+   - map new core errors in `toProblem` in `errors.go`.
 
-## 6. Tài liệu (cùng commit)
+## 6. Documentation (same commit)
 
-- `docs/api.md`: endpoint, request/response, thêm dòng vào bảng lỗi kèm nguyên văn `detail`.
-- `api.http`: một request mẫu.
-- Thêm port/adapter mới thì cập nhật `docs/architecture.md`.
-- Lệnh ghi mới sinh loại sự kiện mới, hoặc đổi field của sự kiện, thì cập nhật `docs/events.md`.
-- Kiểm chứng bằng server thật: `go run ./cmd/userapi`, gọi bằng `curl` từng tình huống ở bước 0, so status và body với những gì vừa ghi.
+- `docs/api.md`: endpoint, request/response, and error table with literal `detail`.
+- `api.http`: an example request.
+- Update `docs/architecture.md` for new ports/adapters.
+- Update `docs/events.md` for new event types or changed fields.
+- Verify against a running server: `go run ./cmd/userapi`; exercise every step-0 case with `curl`, comparing status and body against the documentation.
 
-## 7. Hoàn tất
+## 7. Complete
 
-`TEST_DATABASE_URL=... make check` phải xanh. Không có PostgreSQL thì vẫn chạy `make check`, và nói rõ test PostgreSQL đã bị skip.
+`TEST_DATABASE_URL=... make check` must pass. Without PostgreSQL, still run `make check` and state that PostgreSQL tests were skipped.
 
-## Lỗi thường gặp
+## Common mistakes
 
-| Lỗi | Đúng là |
+| Mistake | Correct approach |
 |---|---|
-| Command của port nhận `domain.UserID` | Nhận `string`; service gọi `parseUserID` |
-| Thêm `ErrXxxNotFound` mới | Dùng `port.ErrNotFound`, wrap kèm ngữ cảnh |
-| Handler tự kiểm tra quy tắc nghiệp vụ | Chuyển xuống domain/service; handler chỉ bind và map |
-| Chỉ sửa adapter postgres, quên memory | Contract test ở `repotest` bắt cả hai; thêm subtest trước |
-| Sửa `.golangci.yml` vì depguard báo lỗi | Import sai hướng; sửa code |
-| Ghi `detail` vào docs từ trí nhớ | Gọi API thật rồi chép nguyên văn |
+| Port command accepts `domain.UserID` | Accept `string`; service calls `parseUserID` |
+| Add `ErrXxxNotFound` | Use `port.ErrNotFound` and wrap with context |
+| Handler validates business rules | Move rules to domain/service; handler only binds and maps |
+| Update postgres but forget memory | Add a shared `repotest` subtest first to check both |
+| Change `.golangci.yml` after a depguard error | Fix the incorrect import direction |
+| Write `detail` from memory | Call the API and copy the exact response |

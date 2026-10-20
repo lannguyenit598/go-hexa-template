@@ -1,6 +1,6 @@
-# Cập nhật dependency tự động. Mỗi PR của Dependabot vẫn phải qua CI như mọi PR khác.
-# cooldown: chỉ đề xuất bản đã phát hành ít nhất 14 ngày, theo quy ước trong CLAUDE.md.
-# Bản vá bảo mật (security update) không bị cooldown giữ lại.
+# Automatic dependency updates. Dependabot PRs must pass CI like every other PR.
+# cooldown: propose releases at least 14 days old, following CLAUDE.md.
+# Security updates are not held back by the cooldown.
 version: 2
 updates:
   - package-ecosystem: gomod
@@ -13,7 +13,7 @@ updates:
       go-minor-and-patch:
         update-types: [minor, patch]
 
-  # Action được pin theo commit SHA (kèm comment phiên bản); Dependabot cập nhật cả SHA lẫn comment.
+  # Actions are pinned by commit SHA with version comments; Dependabot updates both.
   - package-ecosystem: github-actions
     directory: /
     schedule:
