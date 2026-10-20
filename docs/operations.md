@@ -22,7 +22,7 @@ Mọi cấu hình đọc từ biến môi trường. Cấu hình sai làm tiến
 | `DB_MIN_CONNS` | `0` | Số kết nối giữ sẵn. `0` = dùng giá trị của URL (`pool_min_conns`) hoặc mặc định của pgx | `0 ≤ DB_MIN_CONNS ≤ DB_MAX_CONNS` |
 | `DB_MAX_CONN_LIFETIME` | `30m` | Tuổi thọ tối đa của một kết nối (giúp cân bằng lại sau failover) | `≤ 0` = mặc định của pgx |
 | `DB_MAX_CONN_IDLE_TIME` | `5m` | Đóng kết nối rảnh quá lâu | `≤ 0` = mặc định của pgx |
-| `DB_STATEMENT_TIMEOUT` | `5s` | `statement_timeout` phía PostgreSQL cho kết nối của app. Vượt quá thì request trả 503 | `≤ 0` = không đặt (dùng cấu hình của server) |
+| `DB_STATEMENT_TIMEOUT` | `5s` | `statement_timeout` phía PostgreSQL cho kết nối của app. Vượt quá thì request trả 503 | `≤ 0` = không đặt (dùng cấu hình của server); giá trị dương phải `≥ 1ms` |
 | `MIGRATE_ON_START` | `false` | Chạy migration khi app khởi động. Tiện cho dev; production dùng `userapi migrate` | |
 | `EVENTS_SINK` | `none` | Nơi phát sự kiện: `none` (không ghi outbox) hoặc `kafka`. Xem [Phát sự kiện](#phát-sự-kiện) | `kafka` cần `STORAGE=postgres` và `KAFKA_BROKERS`; không phân biệt hoa thường |
 | `KAFKA_BROKERS` | (trống) | Địa chỉ broker Kafka (hoặc tương thích: Redpanda, MSK...), phân tách bằng dấu phẩy | Bắt buộc khi `EVENTS_SINK=kafka` |
@@ -159,13 +159,21 @@ Bật bằng `EVENTS_SINK=kafka` (cùng `STORAGE=postgres`, `KAFKA_BROKERS`), đ
 - **Tắt:** SIGTERM làm relay gửi nốt lô đang dở rồi thoát với code 0, log `outbox relay stopped`.
 - **Topic:** relay không tự tạo topic. Tạo trước với `cleanup.policy=delete`, retention 7 ngày (đủ cho consumer phục hồi sau sự cố qua cuối tuần; sự kiện không chứa dữ liệu cá nhân nên retention không bị ràng buộc bởi việc xoá dữ liệu), và số partition theo số consumer song song cần có.
 - **Quyền database:** relay dùng role của app; role đó cần `SELECT`, `UPDATE`, `DELETE` trên `outbox`, và đã có sẵn qua default privileges ở [Phân quyền database](#phân-quyền-database).
-- **Dọn outbox:** relay xoá bản ghi đã gửi quá `OUTBOX_RETENTION`, tối đa mỗi giờ một lần.
+- **Dọn outbox:** relay xoá bản ghi đã gửi quá `OUTBOX_RETENTION`, tối đa mỗi giờ một lần. Bản ghi bị tách riêng (dưới đây) không bị xoá.
+- **Sự kiện bị broker từ chối vĩnh viễn** (record lớn hơn giới hạn của topic, record không hợp lệ): relay gửi lại riêng record đó một lần; vẫn bị từ chối thì đánh dấu `parked_at`, ghi lý do vào `last_error`, log ERROR `outbox relay: parked messages the broker rejected permanently` kèm ID, rồi tiếp tục với các sự kiện khác. Lỗi mạng, topic chưa có hay thiếu quyền **không** bị coi là vĩnh viễn: relay thử lại tới khi thành công. Xử lý một bản ghi bị tách riêng: sửa nguyên nhân (ví dụ tăng `max.message.bytes` của topic), rồi đưa nó trở lại hàng đợi:
+  ```sql
+  UPDATE outbox SET parked_at = NULL, last_error = NULL WHERE id = '<id trong log>';
+  ```
 
-**Cảnh báo cần có:** tuổi của bản ghi outbox chưa gửi cũ nhất. Giá trị tăng liên tục nghĩa là relay không chạy, không tới được broker, hoặc không theo kịp tải:
+**Cảnh báo cần có:**
+- tuổi của bản ghi outbox chưa gửi cũ nhất: tăng liên tục nghĩa là relay không chạy, không tới được broker, hoặc không theo kịp tải;
+- số bản ghi bị tách riêng: lớn hơn 0 nghĩa là consumer đang thiếu sự kiện.
 
 ```sql
 SELECT count(*) AS backlog, now() - min(created_at) AS oldest
-FROM outbox WHERE published_at IS NULL;
+FROM outbox WHERE published_at IS NULL AND parked_at IS NULL;
+
+SELECT count(*) AS parked FROM outbox WHERE parked_at IS NOT NULL;
 ```
 
 ## Observability
@@ -197,5 +205,6 @@ Probe không bị trace. Trace context từ upstream (`traceparent`) được ti
 | Nhiều 503 `request timed out` | Request vượt `REQUEST_TIMEOUT` hoặc câu SQL vượt `DB_STATEMENT_TIMEOUT` (log có `SQLSTATE 57014`), thường do database chậm, lock, hoặc pool cạn kết nối | Xem span chờ lấy kết nối của `otelpgx`, metric pool, và lock trong `pg_stat_activity` |
 | `remote_ip` trong log luôn là cùng một IP | Chưa đặt `TRUSTED_PROXIES` | Đặt bằng dải IP của LB/ingress |
 | `userapi relay` thoát ngay: `kafka ping: unable to dial` | Sai `KAFKA_BROKERS`, hoặc broker chưa sẵn sàng | Kiểm tra địa chỉ và mạng; Kubernetes sẽ khởi động lại pod |
+| Log ERROR `outbox relay: parked messages the broker rejected permanently` | Broker từ chối chính record đó (thường là `MESSAGE_TOO_LARGE`) | Xem `last_error` của bản ghi; sửa nguyên nhân rồi đưa lại hàng đợi (xem [Phát sự kiện](#phát-sự-kiện)) |
 | Outbox tồn đọng tăng, log relay `outbox relay: publish failed, will retry` | Broker không tới được, topic chưa được tạo (`UNKNOWN_TOPIC_OR_PARTITION`), hoặc quyền ghi topic thiếu | Xem lỗi trong log; sự kiện không mất, sẽ được gửi khi nguyên nhân được xử lý |
 | Mọi pod cùng unready khi database chập chờn | Đã bật `READINESS_CHECK_DB` | Tắt, hoặc tăng `failureThreshold` (xem [Readiness](#readiness)) |

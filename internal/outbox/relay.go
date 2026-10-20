@@ -6,6 +6,7 @@ package outbox
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"time"
 )
@@ -19,19 +20,34 @@ type Message struct {
 	Headers map[string]string
 }
 
+// ErrPermanent đánh dấu lỗi mà gửi lại cũng không thành công, ví dụ broker từ chối message vì
+// nội dung (quá lớn, không hợp lệ). Sink bọc lỗi đó bằng %w; Source tách message ra khỏi hàng đợi
+// (parked) thay vì thử lại mãi và chặn mọi message phía sau.
+var ErrPermanent = errors.New("outbox: message rejected permanently")
+
+// Result là kết quả xử lý một lô.
+type Result struct {
+	Published int      // broker đã nhận, đã đánh dấu
+	Parked    []string // ID message bị từ chối vĩnh viễn, đã tách khỏi hàng đợi
+	Retry     int      // lỗi tạm thời: giữ nguyên, thử lại ở lần sau
+	Err       error    // lỗi publish đầu tiên trong lô (nếu có), để log
+}
+
 // Source là nơi lưu outbox.
 type Source interface {
-	// Process giữ tối đa limit message chưa publish (theo thứ tự ghi), gọi publish, và chỉ đánh
-	// dấu đã publish khi publish thành công, tất cả trong một transaction: publish lỗi thì
-	// message còn nguyên cho lần sau. Trả số message đã publish.
-	Process(ctx context.Context, limit int, publish func(context.Context, []Message) error) (int, error)
-	// Purge xoá message đã publish trước thời điểm before.
+	// Process giữ tối đa limit message chưa publish (theo thứ tự ghi), gọi publish, rồi xử lý kết
+	// quả của TỪNG message trong cùng transaction: thành công thì đánh dấu đã publish, lỗi bọc
+	// ErrPermanent thì tách riêng, lỗi khác thì để nguyên cho lần sau. Lỗi trả về chỉ là lỗi của
+	// chính Source (database).
+	Process(ctx context.Context, limit int, publish func(context.Context, []Message) []error) (Result, error)
+	// Purge xoá message đã publish trước thời điểm before. Message đã tách riêng không bị xoá.
 	Purge(ctx context.Context, before time.Time) (int64, error)
 }
 
-// Sink gửi message lên broker. Publish chỉ trả nil khi broker đã nhận mọi message.
+// Sink gửi message lên broker. Publish trả lỗi theo từng message, cùng thứ tự với msgs:
+// errs[i] == nil nghĩa là broker đã nhận msgs[i].
 type Sink interface {
-	Publish(ctx context.Context, msgs []Message) error
+	Publish(ctx context.Context, msgs []Message) []error
 }
 
 const (
@@ -59,18 +75,13 @@ func (r *Relay) Run(ctx context.Context) error {
 	var lastPurge time.Time
 	for {
 		batchCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), batchTimeout)
-		n, err := r.Source.Process(batchCtx, r.BatchSize, r.Sink.Publish)
+		res, err := r.Source.Process(batchCtx, r.BatchSize, r.Sink.Publish)
 		cancel()
-		switch {
-		case err != nil:
-			r.Logger.WarnContext(ctx, "outbox relay: publish failed, will retry", "error", err)
-		case n > 0:
-			r.Logger.DebugContext(ctx, "outbox relay: published", "count", n)
-		}
+		r.log(ctx, res, err)
 		if ctx.Err() != nil {
 			return nil
 		}
-		if err == nil && n == r.BatchSize {
+		if err == nil && res.Retry == 0 && res.Published+len(res.Parked) == r.BatchSize {
 			continue // còn tồn đọng: đọc lô tiếp ngay
 		}
 		if time.Since(lastPurge) >= purgeEvery {
@@ -86,5 +97,23 @@ func (r *Relay) Run(ctx context.Context) error {
 			return nil
 		case <-time.After(r.PollInterval):
 		}
+	}
+}
+
+func (r *Relay) log(ctx context.Context, res Result, err error) {
+	if err != nil {
+		r.Logger.WarnContext(ctx, "outbox relay: batch failed, will retry", "error", err)
+		return
+	}
+	if len(res.Parked) > 0 {
+		// Cần người xử lý: consumer sẽ không nhận các sự kiện này (xem docs/operations.md).
+		r.Logger.ErrorContext(ctx, "outbox relay: parked messages the broker rejected permanently",
+			"count", len(res.Parked), "ids", res.Parked, "error", res.Err)
+	}
+	if res.Retry > 0 {
+		r.Logger.WarnContext(ctx, "outbox relay: publish failed, will retry", "count", res.Retry, "error", res.Err)
+	}
+	if res.Published > 0 {
+		r.Logger.DebugContext(ctx, "outbox relay: published", "count", res.Published)
 	}
 }

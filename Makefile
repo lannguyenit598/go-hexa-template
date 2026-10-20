@@ -19,7 +19,7 @@ migrate: db-up ## Áp dụng migration PostgreSQL
 test: ## Unit test + test HTTP (không cần DB)
 	go test -race ./...
 
-test-integration: db-up ## Chạy thêm contract test trên PostgreSQL (sẽ TRUNCATE bảng users)
+test-integration: db-up ## Chạy thêm contract test trên PostgreSQL (sẽ TRUNCATE bảng users và outbox)
 	TEST_DATABASE_URL="$(DB_URL)" go test -race -count=1 ./...
 
 check: ## Mọi kiểm tra phải xanh trước khi commit: gofmt, go mod tidy, lint, test -race (gồm test PostgreSQL nếu có TEST_DATABASE_URL)

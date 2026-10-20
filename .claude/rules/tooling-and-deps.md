@@ -19,4 +19,4 @@ paths:
   - đổi module path thì phải đổi cả đường dẫn package trong các rule depguard (`grep -c github.com/example/userapi .golangci.yml` để đếm; bỏ sót thì rule âm thầm không còn tác dụng);
   - sau khi sửa rule depguard, thêm thử một file import vi phạm, xác nhận lint bắt được, rồi xoá file đó. File thử phải import một package **có thật** (package không tồn tại làm typecheck lỗi trước, depguard không chạy);
   - `forbidigo` và `gochecknoglobals` chỉ áp dụng cho `internal/core` (exclusion `path-except`); đó là phạm vi của quy tắc, không phải ngoại lệ để vượt lint.
-- CI chạy trên PR vào `main` và khi push lên `main`; không có job nào được phép đỏ khi merge.
+- CI chạy trên mọi PR và khi push lên `main`; không có job nào được phép đỏ khi merge.

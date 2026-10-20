@@ -48,6 +48,8 @@ func TestLoad_Errors(t *testing.T) {
 		{"READINESS_CHECK_DB": "maybe"},
 		{"TRUSTED_PROXIES": "10.0.0.0/8,not-a-cidr"},
 		{"EVENTS_SINK": "rabbitmq"},
+		// statement_timeout tính theo mili giây: giá trị nhỏ hơn 1ms sẽ thành 0, tức TẮT timeout của server.
+		{"DB_STATEMENT_TIMEOUT": "500us"},
 		// Outbox nằm trong PostgreSQL: phát sự kiện cần STORAGE=postgres.
 		{"EVENTS_SINK": "kafka", "KAFKA_BROKERS": "localhost:9092"},
 		{"EVENTS_SINK": "kafka", "STORAGE": "postgres", "DATABASE_URL": "postgres://x"},

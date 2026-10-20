@@ -103,7 +103,7 @@ api.http                     request mẫu
 ```bash
 make help               # liệt kê mọi lệnh
 make test               # unit + HTTP + lifecycle, không cần database
-make test-integration   # thêm test trên PostgreSQL thật (TRUNCATE bảng users trong DB của docker compose!)
+make test-integration   # thêm test trên PostgreSQL thật (TRUNCATE bảng users và outbox trong DB của docker compose!)
 make lint               # golangci-lint, gồm depguard kiểm tra quy tắc phụ thuộc
 make build              # build binary vào ./bin, kèm version từ git
 ```
@@ -130,7 +130,7 @@ Repo dùng module path giả là `github.com/example/userapi`. Để đổi sang
 NEW=github.com/<you>/userapi
 go mod edit -module $NEW
 # .golangci.yml chứa đường dẫn package trong các rule depguard: bỏ sót file này thì
-# lint vẫn xanh nhưng quy tắc phụ thuộc của kiến trúc âm thầm ngừng được kiểm tra.
+# lint báo lỗi sai ở core, còn các rule chặn import sai thì âm thầm ngừng hoạt động.
 grep -rl github.com/example/userapi --include='*.go' --include='.golangci.yml' . \
   | xargs sed -i "s#github.com/example/userapi#$NEW#g"
 go build ./... && go test ./... && golangci-lint run ./...

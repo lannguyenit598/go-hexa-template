@@ -322,3 +322,14 @@ func TestRunRelay_RefusesWhenEventsAreDisabled(t *testing.T) {
 		t.Fatalf("RunRelay = %v, want EVENTS_SINK error", err)
 	}
 }
+
+// Thêm hằng EventsSink mà quên nhánh trong newSink thì relay phải từ chối khởi động, trước cả khi
+// kết nối database.
+func TestRunRelay_RejectsUnknownSink(t *testing.T) {
+	cfg := mustConfig(t, nil)
+	cfg.Events.Sink = "rabbitmq"
+	err := app.RunRelay(context.Background(), cfg, quiet, app.Options{})
+	if err == nil || !strings.Contains(err.Error(), `unsupported events sink "rabbitmq"`) {
+		t.Fatalf("RunRelay = %v, want unsupported events sink", err)
+	}
+}

@@ -2,6 +2,9 @@ package kafka_test
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"errors"
 	"testing"
 	"time"
 
@@ -69,8 +72,10 @@ func TestSink_PublishesWithKeyAndHeaders(t *testing.T) {
 		{ID: "e2", Key: "u1", Type: "user.updated", Payload: []byte(`{"v":2}`)},
 		{ID: "e3", Key: "u2", Type: "user.registered", Payload: []byte(`{"v":1}`)},
 	}
-	if err := sink.Publish(ctx, msgs); err != nil {
-		t.Fatal(err)
+	for i, err := range sink.Publish(ctx, msgs) {
+		if err != nil {
+			t.Fatalf("message %d: %v", i, err)
+		}
 	}
 
 	recs := consumeAll(t, brokers, "users", len(msgs))
@@ -116,7 +121,53 @@ func TestSink_PublishFailsWhenBrokerIsDown(t *testing.T) {
 	t.Cleanup(sink.Close)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	if err := sink.Publish(ctx, []outbox.Message{{ID: "e1", Key: "u1", Payload: []byte(`{}`)}}); err == nil {
-		t.Fatal("Publish succeeded without a broker")
+	errs := sink.Publish(ctx, []outbox.Message{{ID: "e1", Key: "u1", Payload: []byte(`{}`)}})
+	if len(errs) != 1 || errs[0] == nil {
+		t.Fatalf("Publish without a broker = %v, want an error", errs)
+	}
+	// Broker không tới được là lỗi tạm thời: message phải được thử lại, không bị tách riêng.
+	if errors.Is(errs[0], outbox.ErrPermanent) {
+		t.Fatalf("broker down classified as permanent: %v", errs[0])
+	}
+}
+
+// Record bị broker từ chối vì nội dung (ở đây: lớn hơn message.max.bytes) là lỗi vĩnh viễn, và
+// không kéo theo các record khác trong cùng lô.
+func TestSink_ClassifiesRejectedRecordsAsPermanent(t *testing.T) {
+	c, err := kfake.NewCluster(kfake.NumBrokers(1), kfake.SeedTopics(1, "users"),
+		kfake.BrokerConfigs(map[string]string{"message.max.bytes": "3000"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(c.Close)
+	sink, err := kafka.NewSink(c.ListenAddrs(), "users")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(sink.Close)
+
+	// Dữ liệu ngẫu nhiên để nén không làm nó nhỏ lại dưới giới hạn. Cả ba record cùng partition nên
+	// thường đi chung một batch: broker từ chối cả batch, và sink phải tìm ra record thật sự lỗi.
+	random := make([]byte, 6000)
+	if _, err := rand.Read(random); err != nil {
+		t.Fatal(err)
+	}
+	big := []byte(`{"pad":"` + hex.EncodeToString(random) + `"}`)
+	errs := sink.Publish(context.Background(), []outbox.Message{
+		{ID: "ok1", Key: "u1", Payload: []byte(`{}`)},
+		{ID: "big", Key: "u2", Payload: big},
+		{ID: "ok2", Key: "u3", Payload: []byte(`{}`)},
+	})
+	if len(errs) != 3 {
+		t.Fatalf("got %d results for 3 messages", len(errs))
+	}
+	if errs[0] != nil || errs[2] != nil {
+		t.Fatalf("small messages failed: %v", errs)
+	}
+	if !errors.Is(errs[1], outbox.ErrPermanent) {
+		t.Fatalf("oversized message error = %v, want ErrPermanent", errs[1])
+	}
+	if recs := consumeAll(t, c.ListenAddrs(), "users", 2); len(recs) != 2 {
+		t.Fatalf("delivered %d records, want 2", len(recs))
 	}
 }

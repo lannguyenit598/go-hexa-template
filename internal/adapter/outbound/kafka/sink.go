@@ -5,10 +5,12 @@ package kafka
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"time"
 
+	"github.com/twmb/franz-go/pkg/kerr"
 	"github.com/twmb/franz-go/pkg/kgo"
 
 	"github.com/example/userapi/internal/outbox"
@@ -47,10 +49,13 @@ func (s *Sink) Ping(ctx context.Context) error {
 	return nil
 }
 
-// Publish gửi cả lô và chờ broker xác nhận mọi record. Key là ID của aggregate, nên mọi sự
-// kiện của một user nằm trên cùng partition, theo đúng thứ tự trong lô.
-func (s *Sink) Publish(ctx context.Context, msgs []outbox.Message) error {
+// Publish gửi cả lô và chờ broker trả kết quả cho từng record. Key là ID của aggregate, nên mọi
+// sự kiện của một user nằm trên cùng partition, theo đúng thứ tự trong lô. Record bị broker từ
+// chối vì nội dung được trả lỗi bọc outbox.ErrPermanent; lỗi khác (mạng, leader đổi, topic chưa
+// có, thiếu quyền) là tạm thời và sẽ được thử lại.
+func (s *Sink) Publish(ctx context.Context, msgs []outbox.Message) []error {
 	records := make([]*kgo.Record, len(msgs))
+	index := make(map[*kgo.Record]int, len(msgs))
 	for i, m := range msgs {
 		headers := []kgo.RecordHeader{
 			{Key: "event_id", Value: []byte(m.ID)},
@@ -65,11 +70,42 @@ func (s *Sink) Publish(ctx context.Context, msgs []outbox.Message) error {
 			headers = append(headers, kgo.RecordHeader{Key: k, Value: []byte(m.Headers[k])})
 		}
 		records[i] = &kgo.Record{Key: []byte(m.Key), Value: m.Payload, Headers: headers}
+		index[records[i]] = i
 	}
-	if err := s.client.ProduceSync(ctx, records...).FirstErr(); err != nil {
-		return fmt.Errorf("kafka produce: %w", err)
+	errs := make([]error, len(msgs))
+	var rejected []int
+	// ProduceSync trả kết quả theo thứ tự hoàn thành, không theo thứ tự gửi: ghép lại bằng record.
+	for _, r := range s.client.ProduceSync(ctx, records...) {
+		if r.Err == nil {
+			continue
+		}
+		i := index[r.Record]
+		errs[i] = fmt.Errorf("kafka produce: %w", r.Err)
+		if isPermanent(r.Err) {
+			rejected = append(rejected, i)
+		}
 	}
-	return nil
+	// Broker áp giới hạn kích thước lên cả batch, nên một record quá lớn kéo theo mọi record đi
+	// chung batch với nó. Gửi lại riêng từng record bị từ chối: chỉ record vẫn bị từ chối khi đứng
+	// một mình mới là lỗi vĩnh viễn.
+	for _, i := range rejected {
+		retry := &kgo.Record{Key: records[i].Key, Value: records[i].Value, Headers: records[i].Headers}
+		switch err := s.client.ProduceSync(ctx, retry).FirstErr(); {
+		case err == nil:
+			errs[i] = nil
+		case isPermanent(err):
+			errs[i] = fmt.Errorf("%w: kafka produce: %w", outbox.ErrPermanent, err)
+		default:
+			errs[i] = fmt.Errorf("kafka produce: %w", err)
+		}
+	}
+	return errs
+}
+
+// isPermanent: broker từ chối chính record này; gửi lại y nguyên cũng sẽ bị từ chối.
+func isPermanent(err error) bool {
+	return errors.Is(err, kerr.MessageTooLarge) || errors.Is(err, kerr.RecordListTooLarge) ||
+		errors.Is(err, kerr.InvalidRecord) || errors.Is(err, kerr.CorruptMessage)
 }
 
 // Close đóng kết nối tới broker.

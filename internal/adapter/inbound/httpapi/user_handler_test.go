@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
@@ -274,7 +275,9 @@ func TestETagAndIfMatch(t *testing.T) {
 	}
 
 	// Version cũ, weak ETag, rác: đều 412 và không ghi gì.
-	for _, ifMatch := range []string{`"1"`, `W/"2"`, `garbage`} {
+	// "+2" và "02" có cùng giá trị số với version hiện tại nhưng không phải ETag đã cấp: so sánh
+	// strong của RFC 9110 là so khớp từng ký tự.
+	for _, ifMatch := range []string{`"1"`, `W/"2"`, `garbage`, `"+2"`, `"02"`, `" 2"`} {
 		rec = api.doWithHeader(http.MethodPatch, path, `{"name":"Lost"}`, "If-Match", ifMatch)
 		expectStatus(t, rec, http.StatusPreconditionFailed)
 		if p := decode[problem](t, rec); p.Status != http.StatusPreconditionFailed {
@@ -334,9 +337,12 @@ func TestRequestBody_OnlyJSONIsAccepted(t *testing.T) {
 			})
 		}
 	}
-	rec = api.doWithHeader(http.MethodPost, "/api/v1/users", `{"email":"cs@example.com","name":"CS"}`,
-		"Content-Type", "application/json; charset=utf-8")
-	expectStatus(t, rec, http.StatusCreated)
+	// Media type không phân biệt hoa thường (RFC 9110); tham số như charset được chấp nhận.
+	for i, ct := range []string{"application/json; charset=utf-8", "Application/JSON", "APPLICATION/JSON;charset=UTF-8"} {
+		body := fmt.Sprintf(`{"email":"cs%d@example.com","name":"CS"}`, i)
+		rec = api.doWithHeader(http.MethodPost, "/api/v1/users", body, "Content-Type", ct)
+		expectStatus(t, rec, http.StatusCreated)
+	}
 }
 
 func TestRequestBody_BadRequestDetail(t *testing.T) {
