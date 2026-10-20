@@ -35,11 +35,13 @@ Giá trị thời gian dùng cú pháp Go: `500ms`, `10s`, `5m`, `1h30m`.
 Khi nhận SIGTERM, app:
 1. đánh dấu `/readyz` là 503, nhưng **vẫn phục vụ bình thường** trong `SHUTDOWN_DELAY`;
 2. đóng listener và chờ tối đa `SHUTDOWN_TIMEOUT` cho request đang chạy;
-3. đóng pool database, flush trace/metric, rồi thoát với code 0.
+3. đóng pool database, flush trace/metric (tối đa 5s, chỉ khi bật OpenTelemetry), rồi thoát với code 0.
+
+Nếu hết `SHUTDOWN_TIMEOUT` mà vẫn còn request chạy, app huỷ các request đó (log ghi status 499, client thấy kết nối bị đóng), đóng mọi kết nối, rồi thoát với **code 1** và log `userapi stopped with error` kèm `graceful shutdown: context deadline exceeded`. Exit code khác 0 là tín hiệu để điều chỉnh `SHUTDOWN_TIMEOUT` hoặc tìm request chạy quá lâu.
 
 Lý do phải chờ: Kubernetes gỡ pod khỏi Endpoints và cập nhật kube-proxy/ingress *bất đồng bộ* với SIGTERM. Đóng listener ngay sẽ gây 502 ở mỗi lần rolling deploy. Image distroless không có lệnh `sleep` cho `preStop` kiểu exec; Kubernetes 1.30+ có action `preStop.sleep` dựng sẵn, nhưng chờ trong app thì chạy được trên mọi nền tảng.
 
-Đặt `terminationGracePeriodSeconds` lớn hơn `SHUTDOWN_DELAY + SHUTDOWN_TIMEOUT` (ví dụ 5s + 10s, đặt 30s). Tín hiệu thứ hai (Ctrl+C lần nữa khi chạy local) kết thúc tiến trình ngay.
+Đặt `terminationGracePeriodSeconds` lớn hơn `SHUTDOWN_DELAY + SHUTDOWN_TIMEOUT + 5s` (5s cho việc flush telemetry; ví dụ 5s + 10s + 5s, đặt 30s). Tín hiệu thứ hai (Ctrl+C lần nữa khi chạy local) kết thúc tiến trình ngay.
 
 ### Timeout của HTTP server
 
@@ -159,6 +161,6 @@ Probe không bị trace. Trace context từ upstream (`traceparent`) được ti
 | 502 rải rác **bất kỳ lúc nào** | `HTTP_IDLE_TIMEOUT` nhỏ hơn idle timeout của LB | Đặt `HTTP_IDLE_TIMEOUT` lớn hơn của LB |
 | Nhiều 409 kèm log `user update hit a version conflict, retrying` | Nhiều request cùng sửa một user | Kiểm tra client có retry dồn dập hay xử lý trùng lặp không |
 | Nhiều 499 trong log | Client bỏ đi trước khi có response (thường do client timeout ngắn hơn latency) | Xem latency trên metric/trace; so với timeout phía client |
-| Nhiều 503 `request timed out` | Request vượt `REQUEST_TIMEOUT`, thường do database chậm hoặc pool cạn kết nối | Xem span chờ lấy kết nối của `otelpgx` và metric pool |
+| Nhiều 503 `request timed out` | Request vượt `REQUEST_TIMEOUT` hoặc câu SQL vượt `DB_STATEMENT_TIMEOUT` (log có `SQLSTATE 57014`), thường do database chậm, lock, hoặc pool cạn kết nối | Xem span chờ lấy kết nối của `otelpgx`, metric pool, và lock trong `pg_stat_activity` |
 | `remote_ip` trong log luôn là cùng một IP | Chưa đặt `TRUSTED_PROXIES` | Đặt bằng dải IP của LB/ingress |
 | Mọi pod cùng unready khi database chập chờn | Đã bật `READINESS_CHECK_DB` | Tắt, hoặc tăng `failureThreshold` (xem [Readiness](#readiness)) |

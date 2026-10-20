@@ -285,9 +285,88 @@ func TestETagAndIfMatch(t *testing.T) {
 		t.Fatalf("rejected update must not be applied: %+v", got)
 	}
 
+	// Header rỗng và danh sách nhiều ETag (kể cả khi có version hiện tại): 412, an toàn hơn là
+	// coi như không có If-Match và ghi đè vô điều kiện.
+	for _, ifMatch := range []string{``, `"2", "3"`} {
+		rec = api.doWithHeader(http.MethodPatch, path, `{"name":"Lost"}`, "If-Match", ifMatch)
+		expectStatus(t, rec, http.StatusPreconditionFailed)
+	}
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPatch, path, strings.NewReader(`{"name":"Lost"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Add("If-Match", `"2"`)
+	req.Header.Add("If-Match", `"3"`)
+	rec = httptest.NewRecorder()
+	api.h.ServeHTTP(rec, req)
+	expectStatus(t, rec, http.StatusPreconditionFailed)
+	if got := decode[user](t, api.do(http.MethodGet, path, "")); got.Name != "E2" || got.Version != 2 {
+		t.Fatalf("rejected update must not be applied: %+v", got)
+	}
+
 	// "*" và không có If-Match: không kiểm tra version.
 	expectStatus(t, api.doWithHeader(http.MethodPatch, path, `{"name":"E3"}`, "If-Match", "*"), http.StatusOK)
 	expectStatus(t, api.do(http.MethodPatch, path, `{"name":"E4"}`), http.StatusOK)
+}
+
+// Body chỉ nhận JSON: Echo BindBody còn nhận form và XML, khiến body bị bỏ qua âm thầm (422 khó hiểu).
+func TestRequestBody_OnlyJSONIsAccepted(t *testing.T) {
+	api := newAPI(t, nil)
+	rec := api.do(http.MethodPost, "/api/v1/users", `{"email":"ct@example.com","name":"CT"}`)
+	expectStatus(t, rec, http.StatusCreated)
+	userPath := "/api/v1/users/" + decode[user](t, rec).ID
+
+	contentTypes := map[string]string{
+		"missing":       "",
+		"form":          "application/x-www-form-urlencoded",
+		"multipart":     "multipart/form-data; boundary=x",
+		"xml":           "application/xml",
+		"text":          "text/plain",
+		"merge-patch":   "application/merge-patch+json",
+		"json-ish typo": "application/jsonx",
+	}
+	for name, ct := range contentTypes {
+		for _, tc := range []struct{ method, path, body string }{
+			{http.MethodPost, "/api/v1/users", "email=form@example.com&name=Form"},
+			{http.MethodPatch, userPath, `{"name":"Form"}`},
+		} {
+			t.Run(name+" "+tc.method, func(t *testing.T) {
+				rec := api.doWithHeader(tc.method, tc.path, tc.body, "Content-Type", ct)
+				expectStatus(t, rec, http.StatusUnsupportedMediaType)
+			})
+		}
+	}
+	rec = api.doWithHeader(http.MethodPost, "/api/v1/users", `{"email":"cs@example.com","name":"CS"}`,
+		"Content-Type", "application/json; charset=utf-8")
+	expectStatus(t, rec, http.StatusCreated)
+}
+
+func TestRequestBody_BadRequestDetail(t *testing.T) {
+	api := newAPI(t, nil)
+	tests := []struct{ name, body, detail string }{
+		{"syntax error", `{"email":`, "request body is not valid JSON"},
+		{"wrong field type", `{"email":5,"name":"X"}`, `field "email" has the wrong type`},
+		{"not an object", `["x"]`, "request body must be a JSON object"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := api.do(http.MethodPost, "/api/v1/users", tc.body)
+			expectStatus(t, rec, http.StatusBadRequest)
+			if p := decode[problem](t, rec); p.Detail != tc.detail {
+				t.Fatalf("detail = %q, want %q", p.Detail, tc.detail)
+			}
+		})
+	}
+}
+
+// Body quá giới hạn gửi theo kiểu chunked (không có Content-Length) vẫn phải là 413, không phải 400.
+func TestRequestBody_TooLargeWithoutContentLength(t *testing.T) {
+	api := newAPI(t, nil)
+	body := `{"email":"big@example.com","name":"` + strings.Repeat("a", 2<<20) + `"}`
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/v1/users", io.NopCloser(strings.NewReader(body)))
+	req.ContentLength = -1
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	api.h.ServeHTTP(rec, req)
+	expectStatus(t, rec, http.StatusRequestEntityTooLarge)
 }
 
 func TestRequestID_ClientValueIsSanitized(t *testing.T) {

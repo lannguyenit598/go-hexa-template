@@ -5,7 +5,7 @@ paths:
 
 # Adapter HTTP (`internal/adapter/inbound/httpapi`)
 
-- Handler mỏng: bind DTO → gọi `port.UserService` → map kết quả sang DTO. Không chứa logic nghiệp vụ, không import adapter outbound hay `internal/app`.
+- Handler mỏng: bind DTO bằng `bindJSON` (không dùng thẳng `echo.BindBody`: nó nhận cả form và XML) → gọi `port.UserService` → map kết quả sang DTO. Không chứa logic nghiệp vụ, không import adapter outbound hay `internal/app`.
 - Truyền thẳng giá trị thô (ví dụ `c.Param("id")`) vào inbound port; không tự dựng `domain.UserID`, `domain.Changes`.
 - DTO JSON (`userResponse`, `fieldError`…) nằm ở adapter, không thêm tag JSON vào kiểu domain.
 - Lỗi: handler chỉ `return err`; ánh xạ sang status nằm trong `toProblem` (`errors.go`). Ngoại lệ duy nhất hiện có: `update` trả 412 khi có `If-Match`. Mọi response lỗi phải là `application/problem+json`; lỗi 5xx không lộ chi tiết nội bộ.

@@ -106,7 +106,7 @@ Repository trả sentinel trần; service wrap kèm ngữ cảnh (`fmt.Errorf("u
 1. Tạo `internal/adapter/outbound/mysql`, hiện thực `port.UserRepository`.
 2. Viết test gọi `repotest.Run`. Adapter chỉ được coi là đúng khi vượt qua bộ contract test này.
 3. Trong `internal/config/config.go`, thêm hằng `StorageMySQL` và nhánh tương ứng trong phần validate `STORAGE`; nếu không, config sẽ từ chối giá trị mới.
-4. Trong `newRepository` (`internal/app/app.go`), thêm nhánh dựng adapter mới.
+4. Trong `newRepository` (`internal/app/app.go`), thêm nhánh dựng adapter mới. Quên bước này thì app từ chối khởi động với lỗi `unsupported storage "mysql"`.
 5. Thêm đường dẫn package mới vào danh sách deny của rule `outbound-adapters` trong `.golangci.yml`, để các adapter outbound khác không import nó.
 
 Không cần sửa dòng nào trong `internal/core`.
