@@ -9,19 +9,18 @@ import (
 func TestNextPurge(t *testing.T) {
 	now := time.Date(2026, 10, 21, 12, 0, 0, 0, time.UTC)
 	tests := []struct {
-		name    string
-		deleted int64
-		err     error
-		want    time.Time
+		name string
+		more bool
+		err  error
+		want time.Time
 	}{
-		{"failure retries after a minute", 0, errors.New("timeout"), now.Add(time.Minute)},
-		{"every chunk full continues next iteration", 10000, nil, now},
-		{"partial chunk waits an hour", 999, nil, now.Add(time.Hour)},
-		{"nothing deleted waits an hour", 0, nil, now.Add(time.Hour)},
+		{"failure retries after a minute", false, errors.New("timeout"), now.Add(time.Minute)},
+		{"rows remain continues next iteration", true, nil, now},
+		{"partial chunk or nothing deleted waits an hour", false, nil, now.Add(time.Hour)},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := nextPurge(now, tc.deleted, tc.err); !got.Equal(tc.want) {
+			if got := nextPurge(now, tc.more, tc.err); !got.Equal(tc.want) {
 				t.Fatalf("nextPurge = %v, want %v", got, tc.want)
 			}
 		})

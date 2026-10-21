@@ -124,6 +124,9 @@ func (r *Relay) Run(ctx context.Context) error {
 		// Before the backlog check: a backlog that never drains must not postpone purging forever.
 		if !time.Now().Before(nextDue) {
 			nextDue = r.purge(ctx)
+			if ctx.Err() != nil { // Shutdown during the purge: start no new batch.
+				return nil
+			}
 		}
 		if err == nil && res.Retry == 0 && res.Published+len(res.Parked) == r.BatchSize {
 			continue // Backlog remains: read the next batch immediately.
@@ -164,22 +167,26 @@ func (r *Relay) purge(ctx context.Context) time.Time {
 			break
 		}
 	}
+	more := total == purgeChunkSize*maxPurgeChunks
+	if err != nil && total > 0 && budgetCtx.Err() != nil && ctx.Err() == nil {
+		err, more = nil, true // The budget ran out after progress: rows remain, nothing failed.
+	}
 	if err != nil && ctx.Err() == nil {
 		r.Logger.WarnContext(ctx, "outbox relay: purge failed", "error", err)
 	}
 	if total > 0 {
 		r.Logger.InfoContext(ctx, "outbox relay: purged published messages", "count", total)
 	}
-	return nextPurge(time.Now(), total, err)
+	return nextPurge(time.Now(), more, err)
 }
 
-// nextPurge schedules the next purge turn: soon after a failure, at once while every chunk of
-// the turn was full (rows remain), otherwise after purgeEvery.
-func nextPurge(now time.Time, deleted int64, err error) time.Time {
+// nextPurge schedules the next purge turn: soon after a failure, at once while rows remain
+// (the turn ended on its chunk or time limit), otherwise after purgeEvery.
+func nextPurge(now time.Time, more bool, err error) time.Time {
 	switch {
 	case err != nil:
 		return now.Add(purgeRetryDelay)
-	case deleted == purgeChunkSize*maxPurgeChunks:
+	case more:
 		return now
 	default:
 		return now.Add(purgeEvery)
