@@ -42,20 +42,29 @@ Imports always point inward:
 - `service` imports only `domain` and `port`;
 - adapters import core; core never imports adapters.
 
-Only the composition root knows all components. `cmd/userapi/main.go` reads config, creates a logger (also setting the default for libraries), handles signals, and calls `app.Run`, `app.Migrate`, or `app.RunRelay`. `internal/app` wires adapters into core and manages the server lifecycle so it can be tested.
+Only the composition root knows all components. `cmd/userapi/main.go` reads config, creates a logger (also setting the default for libraries), handles signals, and calls `app.Run`, `app.Migrate`, or `app.RunRelay`. `internal/app` wires adapters into core with [Uber Fx](https://github.com/uber-go/fx) and manages the server lifecycle so it can be tested ([ADR-0001](adr/0001-adopt-uber-fx.md)). Only `internal/app` imports fx: core and adapters expose plain constructors, and `cmd` still owns signals and the exit code.
+
+Lifecycle order (fx runs `OnStart` hooks in registration order and `OnStop` in reverse):
+
+| Command | Start | Stop |
+|---|---|---|
+| `userapi` | telemetry → pool (ping, `MIGRATE_ON_START`, pending check) → HTTP listen/serve | drain HTTP (`/readyz` 503, `SHUTDOWN_DELAY`, `SHUTDOWN_TIMEOUT`) → close pool → flush telemetry |
+| `userapi relay` | telemetry → Kafka ping → pool → relay loop → health server | health server → relay loop → close pool → close Kafka client → flush telemetry |
+
+Resources open in `OnStart`, not in constructors, because fx stops only hooks that started. Start hooks that wait on the database or broker still abort when a signal arrives during startup. A runtime failure of the HTTP server or relay loop stops the app with an error.
 
 CI **automatically enforces** these rules through `depguard` (`.golangci.yml`); run `make lint` locally:
 
 | Rule | Constraint |
 |---|---|
 | `core` | `internal/core/**` imports only the standard library and `internal/core/...`, excluding `net/http`, `database/sql`, and `os` (HTTP, SQL, and environment access belong to adapters/composition root) |
-| `inbound-adapters` | No outbound adapters, `internal/app`, database packages (`pgx`, `database/sql`, `goose`, `otelpgx`), Kafka clients (`franz-go`), or `internal/outbox` |
-| `outbound-adapters` | No inbound adapters, Echo, other outbound adapters, shared `repotest`, or `internal/app` |
+| `inbound-adapters` | No outbound adapters, `internal/app`, database packages (`pgx`, `database/sql`, `goose`, `otelpgx`), Kafka clients (`franz-go`), `internal/outbox`, or fx/dig |
+| `outbound-adapters` | No inbound adapters, Echo, other outbound adapters, shared `repotest`, `internal/app`, or fx/dig |
 | `outbound-adapters-no-broker` | Outbound adapters except `kafka` cannot import `franz-go`: events go through the outbox, never direct publishing |
 | `outbox` | `internal/outbox` uses only the standard library: no database, broker, or domain |
-| `platform` | `internal/config` and `internal/observability` cannot import core, adapters, `internal/outbox`, or `internal/app` |
-| `cmd` | `cmd/**` cannot import adapters, core, `pgx`, `goose`, Echo, or `franz-go`: wiring belongs in `internal/app` |
-| `everything-else` | All remaining packages, including `internal/outbox` and new packages such as `internal/worker`, cannot import adapters, `internal/app`, `pgx`, `goose`, Echo, or `franz-go`. New package categories needing access require their own rule |
+| `platform` | `internal/config` and `internal/observability` cannot import core, adapters, `internal/outbox`, `internal/app`, or fx/dig |
+| `cmd` | `cmd/**` cannot import adapters, core, `pgx`, `goose`, Echo, `franz-go`, or fx/dig: wiring belongs in `internal/app` |
+| `everything-else` | All remaining packages, including `internal/outbox` and new packages such as `internal/worker`, cannot import adapters, `internal/app`, `pgx`, `goose`, Echo, `franz-go`, or fx/dig. New package categories needing access require their own rule |
 
 Rules exclude `*_test.go` because tests may use adapters as test doubles (such as memory repositories in service tests). Reverse imports *inside* core (`domain` ← `port` ← `service`) would create import cycles rejected by Go.
 
@@ -135,18 +144,18 @@ Then define domain event types, a `UnitOfWork` port ([example below](#extending-
 1. Create `internal/adapter/outbound/mysql` implementing `port.UserRepository`.
 2. Add tests calling `repotest.Run`; passing that contract suite is required.
 3. Add `StorageMySQL` and a corresponding STORAGE validation branch in `internal/config/config.go`, or config rejects it.
-4. Add the constructor branch in `newRepository` (`internal/app/app.go`), or startup fails with `unsupported storage "mysql"`.
+4. Add the provider branch in `storageModule` (`internal/app/app.go`), or startup fails with `unsupported storage "mysql"`.
 5. Add its package path to the `outbound-adapters` deny list in `.golangci.yml` so other adapters cannot import it.
 
 No changes to `internal/core` are needed.
 
-**Add a transport**, such as gRPC: create `internal/adapter/inbound/grpcapi` accepting `port.UserService`; map core errors (`port.ErrNotFound` → `codes.NotFound`, `domain.ErrEmailAlreadyExists` → `codes.AlreadyExists`, `port.ErrVersionConflict` → `codes.Aborted`, `domain.ValidationError` → `codes.InvalidArgument`), then start it alongside HTTP in `app.Run`.
+**Add a transport**, such as gRPC: create `internal/adapter/inbound/grpcapi` accepting `port.UserService`; map core errors (`port.ErrNotFound` → `codes.NotFound`, `domain.ErrEmailAlreadyExists` → `codes.AlreadyExists`, `port.ErrVersionConflict` → `codes.Aborted`, `domain.ValidationError` → `codes.InvalidArgument`), then provide it in `apiGraph` (`internal/app/app.go`) with `OnStart`/`OnStop` hooks, as `newHTTPServer` does.
 
-**Add a broker**, such as RabbitMQ/SQS: implement `outbox.Sink`, add EventsSink and validation in `internal/config/config.go`, wire `newSink` in `internal/app/relay.go` (otherwise startup reports `unsupported events sink`), and update `outbound-adapters` and `outbound-adapters-no-broker` rules. Require STORAGE=postgres as Kafka does; otherwise memory mode silently omits events. Return per-message errors, wrapping ErrPermanent only for rejected message content. Payloads/headers pass through unchanged; adapters need no event-schema knowledge.
+**Add a broker**, such as RabbitMQ/SQS: implement `outbox.Sink`, add EventsSink and validation in `internal/config/config.go`, wire `sinkModule` in `internal/app/relay.go` (otherwise startup reports `unsupported events sink`), and update `outbound-adapters` and `outbound-adapters-no-broker` rules. Require STORAGE=postgres as Kafka does; otherwise memory mode silently omits events. Return per-message errors, wrapping ErrPermanent only for rejected message content. Payloads/headers pass through unchanged; adapters need no event-schema knowledge.
 
 **Consume commands from messages:** add an inbound adapter such as `internal/adapter/inbound/kafkaconsumer` calling `port.UserService`; map validation errors to dead-letter and timeouts/connection errors to retries. Existing use cases expose duplicate-command outcomes: create → ErrEmailAlreadyExists, versioned update → ErrVersionConflict, delete → ErrNotFound. Commit offsets after processing. Add a dedicated depguard rule because `inbound-adapters` bans franz-go.
 
-**Read caching**, only if measurements justify it: a Redis decorator implements `port.UserRepository`, wraps storage in `newRepository`, and passes `repotest.Run`. Cache only GetByID; invalidate after successful Update/Delete **and Update returning ErrVersionConflict**, or service retries keep reading stale values and produce false 409s. On Redis failure, read the database; do not add Redis to readiness.
+**Read caching**, only if measurements justify it: a Redis decorator implements `port.UserRepository`, wraps storage in `storageModule` (or `fx.Decorate`), and passes `repotest.Run`. Cache only GetByID; invalidate after successful Update/Delete **and Update returning ErrVersionConflict**, or service retries keep reading stale values and produce false 409s. On Redis failure, read the database; do not add Redis to readiness.
 
 **Add a use case**, such as lookup by email:
 1. Add a primitive-input method to `port.UserService`.

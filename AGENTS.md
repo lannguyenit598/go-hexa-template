@@ -35,7 +35,7 @@ Before editing or creating a file, read every rule whose paths match it.
 - Inbound ports (`port.UserService`) accept primitives (`string`, `*string`, `int`, `int64`); services convert and validate domain types. Results may use domain types.
 - Errors: business rules in `domain` (`ValidationError`, `ErrEmailAlreadyExists`); shared use-case outcomes in `port` (`ErrNotFound`, `ErrVersionConflict`). Repositories return bare sentinels; services wrap context (`fmt.Errorf("get user: %w", err)`). Compare with `errors.Is`/`errors.As`. Core does not know HTTP status codes.
 - No global core state: inject loggers, clocks, and ID generators through constructors/ports (`forbidigo` and `gochecknoglobals` enforce this in `internal/core`).
-- Only the composition root knows adapters: `internal/app` wires them; `cmd/userapi` calls only `internal/app`. Unclassified new packages use depguard `everything-else`, which forbids adapter imports.
+- Only the composition root knows adapters: `internal/app` wires them with Uber Fx (the only package importing fx); `cmd/userapi` calls only `internal/app`. Unclassified new packages use depguard `everything-else`, which forbids adapter imports.
 
 ## Conventions
 

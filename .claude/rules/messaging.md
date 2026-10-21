@@ -17,5 +17,5 @@ paths:
 - Event headers carry only trace context (`propagation.TraceContext`), not the global propagator, which includes client-controlled Baggage.
 - `Sink.Publish` returns per-message errors. Wrap `outbox.ErrPermanent` only when the broker rejects that message's content or size; network, topic, and permission errors are temporary. Misclassification can wrongly park events or block progress indefinitely.
 - Schema (`docs/events.md`): only add fields within one `schema_version`. Renaming, changing types, or removing fields requires a version bump. Update `docs/events.md` in the same commit for schema or event-type changes.
-- `internal/outbox` knows only `Source`/`Sink` and uses only the standard library (depguard `outbox`): no adapters, `pgx`, `franz-go`, or domain imports. A new broker needs an `outbox.Sink` adapter and a `newSink` branch in `internal/app/relay.go`.
+- `internal/outbox` knows only `Source`/`Sink` and uses only the standard library (depguard `outbox`): no adapters, `pgx`, `franz-go`, or domain imports. A new broker needs an `outbox.Sink` adapter and a `sinkModule` branch in `internal/app/relay.go`.
 - Kafka tests use in-memory `kfake`, not a real broker. PostgreSQL outbox tests use `pgtest.FreshSchemaDSN` and migrate their own schema.
