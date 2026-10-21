@@ -160,7 +160,7 @@ Old and new pods share the new schema during rollout; migrations must remain bac
 |---|---|
 | Add column | Nullable or with DEFAULT, as in 0002_add_users_version.sql |
 | Rename/remove column | Add new → deploy dual-write → backfill → deploy new-only reads → remove old in a later deployment |
-| Index large table | CREATE INDEX CONCURRENTLY in a separate file with -- +goose NO TRANSACTION; CONCURRENTLY cannot run in a transaction |
+| Index large table | CREATE INDEX CONCURRENTLY in a separate file with -- +goose NO TRANSACTION; CONCURRENTLY cannot run in a transaction. Replacing an index: create the new one, then drop the old one CONCURRENTLY in another file (0005/0006) |
 | Add NOT NULL / foreign key | ADD CONSTRAINT ... NOT VALID, then VALIDATE CONSTRAINT in a separate migration |
 
 ## Event publishing

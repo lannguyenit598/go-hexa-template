@@ -732,3 +732,31 @@ func TestOutboxSource_PurgeChunkTimeoutKeepsEarlierChunks(t *testing.T) {
 		t.Fatalf("published rows = %d, want the 2 the failed chunk rolled back", n)
 	}
 }
+
+// Parked rows are never purged and are the oldest unpublished rows: the pending index excludes
+// them so the relay's pending query does not walk past them on every poll.
+func TestMigrations_PendingIndexExcludesParkedRows(t *testing.T) {
+	pool := freshPool(t)
+	rows, err := pool.Query(context.Background(), `SELECT indexname, indexdef FROM pg_indexes WHERE tablename = 'outbox' AND schemaname = current_schema()`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defs, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) ([2]string, error) {
+		var d [2]string
+		return d, r.Scan(&d[0], &d[1])
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	byName := map[string]string{}
+	for _, d := range defs {
+		byName[d[0]] = d[1]
+	}
+	def, ok := byName["outbox_pending_idx"]
+	if !ok || !strings.Contains(def, "published_at IS NULL") || !strings.Contains(def, "parked_at IS NULL") {
+		t.Fatalf("outbox_pending_idx = %q (exists %v), want a partial index excluding published and parked rows", def, ok)
+	}
+	if _, ok := byName["outbox_unpublished_idx"]; ok {
+		t.Fatal("outbox_unpublished_idx still exists")
+	}
+}
