@@ -102,13 +102,22 @@ func (q *Queries) ParkOutboxEvent(ctx context.Context, arg ParkOutboxEventParams
 }
 
 const purgePublishedOutboxEvents = `-- name: PurgePublishedOutboxEvents :execrows
-DELETE FROM outbox WHERE published_at < $1::timestamptz
+DELETE FROM outbox WHERE id IN (
+  SELECT id FROM outbox WHERE published_at < $1::timestamptz
+  ORDER BY published_at LIMIT $2::bigint
+)
 `
+
+type PurgePublishedOutboxEventsParams struct {
+	Before  time.Time
+	MaxRows int64
+}
 
 // Parked and unpublished rows have a NULL published_at and are never purged. The casts keep
 // parameters non-nullable: the columns are nullable, so sqlc would otherwise use pgtype types.
-func (q *Queries) PurgePublishedOutboxEvents(ctx context.Context, before time.Time) (int64, error) {
-	result, err := q.db.Exec(ctx, purgePublishedOutboxEvents, before)
+// At most max_rows per call keeps each DELETE short; the relay repeats it in bounded turns.
+func (q *Queries) PurgePublishedOutboxEvents(ctx context.Context, arg PurgePublishedOutboxEventsParams) (int64, error) {
+	result, err := q.db.Exec(ctx, purgePublishedOutboxEvents, arg.Before, arg.MaxRows)
 	if err != nil {
 		return 0, err
 	}

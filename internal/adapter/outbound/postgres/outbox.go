@@ -151,8 +151,8 @@ func (s *OutboxSource) Process(ctx context.Context, limit int, publish func(cont
 	return res, nil
 }
 
-func (s *OutboxSource) Purge(ctx context.Context, before time.Time) (int64, error) {
-	n, err := s.queries.PurgePublishedOutboxEvents(ctx, before)
+func (s *OutboxSource) Purge(ctx context.Context, before time.Time, limit int) (int64, error) {
+	n, err := s.queries.PurgePublishedOutboxEvents(ctx, sqlcgen.PurgePublishedOutboxEventsParams{Before: before, MaxRows: int64(limit)})
 	if err != nil {
 		return 0, fmt.Errorf("outbox purge: %w", err)
 	}

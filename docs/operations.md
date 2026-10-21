@@ -187,7 +187,7 @@ Enable EVENTS_SINK=kafka with STORAGE=postgres and KAFKA_BROKERS, configured **i
 - **Shutdown:** SIGTERM finishes the active batch, logs `outbox relay stopped`, and exits with code 0.
 - **Topic:** the relay does not create topics. Provision cleanup.policy=delete and a retention period covering consumer recovery (for example 7 days for a weekend outage), with partitions sized for consumer parallelism. Events omit email/name; assess identifier retention under the project's own requirements.
 - **DB permissions:** relay uses the app role, needing SELECT, UPDATE, DELETE on outbox, already granted by [default privileges](#database-permissions).
-- **Cleanup:** relay purges published rows older than OUTBOX_RETENTION at most hourly. Parked rows are retained.
+- **Cleanup:** relay purges published rows older than OUTBOX_RETENTION in chunks of 1000 rows, at most 10 chunks or 5s per turn, so cleanup never takes over publishing. While rows remain, the next turn runs on the next loop iteration; otherwise after an hour. A failed purge (WARN `outbox relay: purge failed`) is retried after 1 minute. Parked rows are retained.
 - **Permanent rejections** (oversized/invalid records): retry the record alone; if still rejected, set parked_at and last_error, log ERROR `outbox relay: parked messages the broker rejected permanently` with IDs, and continue. Network, missing-topic, and permission errors are **temporary** and keep retrying. Fix the cause (such as topic max.message.bytes), then requeue:
   ```sql
   UPDATE outbox SET parked_at = NULL, last_error = NULL WHERE id = '<id from the log>';

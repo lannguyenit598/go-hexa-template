@@ -335,10 +335,10 @@ func TestOutboxSource_PurgeDeletesOnlyPublished(t *testing.T) {
 	if err := repo.Create(ctx, newUser(t, userB, "b@example.com")); err != nil { // Not yet published.
 		t.Fatal(err)
 	}
-	if n, err := src.Purge(ctx, time.Now().Add(-time.Hour)); err != nil || n != 0 {
+	if n, err := src.Purge(ctx, time.Now().Add(-time.Hour), 1000); err != nil || n != 0 {
 		t.Fatalf("purge before publish time: n=%d err=%v, want 0", n, err)
 	}
-	if n, err := src.Purge(ctx, time.Now().Add(time.Second)); err != nil || n != 1 {
+	if n, err := src.Purge(ctx, time.Now().Add(time.Second), 1000); err != nil || n != 1 {
 		t.Fatalf("purge: n=%d err=%v, want 1", n, err)
 	}
 	if rows := outboxRows(t, pool); len(rows) != 1 || rows[0].AggregateID != userB {
@@ -407,7 +407,7 @@ func TestOutboxSource_MarksEachMessageByItsOwnResult(t *testing.T) {
 	if fmt.Sprint(keys) != "["+userC+"]" {
 		t.Fatalf("second batch %v, want only the retried message", keys)
 	}
-	if n, err := src.Purge(ctx, time.Now().Add(time.Hour)); err != nil || n != 2 {
+	if n, err := src.Purge(ctx, time.Now().Add(time.Hour), 1000); err != nil || n != 2 {
 		t.Fatalf("purge = %d, %v; want the 2 published rows, not the parked one", n, err)
 	}
 }
@@ -640,5 +640,95 @@ func TestUserRepository_CanceledContext(t *testing.T) {
 	}
 	if _, err := postgres.NewUserRepository(pool, true).GetByID(context.Background(), userA); !errors.Is(err, port.ErrNotFound) {
 		t.Fatalf("user written despite cancellation: %v", err)
+	}
+}
+
+// publishUsers creates n users and publishes their outbox rows.
+func publishUsers(t *testing.T, pool *pgxpool.Pool, n int) {
+	t.Helper()
+	ctx := context.Background()
+	repo := postgres.NewUserRepository(pool, true)
+	for i := range n {
+		id := fmt.Sprintf("01a15359-aa28-7a00-a380-c47e529061%02d", i)
+		if err := repo.Create(ctx, newUser(t, id, fmt.Sprintf("p%d@example.com", i))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := postgres.NewOutboxSource(pool).Process(ctx, 100, func(_ context.Context, msgs []outbox.Message) []error {
+		return allErr(msgs, nil)
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func countOutbox(t *testing.T, pool *pgxpool.Pool, where string) int {
+	t.Helper()
+	var n int
+	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM outbox WHERE `+where).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+// Purge deletes at most limit published rows per call; pending and parked rows always remain.
+func TestOutboxSource_PurgeDeletesAtMostLimit(t *testing.T) {
+	pool := freshPool(t)
+	ctx := context.Background()
+	publishUsers(t, pool, 3)
+	repo := postgres.NewUserRepository(pool, true)
+	if err := repo.Create(ctx, newUser(t, userA, "a@example.com")); err != nil { // Parked below.
+		t.Fatal(err)
+	}
+	src := postgres.NewOutboxSource(pool)
+	if _, err := src.Process(ctx, 10, func(_ context.Context, msgs []outbox.Message) []error {
+		return allErr(msgs, fmt.Errorf("MESSAGE_TOO_LARGE: %w", outbox.ErrPermanent))
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.Create(ctx, newUser(t, userB, "b@example.com")); err != nil { // Stays pending.
+		t.Fatal(err)
+	}
+	for _, want := range []int64{2, 1, 0} {
+		if n, err := src.Purge(ctx, time.Now().Add(time.Second), 2); err != nil || n != want {
+			t.Fatalf("purge = %d, %v; want %d", n, err, want)
+		}
+	}
+	if parked, pending := countOutbox(t, pool, "parked_at IS NOT NULL"), countOutbox(t, pool, "published_at IS NULL AND parked_at IS NULL"); parked != 1 || pending != 1 {
+		t.Fatalf("parked=%d pending=%d, want 1 and 1", parked, pending)
+	}
+}
+
+// A chunk that exceeds statement_timeout rolls back only itself: earlier chunks stay deleted.
+func TestOutboxSource_PurgeChunkTimeoutKeepsEarlierChunks(t *testing.T) {
+	dsn := pgtest.FreshSchemaDSN(t)
+	ctx := context.Background()
+	if err := postgres.Migrate(ctx, dsn, slog.New(slog.DiscardHandler)); err != nil {
+		t.Fatal(err)
+	}
+	pool, err := postgres.Connect(ctx, dsn, postgres.PoolOptions{MaxConns: 4})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pool.Close)
+	publishUsers(t, pool, 4)
+	if n, err := postgres.NewOutboxSource(pool).Purge(ctx, time.Now().Add(time.Second), 2); err != nil || n != 2 {
+		t.Fatalf("first chunk = %d, %v; want 2", n, err)
+	}
+	if _, err := pool.Exec(ctx, `CREATE FUNCTION slow_delete() RETURNS trigger LANGUAGE plpgsql AS $$BEGIN PERFORM pg_sleep(0.1); RETURN OLD; END$$`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `CREATE TRIGGER slow_delete BEFORE DELETE ON outbox FOR EACH ROW EXECUTE FUNCTION slow_delete()`); err != nil {
+		t.Fatal(err)
+	}
+	slow, err := postgres.Connect(ctx, dsn, postgres.PoolOptions{MaxConns: 1, StatementTimeout: 50 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(slow.Close)
+	if _, err := postgres.NewOutboxSource(slow).Purge(ctx, time.Now().Add(time.Second), 2); err == nil || !strings.Contains(err.Error(), "57014") {
+		t.Fatalf("slow chunk error = %v, want statement timeout (57014)", err)
+	}
+	if n := countOutbox(t, pool, "published_at IS NOT NULL"); n != 2 {
+		t.Fatalf("published rows = %d, want the 2 the failed chunk rolled back", n)
 	}
 }
