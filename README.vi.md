@@ -21,9 +21,10 @@ Domain `user` là ví dụ minh hoạ đủ mọi tầng, không bắt buộc gi
 | Echo | `github.com/labstack/echo/v5` v5.4.0 |
 | Huma (operation có kiểu, OpenAPI 3.1) | `github.com/danielgtaylor/huma/v2` v2.39.1 |
 | PostgreSQL driver | `github.com/jackc/pgx/v5` v5.11.0 |
-| Migration | `github.com/pressly/goose/v3` v3.27.0 |
+| Migration | `github.com/pressly/goose/v3` v3.28.0 |
+| Dependency injection và lifecycle (chỉ `internal/app`) | `go.uber.org/fx` v1.24.0 |
 | Truy vấn SQL có kiểu (công cụ sinh mã, chạy qua `make`; không phải dependency của module) | sqlc v1.31.1 |
-| OpenTelemetry | `go.opentelemetry.io/otel` v1.46.0 |
+| OpenTelemetry | `go.opentelemetry.io/otel` v1.47.0 |
 | Kafka client | `github.com/twmb/franz-go` v1.22.1 |
 | PostgreSQL | 18 |
 
@@ -70,7 +71,7 @@ curl 'localhost:8080/api/v1/users?limit=10'
 
 File [`api.http`](api.http) có sẵn request mẫu cho REST Client (VS Code) hoặc HTTP Client (JetBrains).
 
-> Template **không có xác thực**. Đọc [operations.md › Xác thực](docs/operations.md#xác-thực) trước khi đưa lên môi trường thật.
+> Template **không có xác thực**. Đọc [operations.md › Authentication](docs/operations.md#authentication) trước khi đưa lên môi trường thật.
 
 ## Kiến trúc
 

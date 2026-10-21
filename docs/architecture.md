@@ -42,7 +42,7 @@ Imports always point inward:
 - `service` imports only `domain` and `port`;
 - adapters import core; core never imports adapters.
 
-Only the composition root knows all components. `cmd/userapi/main.go` reads config, creates a logger (also setting the default for libraries), handles signals, and calls `app.Run`, `app.Migrate`, or `app.RunRelay`. `internal/app` wires adapters into core with [Uber Fx](https://github.com/uber-go/fx) and manages the server lifecycle so it can be tested ([ADR-0001](adr/0001-adopt-uber-fx.md)). Only `internal/app` imports fx: core and adapters expose plain constructors, and `cmd` still owns signals and the exit code.
+Only the composition root knows all components. `cmd/userapi/main.go` reads config, creates a logger (also setting the default for libraries), handles signals, and calls `app.Run`, `app.Migrate`, or `app.RunRelay`. `internal/app` wires adapters into core with [Uber Fx](https://github.com/uber-go/fx) and manages the server lifecycle so it can be tested. Only `internal/app` imports fx: core and adapters expose plain constructors, and `cmd` still owns signals and the exit code.
 
 Lifecycle order (fx runs `OnStart` hooks in registration order and `OnStop` in reverse):
 

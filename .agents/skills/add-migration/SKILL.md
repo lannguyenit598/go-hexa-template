@@ -55,7 +55,7 @@ sqlc reads the migrations as its schema (Up sections only), so no other schema f
    ```bash
    S=down_check
    psql "$TEST_DATABASE_URL" -c "DROP SCHEMA IF EXISTS $S CASCADE; CREATE SCHEMA $S"
-   G="go run github.com/pressly/goose/v3/cmd/goose@v3.27.0 -dir internal/adapter/outbound/postgres/migrations postgres"
+   G="go run github.com/pressly/goose/v3/cmd/goose@v3.28.0 -dir internal/adapter/outbound/postgres/migrations postgres"
    DSN="$TEST_DATABASE_URL&search_path=$S"   # TEST_DATABASE_URL already contains '?'; append with '&'.
    $G "$DSN" up && $G "$DSN" down && $G "$DSN" up
    psql "$TEST_DATABASE_URL" -c "DROP SCHEMA $S CASCADE"

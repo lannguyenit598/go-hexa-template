@@ -21,9 +21,10 @@ The `user` domain is a worked example of every layer, not a requirement. Add you
 | Echo | `github.com/labstack/echo/v5` v5.4.0 |
 | Huma (typed operations, OpenAPI 3.1) | `github.com/danielgtaylor/huma/v2` v2.39.1 |
 | PostgreSQL driver | `github.com/jackc/pgx/v5` v5.11.0 |
-| Migrations | `github.com/pressly/goose/v3` v3.27.0 |
+| Migrations | `github.com/pressly/goose/v3` v3.28.0 |
+| Dependency injection and lifecycle (`internal/app` only) | `go.uber.org/fx` v1.24.0 |
 | Typed SQL queries (code generator, run through `make`; not a module dependency) | sqlc v1.31.1 |
-| OpenTelemetry | `go.opentelemetry.io/otel` v1.46.0 |
+| OpenTelemetry | `go.opentelemetry.io/otel` v1.47.0 |
 | Kafka client | `github.com/twmb/franz-go` v1.22.1 |
 | PostgreSQL | 18 |
 
