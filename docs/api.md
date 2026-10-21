@@ -170,5 +170,5 @@ Field error messages (`errors[].message`):
 | Field | Message |
 |---|---|
 | `email` | `is required`, `must be at most 254 characters`, `must be a valid email address` |
-| `name` | `is required`, `must be at most 100 characters` |
+| `name` | `is required`, `must not contain NUL characters`, `must be at most 100 characters` |
 | `offset` | `must be at most 10000` |

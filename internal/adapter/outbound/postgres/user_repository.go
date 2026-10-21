@@ -53,6 +53,10 @@ type PoolOptions struct {
 	// StatementTimeout sets the server-side statement_timeout to bound queries even after
 	// the client leaves (context cancellation does not always reach the server).
 	StatementTimeout time.Duration
+	// DefaultIdleInTransactionTimeout sets idle_in_transaction_session_timeout on each connection
+	// only when the server, role, database, and DSN leave it unset, so the server ends a transaction
+	// whose client vanished (releasing its row locks) without overriding deployment settings.
+	DefaultIdleInTransactionTimeout time.Duration
 }
 
 // Connect creates a pool and immediately checks connectivity.
@@ -91,6 +95,17 @@ func NewPool(ctx context.Context, dsn string, opts PoolOptions) (*pgxpool.Pool, 
 		cfg.ConnConfig.RuntimeParams["statement_timeout"] = strconv.FormatInt(opts.StatementTimeout.Milliseconds(), 10)
 	}
 	cfg.ConnConfig.RuntimeParams["application_name"] = "userapi"
+	if d := opts.DefaultIdleInTransactionTimeout; d > 0 {
+		// After connecting, not as a startup parameter: startup parameters override role and
+		// database settings, which must win over this default.
+		ms := strconv.FormatInt(d.Milliseconds(), 10)
+		cfg.AfterConnect = func(ctx context.Context, conn *pgx.Conn) error {
+			if err := sqlcgen.New(conn).SetDefaultIdleInTransactionTimeout(ctx, ms); err != nil {
+				return fmt.Errorf("set idle_in_transaction_session_timeout: %w", err)
+			}
+			return nil
+		}
+	}
 	// Trace each query (SQL only, NEVER parameter values that could leak personal data)
 	// and pool acquisition waits, exposing connection pool exhaustion in traces.
 	// Global providers make this a no-op when OpenTelemetry is disabled.

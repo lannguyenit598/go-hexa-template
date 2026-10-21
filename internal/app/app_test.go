@@ -480,8 +480,8 @@ func TestRun_HookOrder(t *testing.T) {
 	start, stop = runRecorded(t, "http://"+ln.Addr().String()+"/healthz", func(ctx context.Context, l *slog.Logger) error {
 		return app.Run(ctx, cfg, l, app.Options{Listener: ln})
 	})
-	expectOrder(t, "start", start, []string{"startTelemetry", "newPool", "newHTTPServer"})
-	expectOrder(t, "stop", stop, []string{"newHTTPServer", "newPool", "startTelemetry"})
+	expectOrder(t, "start", start, []string{"startTelemetry", "openPool", "newHTTPServer"})
+	expectOrder(t, "stop", stop, []string{"newHTTPServer", "openPool", "startTelemetry"})
 }
 
 // The broker is checked before the database; the relay loop stops before the pool and sink close.
@@ -500,8 +500,8 @@ func TestRunRelay_HookOrder(t *testing.T) {
 	start, stop := runRecorded(t, "http://"+health.Addr().String()+"/healthz", func(ctx context.Context, l *slog.Logger) error {
 		return app.RunRelay(ctx, cfg, l, app.Options{Listener: health})
 	})
-	expectOrder(t, "start", start, []string{"startTelemetry", "newKafkaSink", "newPool", "newRelay", "serveRelayHealth"})
-	expectOrder(t, "stop", stop, []string{"serveRelayHealth", "newRelay", "newPool", "newKafkaSink", "startTelemetry"})
+	expectOrder(t, "start", start, []string{"startTelemetry", "newKafkaSink", "openPool", "newRelay", "serveRelayHealth"})
+	expectOrder(t, "stop", stop, []string{"serveRelayHealth", "newRelay", "openPool", "newKafkaSink", "startTelemetry"})
 }
 
 // A signal during startup must abort steps waiting on the database (ping, goose lock retries),
@@ -536,4 +536,36 @@ func TestRun_ServesAPIDocsOnlyWhenEnabled(t *testing.T) {
 	base, _, _ = startApp(t, map[string]string{"API_DOCS_ENABLED": "true"}, 5*time.Second)
 	expectGET(t, base+"/openapi.json", http.StatusOK)
 	expectGET(t, base+"/docs", http.StatusOK)
+}
+
+// send issues a JSON request and returns the status and Location header.
+func send(t *testing.T, method, url, body string) (int, string) {
+	t.Helper()
+	req, err := http.NewRequestWithContext(context.Background(), method, url, strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	return resp.StatusCode, resp.Header.Get("Location")
+}
+
+// PostgreSQL TEXT cannot store U+0000: with postgres storage a NUL name is a 422, as in memory, not a 500.
+func TestRun_PostgresRejectsNULInName(t *testing.T) {
+	dsn := pgtest.FreshSchemaDSN(t) // Skip without TEST_DATABASE_URL.
+	base, _, _ := startApp(t, map[string]string{"STORAGE": "postgres", "DATABASE_URL": dsn, "MIGRATE_ON_START": "true"}, 15*time.Second)
+	if code, _ := send(t, http.MethodPost, base+"/api/v1/users", `{"email":"nul@example.com","name":"a\u0000b"}`); code != http.StatusUnprocessableEntity {
+		t.Fatalf("POST NUL name = %d, want 422", code)
+	}
+	code, loc := send(t, http.MethodPost, base+"/api/v1/users", `{"email":"ok@example.com","name":"Ok"}`)
+	if code != http.StatusCreated {
+		t.Fatalf("POST = %d, want 201", code)
+	}
+	if code, _ := send(t, http.MethodPatch, base+loc, `{"name":"a\u0000b"}`); code != http.StatusUnprocessableEntity {
+		t.Fatalf("PATCH NUL name = %d, want 422", code)
+	}
 }

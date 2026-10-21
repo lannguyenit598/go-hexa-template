@@ -160,21 +160,25 @@ Old and new pods share the new schema during rollout; migrations must remain bac
 |---|---|
 | Add column | Nullable or with DEFAULT, as in 0002_add_users_version.sql |
 | Rename/remove column | Add new → deploy dual-write → backfill → deploy new-only reads → remove old in a later deployment |
-| Index large table | CREATE INDEX CONCURRENTLY in a separate file with -- +goose NO TRANSACTION; CONCURRENTLY cannot run in a transaction |
+| Index large table | CREATE INDEX CONCURRENTLY in a separate file with -- +goose NO TRANSACTION; CONCURRENTLY cannot run in a transaction. Replacing an index: create the new one, then drop the old one CONCURRENTLY in another file (0005/0006) |
 | Add NOT NULL / foreign key | ADD CONSTRAINT ... NOT VALID, then VALIDATE CONSTRAINT in a separate migration |
 
 ## Event publishing
 
 userapi publishes user.registered / user.updated / user.deleted to Kafka through a transactional outbox. Consumer contract: [events.md](events.md).
 
-Enable EVENTS_SINK=kafka with STORAGE=postgres and KAFKA_BROKERS, configured **identically** for API and relay:
+Enable EVENTS_SINK=kafka with STORAGE=postgres and KAFKA_BROKERS, configured **identically** for API and relay.
+
+Turn events on before the service takes its first write, or during a write freeze. During a rolling change, instances still running with EVENTS_SINK=none commit changes without outbox rows, and those events never exist; consumers cannot recover them from version gaps ([consumer guarantees](events.md#consumer-guarantees)).
+
+Configuration per process:
 
 - **API:** adds an outbox row atomically with each user creation, update, or deletion. It does not connect to Kafka; broker outages do not break API writes.
 - **Relay:** run userapi relay as a separate Deployment using the **same image**:
   ```bash
   STORAGE=postgres DATABASE_URL=postgres://... EVENTS_SINK=kafka KAFKA_BROKERS=kafka-0:9092 userapi relay
   ```
-  Startup checks migration state and broker connectivity; an unreachable broker exits with code 1 (`kafka ping: unable to dial: ...`). Runtime broker failures log WARN `outbox relay: publish failed, will retry` and retry after polling without exiting. Broker acknowledgment waits are bounded to 20s per batch.
+  Startup checks migration state and broker connectivity; an unreachable broker exits with code 1 (`kafka ping: unable to dial: ...`). Runtime broker failures log WARN `outbox relay: publish failed, will retry` and retry after polling without exiting. Publishing a batch (the first send plus any individual re-sends of rejected records) is bounded to 25s; the whole batch, including marking results and committing, to 30s.
 - **Liveness:** GET /healthz on RELAY_HEALTH_ADDR returns 200 `{"status":"ok"}` while the loop progresses, or 503 `{"status":"stalled"}` after roughly a minute stalled (30s batch + OUTBOX_POLL_INTERVAL + 30s slack), allowing Kubernetes restart. No readiness probe is needed because relay accepts no traffic. Example:
   ```yaml
   livenessProbe:
@@ -184,10 +188,11 @@ Enable EVENTS_SINK=kafka with STORAGE=postgres and KAFKA_BROKERS, configured **i
   ```
 - **Authenticated Kafka** (MSK, Confluent Cloud, Aiven, Redpanda Cloud): enable KAFKA_TLS=true and configure KAFKA_SASL_MECHANISM and credentials. MSK uses SASL/SCRAM over TLS on port 9096; IAM authentication is not implemented. Invalid credentials fail startup with kafka ping errors.
 - **Replica count:** one relay handles most workloads and normally preserves per-user order. Concurrent replicas safely use FOR UPDATE SKIP LOCKED but can reorder a user's events; consumers must follow [the event contract](events.md#consumer-guarantees).
-- **Shutdown:** SIGTERM finishes the active batch, logs `outbox relay stopped`, and exits with code 0.
+- **Shutdown:** SIGTERM finishes the active batch (up to 30s), logs `outbox relay stopped`, and exits with code 0. Set terminationGracePeriodSeconds above that, for example 45s; this is a recommendation, not a proven bound, because closing the pool and the broker client has no deadline of its own. A relay killed mid-batch resends that batch on the next run (at-least-once).
 - **Topic:** the relay does not create topics. Provision cleanup.policy=delete and a retention period covering consumer recovery (for example 7 days for a weekend outage), with partitions sized for consumer parallelism. Events omit email/name; assess identifier retention under the project's own requirements.
+- **Idle transactions:** a batch holds its outbox row locks in a transaction while it publishes. The relay sets idle_in_transaction_session_timeout=60s on its connections, but only when the server, role, database, and DSN leave it unset, so PostgreSQL ends the transaction of a relay that vanished mid-batch (for example, a dropped network path) and releases those rows. How quickly a dead connection is otherwise detected depends on the network and TCP keepalive settings.
 - **DB permissions:** relay uses the app role, needing SELECT, UPDATE, DELETE on outbox, already granted by [default privileges](#database-permissions).
-- **Cleanup:** relay purges published rows older than OUTBOX_RETENTION at most hourly. Parked rows are retained.
+- **Cleanup:** relay purges published rows older than OUTBOX_RETENTION in chunks of 1000 rows, at most 10 chunks or 5s per turn, so cleanup never takes over publishing. While rows remain, the next turn runs on the next loop iteration; otherwise after an hour. A failed purge (WARN `outbox relay: purge failed`) is retried after 1 minute. Parked rows are retained.
 - **Permanent rejections** (oversized/invalid records): retry the record alone; if still rejected, set parked_at and last_error, log ERROR `outbox relay: parked messages the broker rejected permanently` with IDs, and continue. Network, missing-topic, and permission errors are **temporary** and keep retrying. Fix the cause (such as topic max.message.bytes), then requeue:
   ```sql
   UPDATE outbox SET parked_at = NULL, last_error = NULL WHERE id = '<id from the log>';

@@ -41,8 +41,9 @@ type Source interface {
 	// ErrPermanent, and leave other failures for retry. The returned error describes a failure
 	// of batch processing itself; per-message publish failures are reported in Result.
 	Process(ctx context.Context, limit int, publish func(context.Context, []Message) []error) (Result, error)
-	// Purge deletes messages published before before. Parked messages are retained.
-	Purge(ctx context.Context, before time.Time) (int64, error)
+	// Purge deletes at most limit messages published before before and returns how many it
+	// deleted. Parked messages are retained.
+	Purge(ctx context.Context, before time.Time, limit int) (int64, error)
 }
 
 // Sink sends messages to the broker. Publish returns one error per message in input order:
@@ -52,10 +53,20 @@ type Sink interface {
 }
 
 const (
-	// batchTimeout bounds a batch; shutdown signals do not cancel an active batch (see Run).
-	batchTimeout = 30 * time.Second
-	purgeEvery   = time.Hour
-	// healthSlack allows time for purge and scheduling delays in HealthThreshold.
+	// batchTimeout bounds a batch, publishing plus recording its results and committing; shutdown
+	// signals do not cancel an active batch (see Run). publishTimeout bounds publishing alone,
+	// leaving the rest for recording results, so a slow broker cannot expire the commit.
+	batchTimeout   = 30 * time.Second
+	publishTimeout = 25 * time.Second
+	purgeEvery     = time.Hour
+	// A purge turn deletes up to maxPurgeChunks chunks of purgeChunkSize rows within purgeBudget,
+	// so cleanup never takes over the loop; a larger backlog continues in the next iteration.
+	purgeChunkSize  = 1000
+	maxPurgeChunks  = 10
+	purgeBudget     = 5 * time.Second
+	purgeRetryDelay = time.Minute
+	// healthSlack allows time for purge (purgeBudget must fit inside it) and scheduling delays
+	// in HealthThreshold.
 	healthSlack = 30 * time.Second
 )
 
@@ -99,11 +110,11 @@ func (r *Relay) beat() { r.lastActivity.Store(time.Now().UnixNano()) }
 // An in-flight batch finishes during shutdown (up to batchTimeout): canceling midway can
 // leave delivered messages unmarked, causing redelivery on the next run.
 func (r *Relay) Run(ctx context.Context) error {
-	var lastPurge time.Time
+	var nextDue time.Time // Zero: purge after the first batch.
 	for {
 		r.beat()
 		batchCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), batchTimeout)
-		res, err := r.Source.Process(batchCtx, r.BatchSize, r.Sink.Publish)
+		res, err := r.Source.Process(batchCtx, r.BatchSize, r.publish)
 		cancel()
 		r.beat()
 		r.log(ctx, res, err)
@@ -111,12 +122,10 @@ func (r *Relay) Run(ctx context.Context) error {
 			return nil
 		}
 		// Before the backlog check: a backlog that never drains must not postpone purging forever.
-		if time.Since(lastPurge) >= purgeEvery {
-			lastPurge = time.Now()
-			if deleted, err := r.Source.Purge(ctx, lastPurge.Add(-r.Retention)); err != nil {
-				r.Logger.WarnContext(ctx, "outbox relay: purge failed", "error", err)
-			} else if deleted > 0 {
-				r.Logger.InfoContext(ctx, "outbox relay: purged published messages", "count", deleted)
+		if !time.Now().Before(nextDue) {
+			nextDue = r.purge(ctx)
+			if ctx.Err() != nil { // Shutdown during the purge: start no new batch.
+				return nil
 			}
 		}
 		if err == nil && res.Retry == 0 && res.Published+len(res.Parked) == r.BatchSize {
@@ -127,6 +136,60 @@ func (r *Relay) Run(ctx context.Context) error {
 			return nil
 		case <-time.After(r.PollInterval):
 		}
+	}
+}
+
+// publish bounds Sink.Publish by publishTimeout, ending at least batchTimeout-publishTimeout before
+// the batch deadline so recording results always keeps that reserve.
+func (r *Relay) publish(ctx context.Context, msgs []Message) []error {
+	deadline := time.Now().Add(publishTimeout)
+	if dl, ok := ctx.Deadline(); ok && dl.Add(publishTimeout-batchTimeout).Before(deadline) {
+		deadline = dl.Add(publishTimeout - batchTimeout)
+	}
+	ctx, cancel := context.WithDeadline(ctx, deadline)
+	defer cancel()
+	return r.Sink.Publish(ctx, msgs)
+}
+
+// purge runs one bounded turn and returns when the next turn is due.
+func (r *Relay) purge(ctx context.Context) time.Time {
+	budgetCtx, cancel := context.WithTimeout(ctx, purgeBudget)
+	defer cancel()
+	before := time.Now().Add(-r.Retention)
+	var total int64
+	var err error
+	for range maxPurgeChunks {
+		var n int64
+		n, err = r.Source.Purge(budgetCtx, before, purgeChunkSize)
+		r.beat()
+		total += n
+		if err != nil || n < purgeChunkSize {
+			break
+		}
+	}
+	more := total == purgeChunkSize*maxPurgeChunks
+	if err != nil && total > 0 && budgetCtx.Err() != nil && ctx.Err() == nil {
+		err, more = nil, true // The budget ran out after progress: rows remain, nothing failed.
+	}
+	if err != nil && ctx.Err() == nil {
+		r.Logger.WarnContext(ctx, "outbox relay: purge failed", "error", err)
+	}
+	if total > 0 {
+		r.Logger.InfoContext(ctx, "outbox relay: purged published messages", "count", total)
+	}
+	return nextPurge(time.Now(), more, err)
+}
+
+// nextPurge schedules the next purge turn: soon after a failure, at once while rows remain
+// (the turn ended on its chunk or time limit), otherwise after purgeEvery.
+func nextPurge(now time.Time, more bool, err error) time.Time {
+	switch {
+	case err != nil:
+		return now.Add(purgeRetryDelay)
+	case more:
+		return now
+	default:
+		return now.Add(purgeEvery)
 	}
 }
 

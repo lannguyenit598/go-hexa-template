@@ -42,6 +42,8 @@ func TestNewUser_Validation(t *testing.T) {
 		{"display-name form rejected", "Bob <bob@example.com>", "Bob", []string{"email"}},
 		{"name too long", "bob@example.com", strings.Repeat("x", 101), []string{"name"}},
 		{"unicode name at limit is ok", "bob@example.com", strings.Repeat("\u1eef", 100), nil},
+		{"NUL in name", "bob@example.com", "a\x00b", []string{"name"}},
+		{"name only NUL", "bob@example.com", "\x00", []string{"name"}},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -125,5 +127,22 @@ func TestEmailFromStore_DoesNotRevalidate(t *testing.T) {
 	// Legacy data must remain readable even when it fails current validation rules.
 	if got := domain.EmailFromStore("legacy-value").String(); got != "legacy-value" {
 		t.Fatalf("got %q", got)
+	}
+}
+
+// PostgreSQL TEXT cannot store U+0000: the domain rejects it so every adapter agrees.
+func TestNULInName_IsRejected(t *testing.T) {
+	const want = "must not contain NUL characters"
+	for _, name := range []string{"a\x00b", "\x00"} {
+		var ve *domain.ValidationError
+		if _, err := domain.NewUser(validID, "bob@example.com", name, t0); !errors.As(err, &ve) || ve.Fields[0].Message != want {
+			t.Errorf("NewUser(name %q) = %v, want %q", name, err, want)
+		}
+	}
+	u, _ := domain.NewUser(validID, "a@example.com", "A", t0)
+	bad := "a\x00b"
+	var ve *domain.ValidationError
+	if _, err := u.Apply(domain.Changes{Name: &bad}, t0.Add(time.Hour)); !errors.As(err, &ve) || ve.Fields[0].Message != want {
+		t.Errorf("Apply(name %q) = %v, want %q", bad, err, want)
 	}
 }

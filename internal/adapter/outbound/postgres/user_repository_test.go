@@ -161,3 +161,42 @@ func TestPendingMigrations_EmptySchema(t *testing.T) {
 		t.Fatalf("after migrate: pending=%v err=%v", pending, err)
 	}
 }
+
+// idleInTxTimeout reports idle_in_transaction_session_timeout on a pool connection.
+func idleInTxTimeout(t *testing.T, dsn string, def time.Duration) string {
+	t.Helper()
+	ctx := context.Background()
+	pool, err := postgres.Connect(ctx, dsn, postgres.PoolOptions{MaxConns: 1, DefaultIdleInTransactionTimeout: def})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	var v string
+	if err := pool.QueryRow(ctx, `SHOW idle_in_transaction_session_timeout`).Scan(&v); err != nil {
+		t.Fatal(err)
+	}
+	return v
+}
+
+// The relay's default releases locks held by a vanished client when the deployment sets no limit.
+func TestNewPool_DefaultsIdleInTransactionTimeout(t *testing.T) {
+	if got := idleInTxTimeout(t, pgtest.FreshSchemaDSN(t), 60*time.Second); got != "1min" {
+		t.Fatalf("idle_in_transaction_session_timeout = %q, want 1min", got)
+	}
+}
+
+// A value the deployment configured, even an explicit 0, wins over the default.
+func TestNewPool_KeepsExplicitIdleInTransactionTimeout(t *testing.T) {
+	for _, v := range []string{"0", "5s"} {
+		dsn := pgtest.FreshSchemaDSN(t) + "&idle_in_transaction_session_timeout=" + v
+		if got := idleInTxTimeout(t, dsn, 60*time.Second); got != v {
+			t.Errorf("explicit %s: idle_in_transaction_session_timeout = %q", v, got)
+		}
+	}
+}
+
+func TestNewPool_LeavesIdleInTransactionTimeoutUnsetByDefault(t *testing.T) {
+	if got := idleInTxTimeout(t, pgtest.FreshSchemaDSN(t), 0); got != "0" {
+		t.Fatalf("idle_in_transaction_session_timeout = %q, want 0", got)
+	}
+}

@@ -20,4 +20,8 @@ UPDATE outbox SET parked_at = now(), last_error = sqlc.arg(last_error)::text WHE
 -- name: PurgePublishedOutboxEvents :execrows
 -- Parked and unpublished rows have a NULL published_at and are never purged. The casts keep
 -- parameters non-nullable: the columns are nullable, so sqlc would otherwise use pgtype types.
-DELETE FROM outbox WHERE published_at < sqlc.arg(before)::timestamptz;
+-- At most max_rows per call keeps each DELETE short; the relay repeats it in bounded turns.
+DELETE FROM outbox WHERE id IN (
+  SELECT id FROM outbox WHERE published_at < sqlc.arg(before)::timestamptz
+  ORDER BY published_at LIMIT sqlc.arg(max_rows)::bigint
+);

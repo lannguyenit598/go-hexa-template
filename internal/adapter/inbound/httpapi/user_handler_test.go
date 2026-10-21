@@ -426,3 +426,33 @@ func TestAPIMiddleware_RunsOncePerAPIRequest(t *testing.T) {
 		}
 	}
 }
+
+func expectNameProblem(t *testing.T, rec *httptest.ResponseRecorder) {
+	t.Helper()
+	expectStatus(t, rec, http.StatusUnprocessableEntity)
+	if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "application/problem+json") {
+		t.Fatalf("Content-Type = %q", ct)
+	}
+	if p := decode[problem](t, rec); len(p.Errors) != 1 || p.Errors[0].Field != "name" {
+		t.Fatalf("errors = %+v, want one name error", p.Errors)
+	}
+}
+
+func TestCreate_RejectsNULInName(t *testing.T) {
+	api := newAPI(t, nil)
+	expectNameProblem(t, api.do(http.MethodPost, "/api/v1/users", `{"email":"nul@example.com","name":"a\u0000b"}`))
+}
+
+// A PATCH rejected for its name changes nothing, including the valid email in the same body.
+func TestUpdate_RejectsNULInName(t *testing.T) {
+	api := newAPI(t, nil)
+	rec := api.do(http.MethodPost, "/api/v1/users", `{"email":"old@example.com","name":"Old"}`)
+	expectStatus(t, rec, http.StatusCreated)
+	created := decode[user](t, rec)
+	expectNameProblem(t, api.do(http.MethodPatch, "/api/v1/users/"+created.ID, `{"email":"new@example.com","name":"a\u0000b"}`))
+	rec = api.do(http.MethodGet, "/api/v1/users/"+created.ID, "")
+	expectStatus(t, rec, http.StatusOK)
+	if got := decode[user](t, rec); got.Version != 1 || got.Email != "old@example.com" {
+		t.Fatalf("after rejected PATCH: %+v, want version 1 and the old email", got)
+	}
+}

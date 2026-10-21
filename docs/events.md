@@ -6,7 +6,7 @@ userapi publishes an event for each **successful** user creation, update, or del
 
 ## Flow
 
-1. The API writes the user change and outbox row **in one transaction**: both persist or neither does. A committed change cannot lack its event when events are enabled.
+1. The API writes the user change and outbox row **in one transaction**: both persist or neither does. Once **every** API instance runs with events enabled, a committed change cannot lack its event; changes committed by instances without `EVENTS_SINK` have none ([enabling events](operations.md#event-publishing)).
 2. `userapi relay` reads batches, publishes to Kafka, and marks delivered rows.
 3. During broker outages the API continues operating; events wait in the outbox until recovery.
 
@@ -58,6 +58,7 @@ Unchanged PATCHes and failed operations (404, 409, 412, 422) do not emit events.
 - **`version` increases by exactly 1 per user event:** registered starts at 1, updated increments by 1, deleted is last version + 1. Consumers can use it as follows:
   - version no greater than the user's last processed version: duplicate or stale; ignore;
   - version greater than last processed + 1: an intermediate event has not arrived (out of order or parked; see below). Fetch current state with `GET /api/v1/users/{user_id}`.
+  - Gaps only reveal missing events for users a consumer has heard of. Changes committed while events were only partly enabled produce no event at all: a user created, or created and deleted, in that window never appears to consumers.
 - **At-least-once delivery.** A relay can resend an event after crashing between broker acceptance and outbox marking. Deduplicate by version as above or by event_id.
 - **Per-user ordering.** A single relay sends events in commit order. Concurrent relays and partial batch rejections followed by retries can reorder events. Version-aware consumers discard late arrivals with smaller versions.
 - **Permanent broker rejections**, such as oversized records, are parked instead of blocking subsequent events. Consumers receive them only after operator intervention ([operations](operations.md#event-publishing)); version gaps reveal missing events.

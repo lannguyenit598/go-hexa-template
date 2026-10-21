@@ -53,7 +53,7 @@ func (s *memSource) Process(ctx context.Context, limit int, publish func(context
 	return res, nil
 }
 
-func (s *memSource) Purge(_ context.Context, before time.Time) (int64, error) {
+func (s *memSource) Purge(_ context.Context, before time.Time, _ int) (int64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.purges = append(s.purges, before)
@@ -315,4 +315,266 @@ func TestRelay_HealthFollowsLoopProgress(t *testing.T) {
 
 	close(release)
 	waitFor(t, func() bool { return r.LastActivity().After(stuckSince) })
+}
+
+// purgeFake records the order of Process ("P") and Purge ("G") calls; purge decides each Purge result.
+type purgeFake struct {
+	mu     sync.Mutex
+	events []string
+	limits []int
+	full   bool // Process reports full batches (a backlog), so Run reads the next batch at once.
+	purge  func(ctx context.Context, limit int) (int64, error)
+}
+
+func (s *purgeFake) Process(_ context.Context, limit int, _ func(context.Context, []outbox.Message) []error) (outbox.Result, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.events = append(s.events, "P")
+	if s.full {
+		return outbox.Result{Published: limit}, nil
+	}
+	return outbox.Result{}, nil
+}
+
+func (s *purgeFake) Purge(ctx context.Context, _ time.Time, limit int) (int64, error) {
+	s.mu.Lock()
+	s.events = append(s.events, "G")
+	s.limits = append(s.limits, limit)
+	s.mu.Unlock()
+	return s.purge(ctx, limit)
+}
+
+func (s *purgeFake) snapshot() (events []string, limits []int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.events...), append([]int(nil), s.limits...)
+}
+
+func countPurges(events []string) int {
+	n := 0
+	for _, e := range events {
+		if e == "G" {
+			n++
+		}
+	}
+	return n
+}
+
+// A backlog larger than one turn is purged in chunks across several turns, never more than
+// 10 chunks between two batches, so cleanup cannot take over the loop.
+func TestRelay_PurgeDrainsBacklogInBoundedTurns(t *testing.T) {
+	src := &purgeFake{purge: func(_ context.Context, limit int) (int64, error) { return int64(limit), nil }}
+	stop := runRelay(newRelay(src, sinkFunc(func(_ context.Context, m []outbox.Message) []error { return each(m, nil) })))
+	waitFor(t, func() bool { events, _ := src.snapshot(); return countPurges(events) > 10 })
+	if err := stop(); err != nil {
+		t.Fatal(err)
+	}
+	events, limits := src.snapshot()
+	for _, l := range limits {
+		if l != 1000 {
+			t.Fatalf("purge limit = %d, want 1000", l)
+		}
+	}
+	runs, run := 0, 0
+	for _, e := range events {
+		if e == "G" {
+			if run == 0 {
+				runs++
+			}
+			if run++; run > 10 {
+				t.Fatalf("more than 10 purge chunks between batches: %v", events)
+			}
+			continue
+		}
+		run = 0
+	}
+	if runs < 2 {
+		t.Fatalf("purge turns = %d, want a backlog to continue in a later turn: %v", runs, events)
+	}
+}
+
+// Each purge chunk is bounded by the 5s purge budget, and the loop beats after it.
+func TestRelay_PurgeRunsWithinBudgetAndBeats(t *testing.T) {
+	var (
+		mu       sync.Mutex
+		called   time.Time
+		deadline time.Time
+		hasDL    bool
+		before   time.Time
+	)
+	var r *outbox.Relay
+	src := &purgeFake{purge: func(ctx context.Context, _ int) (int64, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		if called.IsZero() {
+			called, before = time.Now(), r.LastActivity()
+			deadline, hasDL = ctx.Deadline()
+		}
+		return 0, errors.New("canceling statement due to statement timeout")
+	}}
+	r = newRelay(src, sinkFunc(func(_ context.Context, m []outbox.Message) []error { return each(m, nil) }))
+	stop := runRelay(r)
+	waitFor(t, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return !called.IsZero() && r.LastActivity().After(before)
+	})
+	if err := stop(); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if !hasDL || deadline.After(called.Add(5*time.Second+100*time.Millisecond)) {
+		t.Fatalf("purge deadline = %v (set %v), want at most 5s after %v", deadline, hasDL, called)
+	}
+}
+
+// A shutdown signal cancels a running purge chunk; Run returns without further purge attempts.
+func TestRelay_ShutdownDuringPurgeReturnsPromptly(t *testing.T) {
+	entered := make(chan struct{})
+	var once sync.Once
+	var seen error
+	src := &purgeFake{purge: func(ctx context.Context, _ int) (int64, error) {
+		once.Do(func() { close(entered) })
+		<-ctx.Done()
+		seen = ctx.Err()
+		return 0, ctx.Err()
+	}}
+	stop := runRelay(newRelay(src, sinkFunc(func(_ context.Context, m []outbox.Message) []error { return each(m, nil) })))
+	<-entered
+	if err := stop(); err != nil {
+		t.Fatal(err)
+	}
+	if events, _ := src.snapshot(); countPurges(events) != 1 {
+		t.Fatalf("purge calls = %d, want 1: %v", countPurges(events), events)
+	}
+	if !errors.Is(seen, context.Canceled) {
+		t.Fatalf("purge context error = %v, want context.Canceled", seen)
+	}
+}
+
+// deadlineSource records its own context deadline and the one its publish callback receives.
+type deadlineSource struct {
+	memSource
+	mu                 sync.Mutex
+	process, published time.Time
+}
+
+func (s *deadlineSource) Process(ctx context.Context, _ int, publish func(context.Context, []outbox.Message) []error) (outbox.Result, error) {
+	dl, _ := ctx.Deadline()
+	publish(ctx, messages(1))
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.process.IsZero() {
+		s.process = dl
+	}
+	return outbox.Result{}, nil
+}
+
+// Publishing gets at most 25s of the 30s batch, so marking and committing results keep at least 5s.
+func TestRelay_PublishLeavesTimeToRecordResults(t *testing.T) {
+	src := &deadlineSource{}
+	stop := runRelay(newRelay(src, sinkFunc(func(ctx context.Context, m []outbox.Message) []error {
+		dl, _ := ctx.Deadline()
+		src.mu.Lock()
+		if src.published.IsZero() {
+			src.published = dl
+		}
+		src.mu.Unlock()
+		return each(m, nil)
+	})))
+	waitFor(t, func() bool { src.mu.Lock(); defer src.mu.Unlock(); return !src.process.IsZero() })
+	if err := stop(); err != nil {
+		t.Fatal(err)
+	}
+	src.mu.Lock()
+	defer src.mu.Unlock()
+	if gap := src.process.Sub(src.published); gap < 5*time.Second {
+		t.Fatalf("batch deadline - publish deadline = %v, want at least 5s", gap)
+	}
+}
+
+// Shutdown during a purge must not start another batch, even while a backlog remains.
+func TestRelay_ShutdownDuringPurgeStartsNoNewBatch(t *testing.T) {
+	entered := make(chan struct{})
+	var once sync.Once
+	src := &purgeFake{full: true, purge: func(ctx context.Context, _ int) (int64, error) {
+		once.Do(func() { close(entered) })
+		<-ctx.Done()
+		return 0, ctx.Err()
+	}}
+	stop := runRelay(newRelay(src, sinkFunc(func(_ context.Context, m []outbox.Message) []error { return each(m, nil) })))
+	<-entered
+	if err := stop(); err != nil {
+		t.Fatal(err)
+	}
+	events, _ := src.snapshot()
+	if events[len(events)-1] != "G" {
+		t.Fatalf("events = %v, want no batch after the interrupted purge", events)
+	}
+}
+
+// warnRecorder captures WARN messages.
+type warnRecorder struct {
+	mu   sync.Mutex
+	msgs []string
+}
+
+func (w *warnRecorder) Enabled(context.Context, slog.Level) bool { return true }
+func (w *warnRecorder) Handle(_ context.Context, r slog.Record) error {
+	if r.Level >= slog.LevelWarn {
+		w.mu.Lock()
+		w.msgs = append(w.msgs, r.Message)
+		w.mu.Unlock()
+	}
+	return nil
+}
+func (w *warnRecorder) WithAttrs([]slog.Attr) slog.Handler { return w }
+func (w *warnRecorder) WithGroup(string) slog.Handler      { return w }
+
+// Running out of the purge budget after deleting rows means rows remain, not a failure: the next
+// turn runs on the next loop iteration, without a WARN or the 1-minute failure delay.
+func TestRelay_PurgeBudgetExhaustedAfterProgressContinuesNextIteration(t *testing.T) {
+	var mu sync.Mutex
+	calls := 0
+	src := &purgeFake{purge: func(ctx context.Context, limit int) (int64, error) {
+		mu.Lock()
+		calls++
+		n := calls
+		mu.Unlock()
+		switch {
+		case n <= 2:
+			return int64(limit), nil
+		case n == 3: // Slow chunk: still running when the 5s budget ends.
+			<-ctx.Done()
+			return 0, ctx.Err()
+		default:
+			return 0, nil
+		}
+	}}
+	warns := &warnRecorder{}
+	r := newRelay(src, sinkFunc(func(_ context.Context, m []outbox.Message) []error { return each(m, nil) }))
+	r.Logger = slog.New(warns)
+	stop := runRelay(r)
+	deadline := time.Now().Add(8 * time.Second) // Covers the 5s budget; far below the 1-minute delay.
+	for {
+		mu.Lock()
+		n := calls
+		mu.Unlock()
+		if n >= 4 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("purge calls = %d, want a next turn soon after the budget ran out", n)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if err := stop(); err != nil {
+		t.Fatal(err)
+	}
+	warns.mu.Lock()
+	defer warns.mu.Unlock()
+	if len(warns.msgs) != 0 {
+		t.Fatalf("warnings = %v, want none for an exhausted budget", warns.msgs)
+	}
 }
