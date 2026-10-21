@@ -1,4 +1,4 @@
-// Package httpapi is the inbound HTTP adapter using Echo v5.
+// Package httpapi is the inbound HTTP adapter: Echo v5 routes and middleware, Huma v2 typed operations and OpenAPI.
 // It depends on the inbound port (port.UserService), without knowing storage details.
 package httpapi
 
@@ -33,6 +33,9 @@ type Options struct {
 	// APIMiddleware applies to /api/v1 (not probes), for example authentication or rate limiting.
 	// This template has NO authentication: attach auth middleware here before production deployment.
 	APIMiddleware []echo.MiddlewareFunc
+	// APIDocs serves the generated OpenAPI 3.1 document at /openapi.json and SwaggerUI at /docs.
+	// These routes are public: APIMiddleware does not apply to them.
+	APIDocs bool
 }
 
 // probePaths bypass the request logger: probes run every few seconds on each pod,
@@ -86,11 +89,12 @@ func NewServer(users port.UserService, opts Options) *echo.Echo {
 
 	h := &userHandler{users: users}
 	v1 := e.Group("/api/v1", opts.APIMiddleware...)
-	v1.POST("/users", h.create)
-	v1.GET("/users", h.list)
-	v1.GET("/users/:id", h.get)
-	v1.PATCH("/users/:id", h.update)
-	v1.DELETE("/users/:id", h.delete)
+	api := newHumaAPI(e, v1, "/api/v1")
+	h.register(api)
+	removeUnusedSchemas(api)
+	if opts.APIDocs {
+		serveAPIDocs(e, api)
+	}
 
 	return e
 }

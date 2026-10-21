@@ -1,6 +1,6 @@
 # userapi: instructions for AI agents
 
-User-management REST API in Go 1.26 + Echo v5 with Hexagonal Architecture. References: `docs/architecture.md` (developers), `docs/api.md` (HTTP contract), `docs/events.md` (event contract), `docs/operations.md` (configuration and operations), and `docs/new-project.md` (using the template).
+User-management REST API in Go 1.26 + Echo v5 + Huma v2 (typed operations, generated OpenAPI) with Hexagonal Architecture. References: `docs/architecture.md` (developers), `docs/api.md` (HTTP contract), `docs/events.md` (event contract), `docs/operations.md` (configuration and operations), and `docs/new-project.md` (using the template).
 
 ## Commands
 

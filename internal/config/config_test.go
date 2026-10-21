@@ -20,7 +20,7 @@ func TestLoad_Defaults(t *testing.T) {
 	if cfg.HTTPAddr != ":8080" || cfg.Storage != config.StorageMemory || cfg.LogLevel != slog.LevelInfo || cfg.ShutdownTimeout != 10*time.Second {
 		t.Fatalf("defaults: %+v", cfg)
 	}
-	if cfg.ShutdownDelay != 0 || cfg.ReadinessCheckDB || len(cfg.TrustedProxies) != 0 || cfg.HTTPIdleTimeout != 75*time.Second {
+	if cfg.ShutdownDelay != 0 || cfg.ReadinessCheckDB || cfg.APIDocsEnabled || len(cfg.TrustedProxies) != 0 || cfg.HTTPIdleTimeout != 75*time.Second {
 		t.Fatalf("defaults: %+v", cfg)
 	}
 	if cfg.DB.MaxConns != 10 || cfg.DB.StatementTimeout != 5*time.Second || cfg.DB.MigrateOnStart {
@@ -46,6 +46,7 @@ func TestLoad_Errors(t *testing.T) {
 		{"DB_MAX_CONNS": "many"},
 		{"DB_MIN_CONNS": "20"},
 		{"READINESS_CHECK_DB": "maybe"},
+		{"API_DOCS_ENABLED": "yes"},
 		{"TRUSTED_PROXIES": "10.0.0.0/8,not-a-cidr"},
 		{"EVENTS_SINK": "rabbitmq"},
 		// statement_timeout uses milliseconds: values below 1ms become 0, DISABLING the server timeout.
@@ -128,5 +129,12 @@ func TestLoad_KafkaSecurity(t *testing.T) {
 	if !ev.KafkaTLS || ev.KafkaTLSCAFile != "/etc/kafka/ca.pem" || ev.KafkaSASLMechanism != "SCRAM-SHA-512" ||
 		ev.KafkaSASLUsername != "relay" || ev.KafkaSASLPassword != " pw " {
 		t.Fatalf("%+v", ev)
+	}
+}
+
+func TestLoad_APIDocsEnabled(t *testing.T) {
+	cfg, err := config.Load(env(map[string]string{"API_DOCS_ENABLED": "true"}))
+	if err != nil || !cfg.APIDocsEnabled {
+		t.Fatalf("APIDocsEnabled = %v, err = %v", cfg.APIDocsEnabled, err)
 	}
 }

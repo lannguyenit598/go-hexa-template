@@ -1,0 +1,1270 @@
+=== list is empty
+GET /api/v1/users
+X-Request-Id: contract-00
+
+
+--- 200 OK
+Content-Length: 53
+Content-Type: application/json
+X-Request-Id: contract-00
+
+{"data":[],"meta":{"limit":20,"offset":0,"total":0}}
+
+
+=== create normalizes email and name
+POST /api/v1/users
+Content-Type: application/json
+X-Request-Id: contract-01
+
+{"email":" Lan@Example.COM ","name":"  Lan \t  Nguyen ","role":"ignored"}
+--- 201 Created
+Content-Length: 190
+Content-Type: application/json
+Etag: "1"
+Location: /api/v1/users/01a15359-aa28-7a00-a380-000000000001
+X-Request-Id: contract-01
+
+{"id":"01a15359-aa28-7a00-a380-000000000001","email":"lan@example.com","name":"Lan Nguyen","created_at":"2026-10-19T08:49:07.624656Z","updated_at":"2026-10-19T08:49:07.624656Z","version":1}
+
+
+=== create escapes HTML characters
+POST /api/v1/users
+Content-Type: application/json
+X-Request-Id: contract-02
+
+{"email":"minh@example.com","name":"<b>Minh</b> & co"}
+--- 201 Created
+Content-Length: 212
+Content-Type: application/json
+Etag: "1"
+Location: /api/v1/users/01a15359-aa28-7a00-a380-000000000002
+X-Request-Id: contract-02
+
+{"id":"01a15359-aa28-7a00-a380-000000000002","email":"minh@example.com","name":"\u003cb\u003eMinh\u003c/b\u003e \u0026 co","created_at":"2026-10-19T08:49:07.5Z","updated_at":"2026-10-19T08:49:07.5Z","version":1}
+
+
+=== create duplicate email
+POST /api/v1/users
+Content-Type: application/json
+X-Request-Id: contract-03
+
+{"email":"LAN@example.com","name":"Again"}
+--- 409 Conflict
+Content-Length: 130
+Content-Type: application/problem+json
+X-Request-Id: contract-03
+
+{"type":"about:blank","title":"Conflict","status":409,"detail":"a user with this email already exists","instance":"/api/v1/users"}
+
+=== create validation
+POST /api/v1/users
+Content-Type: application/json
+X-Request-Id: contract-04
+
+{"email":"x","name":""}
+--- 422 Unprocessable Entity
+Content-Length: 242
+Content-Type: application/problem+json
+X-Request-Id: contract-04
+
+{"type":"about:blank","title":"Unprocessable Entity","status":422,"detail":"request failed validation","instance":"/api/v1/users","errors":[{"field":"email","message":"must be a valid email address"},{"field":"name","message":"is required"}]}
+
+=== create length limits count code points
+POST /api/v1/users
+Content-Type: application/json
+X-Request-Id: contract-05
+
+<582 bytes>
+--- 422 Unprocessable Entity
+Content-Length: 262
+Content-Type: application/problem+json
+X-Request-Id: contract-05
+
+{"type":"about:blank","title":"Unprocessable Entity","status":422,"detail":"request failed validation","instance":"/api/v1/users","errors":[{"field":"email","message":"must be at most 254 characters"},{"field":"name","message":"must be at most 100 characters"}]}
+
+=== create name of 100 multibyte code points
+POST /api/v1/users
+Content-Type: application/json
+X-Request-Id: contract-06
+
+<338 bytes>
+--- 201 Created
+Content-Length: 471
+Content-Type: application/json
+Etag: "1"
+Location: /api/v1/users/01a15359-aa28-7a00-a380-000000000006
+X-Request-Id: contract-06
+
+{"id":"01a15359-aa28-7a00-a380-000000000006","email":"long@example.com","name":"ếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếế","created_at":"2026-10-19T08:49:07.5Z","updated_at":"2026-10-19T08:49:07.5Z","version":1}
+
+
+=== create empty body
+POST /api/v1/users
+X-Request-Id: contract-07
+
+
+--- 422 Unprocessable Entity
+Content-Length: 224
+Content-Type: application/problem+json
+X-Request-Id: contract-07
+
+{"type":"about:blank","title":"Unprocessable Entity","status":422,"detail":"request failed validation","instance":"/api/v1/users","errors":[{"field":"email","message":"is required"},{"field":"name","message":"is required"}]}
+
+=== create empty chunked body
+POST /api/v1/users
+Content-Type: application/json
+X-Request-Id: contract-08
+
+
+--- 400 Bad Request
+Content-Length: 126
+Content-Type: application/problem+json
+X-Request-Id: contract-08
+
+{"type":"about:blank","title":"Bad Request","status":400,"detail":"request body is not valid JSON","instance":"/api/v1/users"}
+
+=== create empty object
+POST /api/v1/users
+Content-Type: application/json
+X-Request-Id: contract-09
+
+{}
+--- 422 Unprocessable Entity
+Content-Length: 224
+Content-Type: application/problem+json
+X-Request-Id: contract-09
+
+{"type":"about:blank","title":"Unprocessable Entity","status":422,"detail":"request failed validation","instance":"/api/v1/users","errors":[{"field":"email","message":"is required"},{"field":"name","message":"is required"}]}
+
+=== create null body
+POST /api/v1/users
+Content-Type: application/json
+X-Request-Id: contract-10
+
+null
+--- 422 Unprocessable Entity
+Content-Length: 224
+Content-Type: application/problem+json
+X-Request-Id: contract-10
+
+{"type":"about:blank","title":"Unprocessable Entity","status":422,"detail":"request failed validation","instance":"/api/v1/users","errors":[{"field":"email","message":"is required"},{"field":"name","message":"is required"}]}
+
+=== create malformed JSON
+POST /api/v1/users
+Content-Type: application/json
+X-Request-Id: contract-11
+
+{"email":
+--- 400 Bad Request
+Content-Length: 126
+Content-Type: application/problem+json
+X-Request-Id: contract-11
+
+{"type":"about:blank","title":"Bad Request","status":400,"detail":"request body is not valid JSON","instance":"/api/v1/users"}
+
+=== create wrong field type
+POST /api/v1/users
+Content-Type: application/json
+X-Request-Id: contract-12
+
+{"email":5,"name":"X"}
+--- 400 Bad Request
+Content-Length: 130
+Content-Type: application/problem+json
+X-Request-Id: contract-12
+
+{"type":"about:blank","title":"Bad Request","status":400,"detail":"field \"email\" has the wrong type","instance":"/api/v1/users"}
+
+=== create non-object body
+POST /api/v1/users
+Content-Type: application/json
+X-Request-Id: contract-13
+
+["x"]
+--- 400 Bad Request
+Content-Length: 130
+Content-Type: application/problem+json
+X-Request-Id: contract-13
+
+{"type":"about:blank","title":"Bad Request","status":400,"detail":"request body must be a JSON object","instance":"/api/v1/users"}
+
+=== create trailing data
+POST /api/v1/users
+Content-Type: application/json
+X-Request-Id: contract-14
+
+{"email":"t@example.com","name":"T"} {}
+--- 400 Bad Request
+Content-Length: 126
+Content-Type: application/problem+json
+X-Request-Id: contract-14
+
+{"type":"about:blank","title":"Bad Request","status":400,"detail":"request body is not valid JSON","instance":"/api/v1/users"}
+
+=== create without Content-Type
+POST /api/v1/users
+X-Request-Id: contract-15
+
+{"email":"n@example.com","name":"N"}
+--- 415 Unsupported Media Type
+Content-Length: 95
+Content-Type: application/problem+json
+X-Request-Id: contract-15
+
+{"type":"about:blank","title":"Unsupported Media Type","status":415,"instance":"/api/v1/users"}
+
+=== create text/plain
+POST /api/v1/users
+Content-Type: text/plain
+X-Request-Id: contract-16
+
+{"email":"n@example.com","name":"N"}
+--- 415 Unsupported Media Type
+Content-Length: 95
+Content-Type: application/problem+json
+X-Request-Id: contract-16
+
+{"type":"about:blank","title":"Unsupported Media Type","status":415,"instance":"/api/v1/users"}
+
+=== create merge-patch media type
+POST /api/v1/users
+Content-Type: application/merge-patch+json
+X-Request-Id: contract-17
+
+{}
+--- 415 Unsupported Media Type
+Content-Length: 95
+Content-Type: application/problem+json
+X-Request-Id: contract-17
+
+{"type":"about:blank","title":"Unsupported Media Type","status":415,"instance":"/api/v1/users"}
+
+=== create case-insensitive media type with parameter
+POST /api/v1/users
+Content-Type: APPLICATION/JSON;charset=UTF-8
+X-Request-Id: contract-18
+
+{"email":"case@example.com","name":"Case"}
+--- 201 Created
+Content-Length: 175
+Content-Type: application/json
+Etag: "1"
+Location: /api/v1/users/01a15359-aa28-7a00-a380-000000000010
+X-Request-Id: contract-18
+
+{"id":"01a15359-aa28-7a00-a380-000000000010","email":"case@example.com","name":"Case","created_at":"2026-10-19T08:49:07.5Z","updated_at":"2026-10-19T08:49:07.5Z","version":1}
+
+
+=== create body over 1 MiB
+POST /api/v1/users
+Content-Type: application/json
+X-Request-Id: contract-19
+
+<1048613 bytes>
+--- 413 Request Entity Too Large
+Content-Length: 97
+Content-Type: application/problem+json
+X-Request-Id: contract-19
+
+{"type":"about:blank","title":"Request Entity Too Large","status":413,"instance":"/api/v1/users"}
+
+=== create chunked body over 1 MiB
+POST /api/v1/users
+Content-Type: application/json
+X-Request-Id: contract-20
+
+<1048613 bytes>
+--- 413 Request Entity Too Large
+Content-Length: 97
+Content-Type: application/problem+json
+X-Request-Id: contract-20
+
+{"type":"about:blank","title":"Request Entity Too Large","status":413,"instance":"/api/v1/users"}
+
+=== create with Accept CBOR
+POST /api/v1/users
+Accept: application/cbor
+Content-Type: application/json
+X-Request-Id: contract-21
+
+{"email":"cbor@example.com","name":"Cbor"}
+--- 201 Created
+Content-Length: 175
+Content-Type: application/json
+Etag: "1"
+Location: /api/v1/users/01a15359-aa28-7a00-a380-000000000011
+X-Request-Id: contract-21
+
+{"id":"01a15359-aa28-7a00-a380-000000000011","email":"cbor@example.com","name":"Cbor","created_at":"2026-10-19T08:49:07.5Z","updated_at":"2026-10-19T08:49:07.5Z","version":1}
+
+
+=== list
+GET /api/v1/users
+X-Request-Id: contract-22
+
+
+--- 200 OK
+Content-Length: 1275
+Content-Type: application/json
+X-Request-Id: contract-22
+
+{"data":[{"id":"01a15359-aa28-7a00-a380-000000000002","email":"minh@example.com","name":"\u003cb\u003eMinh\u003c/b\u003e \u0026 co","created_at":"2026-10-19T08:49:07.5Z","updated_at":"2026-10-19T08:49:07.5Z","version":1},{"id":"01a15359-aa28-7a00-a380-000000000006","email":"long@example.com","name":"ếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếế","created_at":"2026-10-19T08:49:07.5Z","updated_at":"2026-10-19T08:49:07.5Z","version":1},{"id":"01a15359-aa28-7a00-a380-000000000010","email":"case@example.com","name":"Case","created_at":"2026-10-19T08:49:07.5Z","updated_at":"2026-10-19T08:49:07.5Z","version":1},{"id":"01a15359-aa28-7a00-a380-000000000011","email":"cbor@example.com","name":"Cbor","created_at":"2026-10-19T08:49:07.5Z","updated_at":"2026-10-19T08:49:07.5Z","version":1},{"id":"01a15359-aa28-7a00-a380-000000000001","email":"lan@example.com","name":"Lan Nguyen","created_at":"2026-10-19T08:49:07.624656Z","updated_at":"2026-10-19T08:49:07.624656Z","version":1}],"meta":{"limit":20,"offset":0,"total":5}}
+
+
+=== list with Accept text/html
+GET /api/v1/users?limit=1
+Accept: text/html
+X-Request-Id: contract-23
+
+
+--- 200 OK
+Content-Length: 263
+Content-Type: application/json
+X-Request-Id: contract-23
+
+{"data":[{"id":"01a15359-aa28-7a00-a380-000000000002","email":"minh@example.com","name":"\u003cb\u003eMinh\u003c/b\u003e \u0026 co","created_at":"2026-10-19T08:49:07.5Z","updated_at":"2026-10-19T08:49:07.5Z","version":1}],"meta":{"limit":1,"offset":0,"total":5}}
+
+
+=== list with Accept json
+GET /api/v1/users?limit=1
+Accept: json
+X-Request-Id: contract-24
+
+
+--- 200 OK
+Content-Length: 263
+Content-Type: application/json
+X-Request-Id: contract-24
+
+{"data":[{"id":"01a15359-aa28-7a00-a380-000000000002","email":"minh@example.com","name":"\u003cb\u003eMinh\u003c/b\u003e \u0026 co","created_at":"2026-10-19T08:49:07.5Z","updated_at":"2026-10-19T08:49:07.5Z","version":1}],"meta":{"limit":1,"offset":0,"total":5}}
+
+
+=== list with Accept any
+GET /api/v1/users?limit=1
+Accept: */*
+X-Request-Id: contract-25
+
+
+--- 200 OK
+Content-Length: 263
+Content-Type: application/json
+X-Request-Id: contract-25
+
+{"data":[{"id":"01a15359-aa28-7a00-a380-000000000002","email":"minh@example.com","name":"\u003cb\u003eMinh\u003c/b\u003e \u0026 co","created_at":"2026-10-19T08:49:07.5Z","updated_at":"2026-10-19T08:49:07.5Z","version":1}],"meta":{"limit":1,"offset":0,"total":5}}
+
+
+=== list with Accept vendor JSON
+GET /api/v1/users?limit=1
+Accept: application/vnd.api+json
+X-Request-Id: contract-26
+
+
+--- 200 OK
+Content-Length: 263
+Content-Type: application/json
+X-Request-Id: contract-26
+
+{"data":[{"id":"01a15359-aa28-7a00-a380-000000000002","email":"minh@example.com","name":"\u003cb\u003eMinh\u003c/b\u003e \u0026 co","created_at":"2026-10-19T08:49:07.5Z","updated_at":"2026-10-19T08:49:07.5Z","version":1}],"meta":{"limit":1,"offset":0,"total":5}}
+
+
+=== list with Accept problem JSON
+GET /api/v1/users?limit=1
+Accept: application/problem+json
+X-Request-Id: contract-27
+
+
+--- 200 OK
+Content-Length: 263
+Content-Type: application/json
+X-Request-Id: contract-27
+
+{"data":[{"id":"01a15359-aa28-7a00-a380-000000000002","email":"minh@example.com","name":"\u003cb\u003eMinh\u003c/b\u003e \u0026 co","created_at":"2026-10-19T08:49:07.5Z","updated_at":"2026-10-19T08:49:07.5Z","version":1}],"meta":{"limit":1,"offset":0,"total":5}}
+
+
+=== get missing with Accept json
+GET /api/v1/users/01a15359-aa28-7a00-a380-000000000999
+Accept: json
+X-Request-Id: contract-28
+
+
+--- 404 Not Found
+Content-Length: 149
+Content-Type: application/problem+json
+X-Request-Id: contract-28
+
+{"type":"about:blank","title":"Not Found","status":404,"detail":"resource not found","instance":"/api/v1/users/01a15359-aa28-7a00-a380-000000000999"}
+
+=== list limit zero uses default
+GET /api/v1/users?limit=0
+X-Request-Id: contract-29
+
+
+--- 200 OK
+Content-Length: 1275
+Content-Type: application/json
+X-Request-Id: contract-29
+
+{"data":[{"id":"01a15359-aa28-7a00-a380-000000000002","email":"minh@example.com","name":"\u003cb\u003eMinh\u003c/b\u003e \u0026 co","created_at":"2026-10-19T08:49:07.5Z","updated_at":"2026-10-19T08:49:07.5Z","version":1},{"id":"01a15359-aa28-7a00-a380-000000000006","email":"long@example.com","name":"ếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếế","created_at":"2026-10-19T08:49:07.5Z","updated_at":"2026-10-19T08:49:07.5Z","version":1},{"id":"01a15359-aa28-7a00-a380-000000000010","email":"case@example.com","name":"Case","created_at":"2026-10-19T08:49:07.5Z","updated_at":"2026-10-19T08:49:07.5Z","version":1},{"id":"01a15359-aa28-7a00-a380-000000000011","email":"cbor@example.com","name":"Cbor","created_at":"2026-10-19T08:49:07.5Z","updated_at":"2026-10-19T08:49:07.5Z","version":1},{"id":"01a15359-aa28-7a00-a380-000000000001","email":"lan@example.com","name":"Lan Nguyen","created_at":"2026-10-19T08:49:07.624656Z","updated_at":"2026-10-19T08:49:07.624656Z","version":1}],"meta":{"limit":20,"offset":0,"total":5}}
+
+
+=== list negative limit uses default
+GET /api/v1/users?limit=-3
+X-Request-Id: contract-30
+
+
+--- 200 OK
+Content-Length: 1275
+Content-Type: application/json
+X-Request-Id: contract-30
+
+{"data":[{"id":"01a15359-aa28-7a00-a380-000000000002","email":"minh@example.com","name":"\u003cb\u003eMinh\u003c/b\u003e \u0026 co","created_at":"2026-10-19T08:49:07.5Z","updated_at":"2026-10-19T08:49:07.5Z","version":1},{"id":"01a15359-aa28-7a00-a380-000000000006","email":"long@example.com","name":"ếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếế","created_at":"2026-10-19T08:49:07.5Z","updated_at":"2026-10-19T08:49:07.5Z","version":1},{"id":"01a15359-aa28-7a00-a380-000000000010","email":"case@example.com","name":"Case","created_at":"2026-10-19T08:49:07.5Z","updated_at":"2026-10-19T08:49:07.5Z","version":1},{"id":"01a15359-aa28-7a00-a380-000000000011","email":"cbor@example.com","name":"Cbor","created_at":"2026-10-19T08:49:07.5Z","updated_at":"2026-10-19T08:49:07.5Z","version":1},{"id":"01a15359-aa28-7a00-a380-000000000001","email":"lan@example.com","name":"Lan Nguyen","created_at":"2026-10-19T08:49:07.624656Z","updated_at":"2026-10-19T08:49:07.624656Z","version":1}],"meta":{"limit":20,"offset":0,"total":5}}
+
+
+=== list limit above 100 is capped
+GET /api/v1/users?limit=1000
+X-Request-Id: contract-31
+
+
+--- 200 OK
+Content-Length: 1276
+Content-Type: application/json
+X-Request-Id: contract-31
+
+{"data":[{"id":"01a15359-aa28-7a00-a380-000000000002","email":"minh@example.com","name":"\u003cb\u003eMinh\u003c/b\u003e \u0026 co","created_at":"2026-10-19T08:49:07.5Z","updated_at":"2026-10-19T08:49:07.5Z","version":1},{"id":"01a15359-aa28-7a00-a380-000000000006","email":"long@example.com","name":"ếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếế","created_at":"2026-10-19T08:49:07.5Z","updated_at":"2026-10-19T08:49:07.5Z","version":1},{"id":"01a15359-aa28-7a00-a380-000000000010","email":"case@example.com","name":"Case","created_at":"2026-10-19T08:49:07.5Z","updated_at":"2026-10-19T08:49:07.5Z","version":1},{"id":"01a15359-aa28-7a00-a380-000000000011","email":"cbor@example.com","name":"Cbor","created_at":"2026-10-19T08:49:07.5Z","updated_at":"2026-10-19T08:49:07.5Z","version":1},{"id":"01a15359-aa28-7a00-a380-000000000001","email":"lan@example.com","name":"Lan Nguyen","created_at":"2026-10-19T08:49:07.624656Z","updated_at":"2026-10-19T08:49:07.624656Z","version":1}],"meta":{"limit":100,"offset":0,"total":5}}
+
+
+=== list page
+GET /api/v1/users?limit=1&offset=1
+X-Request-Id: contract-32
+
+
+--- 200 OK
+Content-Length: 522
+Content-Type: application/json
+X-Request-Id: contract-32
+
+{"data":[{"id":"01a15359-aa28-7a00-a380-000000000006","email":"long@example.com","name":"ếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếế","created_at":"2026-10-19T08:49:07.5Z","updated_at":"2026-10-19T08:49:07.5Z","version":1}],"meta":{"limit":1,"offset":1,"total":5}}
+
+
+=== list signed limit
+GET /api/v1/users?limit=+2
+X-Request-Id: contract-33
+
+
+--- 400 Bad Request
+Content-Length: 120
+Content-Type: application/problem+json
+X-Request-Id: contract-33
+
+{"type":"about:blank","title":"Bad Request","status":400,"detail":"limit must be an integer","instance":"/api/v1/users"}
+
+=== list empty limit
+GET /api/v1/users?limit=
+X-Request-Id: contract-34
+
+
+--- 200 OK
+Content-Length: 1275
+Content-Type: application/json
+X-Request-Id: contract-34
+
+{"data":[{"id":"01a15359-aa28-7a00-a380-000000000002","email":"minh@example.com","name":"\u003cb\u003eMinh\u003c/b\u003e \u0026 co","created_at":"2026-10-19T08:49:07.5Z","updated_at":"2026-10-19T08:49:07.5Z","version":1},{"id":"01a15359-aa28-7a00-a380-000000000006","email":"long@example.com","name":"ếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếế","created_at":"2026-10-19T08:49:07.5Z","updated_at":"2026-10-19T08:49:07.5Z","version":1},{"id":"01a15359-aa28-7a00-a380-000000000010","email":"case@example.com","name":"Case","created_at":"2026-10-19T08:49:07.5Z","updated_at":"2026-10-19T08:49:07.5Z","version":1},{"id":"01a15359-aa28-7a00-a380-000000000011","email":"cbor@example.com","name":"Cbor","created_at":"2026-10-19T08:49:07.5Z","updated_at":"2026-10-19T08:49:07.5Z","version":1},{"id":"01a15359-aa28-7a00-a380-000000000001","email":"lan@example.com","name":"Lan Nguyen","created_at":"2026-10-19T08:49:07.624656Z","updated_at":"2026-10-19T08:49:07.624656Z","version":1}],"meta":{"limit":20,"offset":0,"total":5}}
+
+
+=== list first of repeated limits
+GET /api/v1/users?limit=1&limit=abc
+X-Request-Id: contract-35
+
+
+--- 200 OK
+Content-Length: 263
+Content-Type: application/json
+X-Request-Id: contract-35
+
+{"data":[{"id":"01a15359-aa28-7a00-a380-000000000002","email":"minh@example.com","name":"\u003cb\u003eMinh\u003c/b\u003e \u0026 co","created_at":"2026-10-19T08:49:07.5Z","updated_at":"2026-10-19T08:49:07.5Z","version":1}],"meta":{"limit":1,"offset":0,"total":5}}
+
+
+=== list non-integer limit
+GET /api/v1/users?limit=abc
+X-Request-Id: contract-36
+
+
+--- 400 Bad Request
+Content-Length: 120
+Content-Type: application/problem+json
+X-Request-Id: contract-36
+
+{"type":"about:blank","title":"Bad Request","status":400,"detail":"limit must be an integer","instance":"/api/v1/users"}
+
+=== list fractional limit
+GET /api/v1/users?limit=1.5
+X-Request-Id: contract-37
+
+
+--- 400 Bad Request
+Content-Length: 120
+Content-Type: application/problem+json
+X-Request-Id: contract-37
+
+{"type":"about:blank","title":"Bad Request","status":400,"detail":"limit must be an integer","instance":"/api/v1/users"}
+
+=== list non-integer offset
+GET /api/v1/users?offset=x
+X-Request-Id: contract-38
+
+
+--- 400 Bad Request
+Content-Length: 121
+Content-Type: application/problem+json
+X-Request-Id: contract-38
+
+{"type":"about:blank","title":"Bad Request","status":400,"detail":"offset must be an integer","instance":"/api/v1/users"}
+
+=== list invalid limit and offset
+GET /api/v1/users?limit=x&offset=y
+X-Request-Id: contract-39
+
+
+--- 400 Bad Request
+Content-Length: 120
+Content-Type: application/problem+json
+X-Request-Id: contract-39
+
+{"type":"about:blank","title":"Bad Request","status":400,"detail":"limit must be an integer","instance":"/api/v1/users"}
+
+=== list negative offset uses zero
+GET /api/v1/users?offset=-5
+X-Request-Id: contract-40
+
+
+--- 200 OK
+Content-Length: 1275
+Content-Type: application/json
+X-Request-Id: contract-40
+
+{"data":[{"id":"01a15359-aa28-7a00-a380-000000000002","email":"minh@example.com","name":"\u003cb\u003eMinh\u003c/b\u003e \u0026 co","created_at":"2026-10-19T08:49:07.5Z","updated_at":"2026-10-19T08:49:07.5Z","version":1},{"id":"01a15359-aa28-7a00-a380-000000000006","email":"long@example.com","name":"ếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếế","created_at":"2026-10-19T08:49:07.5Z","updated_at":"2026-10-19T08:49:07.5Z","version":1},{"id":"01a15359-aa28-7a00-a380-000000000010","email":"case@example.com","name":"Case","created_at":"2026-10-19T08:49:07.5Z","updated_at":"2026-10-19T08:49:07.5Z","version":1},{"id":"01a15359-aa28-7a00-a380-000000000011","email":"cbor@example.com","name":"Cbor","created_at":"2026-10-19T08:49:07.5Z","updated_at":"2026-10-19T08:49:07.5Z","version":1},{"id":"01a15359-aa28-7a00-a380-000000000001","email":"lan@example.com","name":"Lan Nguyen","created_at":"2026-10-19T08:49:07.624656Z","updated_at":"2026-10-19T08:49:07.624656Z","version":1}],"meta":{"limit":20,"offset":0,"total":5}}
+
+
+=== list offset at maximum
+GET /api/v1/users?offset=10000
+X-Request-Id: contract-41
+
+
+--- 200 OK
+Content-Length: 57
+Content-Type: application/json
+X-Request-Id: contract-41
+
+{"data":[],"meta":{"limit":20,"offset":10000,"total":5}}
+
+
+=== list offset above maximum
+GET /api/v1/users?offset=10001
+X-Request-Id: contract-42
+
+
+--- 422 Unprocessable Entity
+Content-Length: 194
+Content-Type: application/problem+json
+X-Request-Id: contract-42
+
+{"type":"about:blank","title":"Unprocessable Entity","status":422,"detail":"request failed validation","instance":"/api/v1/users","errors":[{"field":"offset","message":"must be at most 10000"}]}
+
+=== list ignores unknown query
+GET /api/v1/users?limit=1&sort=name
+X-Request-Id: contract-43
+
+
+--- 200 OK
+Content-Length: 263
+Content-Type: application/json
+X-Request-Id: contract-43
+
+{"data":[{"id":"01a15359-aa28-7a00-a380-000000000002","email":"minh@example.com","name":"\u003cb\u003eMinh\u003c/b\u003e \u0026 co","created_at":"2026-10-19T08:49:07.5Z","updated_at":"2026-10-19T08:49:07.5Z","version":1}],"meta":{"limit":1,"offset":0,"total":5}}
+
+
+=== get
+GET /api/v1/users/01a15359-aa28-7a00-a380-000000000001
+X-Request-Id: contract-44
+
+
+--- 200 OK
+Content-Length: 190
+Content-Type: application/json
+Etag: "1"
+X-Request-Id: contract-44
+
+{"id":"01a15359-aa28-7a00-a380-000000000001","email":"lan@example.com","name":"Lan Nguyen","created_at":"2026-10-19T08:49:07.624656Z","updated_at":"2026-10-19T08:49:07.624656Z","version":1}
+
+
+=== get missing
+GET /api/v1/users/01a15359-aa28-7a00-a380-000000000999
+X-Request-Id: contract-45
+
+
+--- 404 Not Found
+Content-Length: 149
+Content-Type: application/problem+json
+X-Request-Id: contract-45
+
+{"type":"about:blank","title":"Not Found","status":404,"detail":"resource not found","instance":"/api/v1/users/01a15359-aa28-7a00-a380-000000000999"}
+
+=== get malformed id
+GET /api/v1/users/not-a-uuid
+X-Request-Id: contract-46
+
+
+--- 404 Not Found
+Content-Length: 123
+Content-Type: application/problem+json
+X-Request-Id: contract-46
+
+{"type":"about:blank","title":"Not Found","status":404,"detail":"resource not found","instance":"/api/v1/users/not-a-uuid"}
+
+=== get uppercase id under users
+GET /api/v1/users/01A15359-AA28-7A00-A380-000000000001
+X-Request-Id: contract-47
+
+
+--- 404 Not Found
+Content-Length: 149
+Content-Type: application/problem+json
+X-Request-Id: contract-47
+
+{"type":"about:blank","title":"Not Found","status":404,"detail":"resource not found","instance":"/api/v1/users/01A15359-AA28-7A00-A380-000000000001"}
+
+=== get UUID v4
+GET /api/v1/users/0b1c2d3e-4f50-4a6b-8c7d-9e0f1a2b3c4d
+X-Request-Id: contract-48
+
+
+--- 404 Not Found
+Content-Length: 149
+Content-Type: application/problem+json
+X-Request-Id: contract-48
+
+{"type":"about:blank","title":"Not Found","status":404,"detail":"resource not found","instance":"/api/v1/users/0b1c2d3e-4f50-4a6b-8c7d-9e0f1a2b3c4d"}
+
+=== get percent-encoded id
+GET /api/v1/users/01a15359%2Daa28-7a00-a380-000000000001
+X-Request-Id: contract-49
+
+
+--- 404 Not Found
+Content-Length: 149
+Content-Type: application/problem+json
+X-Request-Id: contract-49
+
+{"type":"about:blank","title":"Not Found","status":404,"detail":"resource not found","instance":"/api/v1/users/01a15359-aa28-7a00-a380-000000000001"}
+
+=== patch empty body is a no-op
+PATCH /api/v1/users/01a15359-aa28-7a00-a380-000000000001
+X-Request-Id: contract-50
+
+
+--- 200 OK
+Content-Length: 190
+Content-Type: application/json
+Etag: "1"
+X-Request-Id: contract-50
+
+{"id":"01a15359-aa28-7a00-a380-000000000001","email":"lan@example.com","name":"Lan Nguyen","created_at":"2026-10-19T08:49:07.624656Z","updated_at":"2026-10-19T08:49:07.624656Z","version":1}
+
+
+=== patch empty chunked body without Content-Type
+PATCH /api/v1/users/01a15359-aa28-7a00-a380-000000000001
+X-Request-Id: contract-51
+
+
+--- 415 Unsupported Media Type
+Content-Length: 132
+Content-Type: application/problem+json
+X-Request-Id: contract-51
+
+{"type":"about:blank","title":"Unsupported Media Type","status":415,"instance":"/api/v1/users/01a15359-aa28-7a00-a380-000000000001"}
+
+=== patch empty object is a no-op
+PATCH /api/v1/users/01a15359-aa28-7a00-a380-000000000001
+Content-Type: application/json
+X-Request-Id: contract-52
+
+{}
+--- 200 OK
+Content-Length: 190
+Content-Type: application/json
+Etag: "1"
+X-Request-Id: contract-52
+
+{"id":"01a15359-aa28-7a00-a380-000000000001","email":"lan@example.com","name":"Lan Nguyen","created_at":"2026-10-19T08:49:07.624656Z","updated_at":"2026-10-19T08:49:07.624656Z","version":1}
+
+
+=== patch null fields are unchanged
+PATCH /api/v1/users/01a15359-aa28-7a00-a380-000000000001
+Content-Type: application/json
+X-Request-Id: contract-53
+
+{"email":null,"name":null}
+--- 200 OK
+Content-Length: 190
+Content-Type: application/json
+Etag: "1"
+X-Request-Id: contract-53
+
+{"id":"01a15359-aa28-7a00-a380-000000000001","email":"lan@example.com","name":"Lan Nguyen","created_at":"2026-10-19T08:49:07.624656Z","updated_at":"2026-10-19T08:49:07.624656Z","version":1}
+
+
+=== patch same values is a no-op
+PATCH /api/v1/users/01a15359-aa28-7a00-a380-000000000001
+Content-Type: application/json
+X-Request-Id: contract-54
+
+{"name":"Lan Nguyen"}
+--- 200 OK
+Content-Length: 190
+Content-Type: application/json
+Etag: "1"
+X-Request-Id: contract-54
+
+{"id":"01a15359-aa28-7a00-a380-000000000001","email":"lan@example.com","name":"Lan Nguyen","created_at":"2026-10-19T08:49:07.624656Z","updated_at":"2026-10-19T08:49:07.624656Z","version":1}
+
+
+=== patch with matching If-Match
+PATCH /api/v1/users/01a15359-aa28-7a00-a380-000000000001
+Content-Type: application/json
+If-Match: "1"
+X-Request-Id: contract-55
+
+{"name":" Lan  Pham "}
+--- 200 OK
+Content-Length: 186
+Content-Type: application/json
+Etag: "2"
+X-Request-Id: contract-55
+
+{"id":"01a15359-aa28-7a00-a380-000000000001","email":"lan@example.com","name":"Lan Pham","created_at":"2026-10-19T08:49:07.624656Z","updated_at":"2026-10-19T09:00:00.5722Z","version":2}
+
+
+=== patch with stale If-Match
+PATCH /api/v1/users/01a15359-aa28-7a00-a380-000000000001
+Content-Type: application/json
+If-Match: "1"
+X-Request-Id: contract-56
+
+{"name":"Lost"}
+--- 412 Precondition Failed
+Content-Length: 200
+Content-Type: application/problem+json
+X-Request-Id: contract-56
+
+{"type":"about:blank","title":"Precondition Failed","status":412,"detail":"If-Match does not match the current version of the resource","instance":"/api/v1/users/01a15359-aa28-7a00-a380-000000000001"}
+
+=== patch with weak If-Match
+PATCH /api/v1/users/01a15359-aa28-7a00-a380-000000000001
+Content-Type: application/json
+If-Match: W/"2"
+X-Request-Id: contract-57
+
+{"name":"Lost"}
+--- 412 Precondition Failed
+Content-Length: 200
+Content-Type: application/problem+json
+X-Request-Id: contract-57
+
+{"type":"about:blank","title":"Precondition Failed","status":412,"detail":"If-Match does not match the current version of the resource","instance":"/api/v1/users/01a15359-aa28-7a00-a380-000000000001"}
+
+=== patch with signed If-Match
+PATCH /api/v1/users/01a15359-aa28-7a00-a380-000000000001
+Content-Type: application/json
+If-Match: "+2"
+X-Request-Id: contract-58
+
+{"name":"Lost"}
+--- 412 Precondition Failed
+Content-Length: 200
+Content-Type: application/problem+json
+X-Request-Id: contract-58
+
+{"type":"about:blank","title":"Precondition Failed","status":412,"detail":"If-Match does not match the current version of the resource","instance":"/api/v1/users/01a15359-aa28-7a00-a380-000000000001"}
+
+=== patch with leading-zero If-Match
+PATCH /api/v1/users/01a15359-aa28-7a00-a380-000000000001
+Content-Type: application/json
+If-Match: "02"
+X-Request-Id: contract-59
+
+{"name":"Lost"}
+--- 412 Precondition Failed
+Content-Length: 200
+Content-Type: application/problem+json
+X-Request-Id: contract-59
+
+{"type":"about:blank","title":"Precondition Failed","status":412,"detail":"If-Match does not match the current version of the resource","instance":"/api/v1/users/01a15359-aa28-7a00-a380-000000000001"}
+
+=== patch with empty If-Match
+PATCH /api/v1/users/01a15359-aa28-7a00-a380-000000000001
+Content-Type: application/json
+If-Match: 
+X-Request-Id: contract-60
+
+{"name":"Lost"}
+--- 412 Precondition Failed
+Content-Length: 200
+Content-Type: application/problem+json
+X-Request-Id: contract-60
+
+{"type":"about:blank","title":"Precondition Failed","status":412,"detail":"If-Match does not match the current version of the resource","instance":"/api/v1/users/01a15359-aa28-7a00-a380-000000000001"}
+
+=== patch with If-Match list
+PATCH /api/v1/users/01a15359-aa28-7a00-a380-000000000001
+Content-Type: application/json
+If-Match: "2", "3"
+X-Request-Id: contract-61
+
+{"name":"Lost"}
+--- 412 Precondition Failed
+Content-Length: 200
+Content-Type: application/problem+json
+X-Request-Id: contract-61
+
+{"type":"about:blank","title":"Precondition Failed","status":412,"detail":"If-Match does not match the current version of the resource","instance":"/api/v1/users/01a15359-aa28-7a00-a380-000000000001"}
+
+=== patch with repeated If-Match lines
+PATCH /api/v1/users/01a15359-aa28-7a00-a380-000000000001
+Content-Type: application/json
+If-Match: "2"
+If-Match: "3"
+X-Request-Id: contract-62
+
+{"name":"Lost"}
+--- 412 Precondition Failed
+Content-Length: 200
+Content-Type: application/problem+json
+X-Request-Id: contract-62
+
+{"type":"about:blank","title":"Precondition Failed","status":412,"detail":"If-Match does not match the current version of the resource","instance":"/api/v1/users/01a15359-aa28-7a00-a380-000000000001"}
+
+=== patch with invalid If-Match and invalid media type
+PATCH /api/v1/users/01a15359-aa28-7a00-a380-000000000001
+Content-Type: text/plain
+If-Match: W/"2"
+X-Request-Id: contract-63
+
+{"name":"Lost"}
+--- 412 Precondition Failed
+Content-Length: 200
+Content-Type: application/problem+json
+X-Request-Id: contract-63
+
+{"type":"about:blank","title":"Precondition Failed","status":412,"detail":"If-Match does not match the current version of the resource","instance":"/api/v1/users/01a15359-aa28-7a00-a380-000000000001"}
+
+=== patch with If-Match on missing user
+PATCH /api/v1/users/01a15359-aa28-7a00-a380-000000000999
+Content-Type: application/json
+If-Match: "1"
+X-Request-Id: contract-64
+
+{"name":"X"}
+--- 404 Not Found
+Content-Length: 149
+Content-Type: application/problem+json
+X-Request-Id: contract-64
+
+{"type":"about:blank","title":"Not Found","status":404,"detail":"resource not found","instance":"/api/v1/users/01a15359-aa28-7a00-a380-000000000999"}
+
+=== patch with wildcard If-Match
+PATCH /api/v1/users/01a15359-aa28-7a00-a380-000000000001
+Content-Type: application/json
+If-Match: *
+X-Request-Id: contract-65
+
+{"email":"LAN.PHAM@example.com"}
+--- 200 OK
+Content-Length: 191
+Content-Type: application/json
+Etag: "3"
+X-Request-Id: contract-65
+
+{"id":"01a15359-aa28-7a00-a380-000000000001","email":"lan.pham@example.com","name":"Lan Pham","created_at":"2026-10-19T08:49:07.624656Z","updated_at":"2026-10-19T09:00:00.5722Z","version":3}
+
+
+=== patch duplicate email
+PATCH /api/v1/users/01a15359-aa28-7a00-a380-000000000001
+Content-Type: application/json
+X-Request-Id: contract-66
+
+{"email":"minh@example.com"}
+--- 409 Conflict
+Content-Length: 167
+Content-Type: application/problem+json
+X-Request-Id: contract-66
+
+{"type":"about:blank","title":"Conflict","status":409,"detail":"a user with this email already exists","instance":"/api/v1/users/01a15359-aa28-7a00-a380-000000000001"}
+
+=== patch validation
+PATCH /api/v1/users/01a15359-aa28-7a00-a380-000000000001
+Content-Type: application/json
+X-Request-Id: contract-67
+
+{"email":"","name":"   "}
+--- 422 Unprocessable Entity
+Content-Length: 261
+Content-Type: application/problem+json
+X-Request-Id: contract-67
+
+{"type":"about:blank","title":"Unprocessable Entity","status":422,"detail":"request failed validation","instance":"/api/v1/users/01a15359-aa28-7a00-a380-000000000001","errors":[{"field":"email","message":"is required"},{"field":"name","message":"is required"}]}
+
+=== patch malformed JSON
+PATCH /api/v1/users/01a15359-aa28-7a00-a380-000000000001
+Content-Type: application/json
+X-Request-Id: contract-68
+
+{
+--- 400 Bad Request
+Content-Length: 163
+Content-Type: application/problem+json
+X-Request-Id: contract-68
+
+{"type":"about:blank","title":"Bad Request","status":400,"detail":"request body is not valid JSON","instance":"/api/v1/users/01a15359-aa28-7a00-a380-000000000001"}
+
+=== patch wrong field type
+PATCH /api/v1/users/01a15359-aa28-7a00-a380-000000000001
+Content-Type: application/json
+X-Request-Id: contract-69
+
+{"name":1}
+--- 400 Bad Request
+Content-Length: 166
+Content-Type: application/problem+json
+X-Request-Id: contract-69
+
+{"type":"about:blank","title":"Bad Request","status":400,"detail":"field \"name\" has the wrong type","instance":"/api/v1/users/01a15359-aa28-7a00-a380-000000000001"}
+
+=== patch without Content-Type
+PATCH /api/v1/users/01a15359-aa28-7a00-a380-000000000001
+X-Request-Id: contract-70
+
+{"name":"X"}
+--- 415 Unsupported Media Type
+Content-Length: 132
+Content-Type: application/problem+json
+X-Request-Id: contract-70
+
+{"type":"about:blank","title":"Unsupported Media Type","status":415,"instance":"/api/v1/users/01a15359-aa28-7a00-a380-000000000001"}
+
+=== patch missing user
+PATCH /api/v1/users/01a15359-aa28-7a00-a380-000000000999
+Content-Type: application/json
+X-Request-Id: contract-71
+
+{"name":"X"}
+--- 404 Not Found
+Content-Length: 149
+Content-Type: application/problem+json
+X-Request-Id: contract-71
+
+{"type":"about:blank","title":"Not Found","status":404,"detail":"resource not found","instance":"/api/v1/users/01a15359-aa28-7a00-a380-000000000999"}
+
+=== patch malformed id
+PATCH /api/v1/users/nope
+Content-Type: application/json
+X-Request-Id: contract-72
+
+{"name":"X"}
+--- 404 Not Found
+Content-Length: 117
+Content-Type: application/problem+json
+X-Request-Id: contract-72
+
+{"type":"about:blank","title":"Not Found","status":404,"detail":"resource not found","instance":"/api/v1/users/nope"}
+
+=== patch body over 1 MiB
+PATCH /api/v1/users/01a15359-aa28-7a00-a380-000000000001
+Content-Type: application/json
+X-Request-Id: contract-73
+
+<1048613 bytes>
+--- 413 Request Entity Too Large
+Content-Length: 134
+Content-Type: application/problem+json
+X-Request-Id: contract-73
+
+{"type":"about:blank","title":"Request Entity Too Large","status":413,"instance":"/api/v1/users/01a15359-aa28-7a00-a380-000000000001"}
+
+=== delete ignores If-Match
+DELETE /api/v1/users/01a15359-aa28-7a00-a380-000000000002
+If-Match: W/"garbage"
+X-Request-Id: contract-74
+
+
+--- 204 No Content
+X-Request-Id: contract-74
+
+
+
+=== delete again
+DELETE /api/v1/users/01a15359-aa28-7a00-a380-000000000002
+X-Request-Id: contract-75
+
+
+--- 404 Not Found
+Content-Length: 149
+Content-Type: application/problem+json
+X-Request-Id: contract-75
+
+{"type":"about:blank","title":"Not Found","status":404,"detail":"resource not found","instance":"/api/v1/users/01a15359-aa28-7a00-a380-000000000002"}
+
+=== delete malformed id
+DELETE /api/v1/users/nope
+X-Request-Id: contract-76
+
+
+--- 404 Not Found
+Content-Length: 117
+Content-Type: application/problem+json
+X-Request-Id: contract-76
+
+{"type":"about:blank","title":"Not Found","status":404,"detail":"resource not found","instance":"/api/v1/users/nope"}
+
+=== delete with body
+DELETE /api/v1/users/01a15359-aa28-7a00-a380-000000000001
+Content-Type: text/plain
+X-Request-Id: contract-77
+
+x
+--- 204 No Content
+X-Request-Id: contract-77
+
+
+
+=== list after changes
+GET /api/v1/users
+X-Request-Id: contract-78
+
+
+--- 200 OK
+Content-Length: 873
+Content-Type: application/json
+X-Request-Id: contract-78
+
+{"data":[{"id":"01a15359-aa28-7a00-a380-000000000006","email":"long@example.com","name":"ếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếếế","created_at":"2026-10-19T08:49:07.5Z","updated_at":"2026-10-19T08:49:07.5Z","version":1},{"id":"01a15359-aa28-7a00-a380-000000000010","email":"case@example.com","name":"Case","created_at":"2026-10-19T08:49:07.5Z","updated_at":"2026-10-19T08:49:07.5Z","version":1},{"id":"01a15359-aa28-7a00-a380-000000000011","email":"cbor@example.com","name":"Cbor","created_at":"2026-10-19T08:49:07.5Z","updated_at":"2026-10-19T08:49:07.5Z","version":1}],"meta":{"limit":20,"offset":0,"total":3}}
+
+
+=== unknown route
+GET /nope
+X-Request-Id: contract-79
+
+
+--- 404 Not Found
+Content-Length: 74
+Content-Type: application/problem+json
+X-Request-Id: contract-79
+
+{"type":"about:blank","title":"Not Found","status":404,"instance":"/nope"}
+
+=== unknown API route
+GET /api/v1/nope
+X-Request-Id: contract-80
+
+
+--- 404 Not Found
+Content-Length: 81
+Content-Type: application/problem+json
+X-Request-Id: contract-80
+
+{"type":"about:blank","title":"Not Found","status":404,"instance":"/api/v1/nope"}
+
+=== API root
+GET /api/v1
+X-Request-Id: contract-81
+
+
+--- 404 Not Found
+Content-Length: 76
+Content-Type: application/problem+json
+X-Request-Id: contract-81
+
+{"type":"about:blank","title":"Not Found","status":404,"instance":"/api/v1"}
+
+=== collection trailing slash
+GET /api/v1/users/
+X-Request-Id: contract-82
+
+
+--- 404 Not Found
+Content-Length: 83
+Content-Type: application/problem+json
+X-Request-Id: contract-82
+
+{"type":"about:blank","title":"Not Found","status":404,"instance":"/api/v1/users/"}
+
+=== collection trailing slash POST
+POST /api/v1/users/
+Content-Type: application/json
+X-Request-Id: contract-83
+
+{}
+--- 404 Not Found
+Content-Length: 83
+Content-Type: application/problem+json
+X-Request-Id: contract-83
+
+{"type":"about:blank","title":"Not Found","status":404,"instance":"/api/v1/users/"}
+
+=== item trailing slash
+GET /api/v1/users/01a15359-aa28-7a00-a380-000000000001/
+X-Request-Id: contract-84
+
+
+--- 404 Not Found
+Content-Length: 150
+Content-Type: application/problem+json
+X-Request-Id: contract-84
+
+{"type":"about:blank","title":"Not Found","status":404,"detail":"resource not found","instance":"/api/v1/users/01a15359-aa28-7a00-a380-000000000001/"}
+
+=== collection wrong method
+PUT /api/v1/users
+Content-Type: application/json
+X-Request-Id: contract-85
+
+{}
+--- 405 Method Not Allowed
+Allow: OPTIONS, GET, POST
+Content-Length: 91
+Content-Type: application/problem+json
+X-Request-Id: contract-85
+
+{"type":"about:blank","title":"Method Not Allowed","status":405,"instance":"/api/v1/users"}
+
+=== item wrong method
+POST /api/v1/users/01a15359-aa28-7a00-a380-000000000001
+Content-Type: application/json
+X-Request-Id: contract-86
+
+{}
+--- 405 Method Not Allowed
+Allow: OPTIONS, DELETE, GET, PATCH
+Content-Length: 128
+Content-Type: application/problem+json
+X-Request-Id: contract-86
+
+{"type":"about:blank","title":"Method Not Allowed","status":405,"instance":"/api/v1/users/01a15359-aa28-7a00-a380-000000000001"}
+
+=== collection HEAD
+HEAD /api/v1/users
+X-Request-Id: contract-87
+
+
+--- 405 Method Not Allowed
+Allow: OPTIONS, GET, POST
+X-Request-Id: contract-87
+
+
+
+=== item HEAD
+HEAD /api/v1/users/01a15359-aa28-7a00-a380-000000000001
+X-Request-Id: contract-88
+
+
+--- 405 Method Not Allowed
+Allow: OPTIONS, DELETE, GET, PATCH
+X-Request-Id: contract-88
+
+
+
+=== collection OPTIONS
+OPTIONS /api/v1/users
+X-Request-Id: contract-89
+
+
+--- 204 No Content
+Allow: OPTIONS, GET, POST
+X-Request-Id: contract-89
+
+
+
+=== OpenAPI is not exposed
+GET /openapi.json
+X-Request-Id: contract-90
+
+
+--- 404 Not Found
+Content-Length: 82
+Content-Type: application/problem+json
+X-Request-Id: contract-90
+
+{"type":"about:blank","title":"Not Found","status":404,"instance":"/openapi.json"}
+
+=== OpenAPI YAML is not exposed
+GET /openapi.yaml
+X-Request-Id: contract-91
+
+
+--- 404 Not Found
+Content-Length: 82
+Content-Type: application/problem+json
+X-Request-Id: contract-91
+
+{"type":"about:blank","title":"Not Found","status":404,"instance":"/openapi.yaml"}
+
+=== docs are not exposed
+GET /docs
+X-Request-Id: contract-92
+
+
+--- 404 Not Found
+Content-Length: 74
+Content-Type: application/problem+json
+X-Request-Id: contract-92
+
+{"type":"about:blank","title":"Not Found","status":404,"instance":"/docs"}
+
+=== schemas are not exposed
+GET /schemas/User.json
+X-Request-Id: contract-93
+
+
+--- 404 Not Found
+Content-Length: 87
+Content-Type: application/problem+json
+X-Request-Id: contract-93
+
+{"type":"about:blank","title":"Not Found","status":404,"instance":"/schemas/User.json"}
+
+=== liveness
+GET /healthz
+X-Request-Id: contract-94
+
+
+--- 200 OK
+Content-Length: 16
+Content-Type: application/json
+X-Request-Id: contract-94
+
+{"status":"ok"}
+
+
+=== liveness HEAD
+HEAD /healthz
+X-Request-Id: contract-95
+
+
+--- 405 Method Not Allowed
+Allow: OPTIONS, GET
+X-Request-Id: contract-95
+
+
+
+=== readiness
+GET /readyz
+X-Request-Id: contract-96
+
+
+--- 200 OK
+Content-Length: 19
+Content-Type: application/json
+X-Request-Id: contract-96
+
+{"status":"ready"}
+
+

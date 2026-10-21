@@ -7,7 +7,7 @@ Developer reference: Hexagonal Architecture, dependency rules, request flow, des
 ```mermaid
 flowchart LR
     subgraph Inbound["Adapter inbound (driving)"]
-        HTTP["httpapi<br/>Echo v5"]
+        HTTP["httpapi<br/>Echo v5 + Huma v2"]
     end
     subgraph Core["Core (framework-independent)"]
         IP(["port.UserService"])
@@ -59,12 +59,12 @@ CI **automatically enforces** these rules through `depguard` (`.golangci.yml`); 
 |---|---|
 | `core` | `internal/core/**` imports only the standard library and `internal/core/...`, excluding `net/http`, `database/sql`, and `os` (HTTP, SQL, and environment access belong to adapters/composition root) |
 | `inbound-adapters` | No outbound adapters, `internal/app`, database packages (`pgx`, `database/sql`, `goose`, `otelpgx`), Kafka clients (`franz-go`), `internal/outbox`, or fx/dig |
-| `outbound-adapters` | No inbound adapters, Echo, other outbound adapters, shared `repotest`, `internal/app`, or fx/dig |
+| `outbound-adapters` | No inbound adapters, Echo, Huma, other outbound adapters, shared `repotest`, `internal/app`, or fx/dig |
 | `outbound-adapters-no-broker` | Outbound adapters except `kafka` cannot import `franz-go`: events go through the outbox, never direct publishing |
 | `outbox` | `internal/outbox` uses only the standard library: no database, broker, or domain |
 | `platform` | `internal/config` and `internal/observability` cannot import core, adapters, `internal/outbox`, `internal/app`, or fx/dig |
-| `cmd` | `cmd/**` cannot import adapters, core, `pgx`, `goose`, Echo, `franz-go`, or fx/dig: wiring belongs in `internal/app` |
-| `everything-else` | All remaining packages, including `internal/outbox` and new packages such as `internal/worker`, cannot import adapters, `internal/app`, `pgx`, `goose`, Echo, `franz-go`, or fx/dig. New package categories needing access require their own rule |
+| `cmd` | `cmd/**` cannot import adapters, core, `pgx`, `goose`, Echo, Huma, `franz-go`, or fx/dig: wiring belongs in `internal/app` |
+| `everything-else` | All remaining packages, including `internal/outbox` and new packages such as `internal/worker`, cannot import adapters, `internal/app`, `pgx`, `goose`, Echo, Huma, `franz-go`, or fx/dig. New package categories needing access require their own rule |
 
 Rules exclude `*_test.go` because tests may use adapters as test doubles (such as memory repositories in service tests). Reverse imports *inside* core (`domain` ← `port` ← `service`) would create import cycles rejected by Go.
 
@@ -83,10 +83,29 @@ Two additional linters apply only to non-test `internal/core` code to enforce no
    - Recover;
    - BodyLimit (1 MiB);
    - ContextTimeout (`REQUEST_TIMEOUT`).
-3. `httpapi.userHandler.create` binds JSON to `createUserRequest` and calls `port.UserService.Register`. The handler contains no business logic.
+3. Echo routes the request to the Huma operation `createUser`, registered on the `/api/v1` group so `APIMiddleware` runs first. `createUserInput.Resolve` reads the body with `bindJSON`; `httpapi.userHandler.create` calls `port.UserService.Register`. The handler contains no business logic.
 4. `service.UserService.Register` obtains an ID from `IDGenerator` and time from `Clock`, then calls `domain.NewUser` to normalize and validate.
 5. `UserRepository.Create` stores the record. PostgreSQL maps unique violation `23505` on `users_email_key` to `domain.ErrEmailAlreadyExists`; violations of other constraints remain unexpected errors (500).
-6. The handler returns 201 with `Location` and `ETag`. For errors, `return err` lets the central `HTTPErrorHandler` use `httpapi.toProblem` to produce problem+json. Handlers create only HTTP-layer errors: malformed bodies/queries (400, 413, 415), invalid If-Match (412), and version conflicts with If-Match (412). Business errors originate in core.
+6. The handler returns `createUserOutput`; Huma writes 201 with `Location`, `ETag`, and the body. For errors, the handler returns the error and `register` maps it through `httpapi.toProblem` into problem+json; errors raised outside operations (unknown routes, 405, panics) reach the same `toProblem` through Echo's `HTTPErrorHandler`. Handlers create only HTTP-layer errors: malformed bodies/queries (400, 413, 415), invalid If-Match (412), and version conflicts with If-Match (412). Business errors originate in core.
+
+## HTTP adapter: Echo and Huma
+
+Echo owns routing, middleware, and probes; Huma v2 provides typed operations and generates the OpenAPI 3.1 document from them. `internal/app` still owns the `http.Server`.
+
+| Part | Where | Why |
+|---|---|---|
+| `humaAdapter` | `httpapi/huma_adapter.go` | Runs operations on Echo v5. Huma's own `humaecho` package is not imported: it also contains an Echo v4 adapter, which would link Echo v4, `gommon`, and `x/crypto/acme` into the binary. Operations under `/api/v1` register on the Echo group, so `APIMiddleware` and unknown-route handling behave as for native routes |
+| Input `Resolve` methods | `httpapi/user_handler.go` | Read the body, `If-Match`, and pagination with `bindJSON`, `parseIfMatch`, and `echo.QueryParamOr`. Huma's own parsing and validation would change statuses and details (for example 422 instead of 400 for a non-integer `limit`, or a body required on PATCH); `register` documents `RequestBody` without letting Huma read it |
+| Errors | `httpapi/openapi.go` | Handlers return errors; `register` wraps them in `apiError` (built by `toProblem`), which Huma writes as problem+json. `huma.NewError` is process-global and is never replaced |
+| OpenAPI | `httpapi/openapi.go` | Generated once per server, so independently built servers share no state. `API_DOCS_ENABLED=true` serves it at `/openapi.json` with SwaggerUI at `/docs`, outside `APIMiddleware` |
+
+`testdata/*.golden` in `httpapi` pin every status, header, and body byte of the API: a contract change shows up as a golden diff.
+
+To add an operation:
+1. Write the contract test first (`user_handler_test.go`, and a `contract_test.go` exchange if it changes the wire format).
+2. Define input and output structs in `user_handler.go`. Path parameters use typed `path:"..."` fields of type `string`; everything Huma would validate differently (bodies, numbers, repeated headers) is read in the input's `Resolve(huma.Context)` and returned by the handler as an error.
+3. Register the operation in `userHandler.register` with an `OperationID`, the `Users` tag, `DefaultStatus`, `jsonBody[...]` for a body, `Parameters` for values read in `Resolve`, and `problemResponses` for every error status it can return.
+4. Check the document with `TestAPIDocs_*` and update `docs/api.md`.
 
 ## Error classification
 
@@ -160,7 +179,7 @@ No changes to `internal/core` are needed.
 **Add a use case**, such as lookup by email:
 1. Add a primitive-input method to `port.UserService`.
 2. If needed, extend `port.UserRepository` and repotest to cover every adapter.
-3. Implement the service method and handler.
+3. Implement the service method and a Huma operation (see [HTTP adapter](#http-adapter-echo-and-huma)).
 
 **Write multiple repositories in one transaction**, such as creating a user and default workspace: add an *explicit* Unit of Work port, passing transaction-bound repositories through types rather than hiding the transaction in context:
 

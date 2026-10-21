@@ -46,8 +46,9 @@ Compare against `docs/api.md`. Explicitly flag existing status, `detail`, or fie
 
 1. Test success status/body and every error from step 0 in `user_handler_test.go`, including `Content-Type: application/problem+json`. Use `NewRequestWithContext`.
 2. Implement:
-   - route in `server.go`;
-   - handlers in `user_handler.go`: bind DTO → call port → map DTO;
+   - a Huma operation in `userHandler.register` (`user_handler.go`): `OperationID`, `Tags: ["Users"]`, `DefaultStatus`, `jsonBody[...]` for a body, `Parameters` for values read in `Resolve`, and `problemResponses` listing every error status;
+   - input/output structs: typed `path:"..."` string fields; bodies (`bindJSON`), numbers, and headers read in the input's `Resolve` with errors stored for the handler; outputs with `header:"..."` fields and `Body`;
+   - the handler: call port → return output, or `nil, err`;
    - map new core errors in `toProblem` in `errors.go`.
 
 ## 6. Documentation (same commit)
@@ -69,6 +70,8 @@ Compare against `docs/api.md`. Explicitly flag existing status, `detail`, or fie
 | Port command accepts `domain.UserID` | Accept `string`; service calls `parseUserID` |
 | Add `ErrXxxNotFound` | Use `port.ErrNotFound` and wrap with context |
 | Handler validates business rules | Move rules to domain/service; handler only binds and maps |
+| Huma `Body` field, `int` query field, or schema tags (`format`, `maxLength`) | Read in `Resolve` with the existing helpers; Huma's validation changes statuses and `detail` |
+| Native `v1.GET(...)` route for an API endpoint | Register a Huma operation so it appears in `/openapi.json` |
 | Update postgres but forget memory | Add a shared `repotest` subtest first to check both |
 | Change `.golangci.yml` after a depguard error | Fix the incorrect import direction |
 | Write `detail` from memory | Call the API and copy the exact response |

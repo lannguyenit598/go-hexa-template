@@ -67,6 +67,8 @@ linters:
               desc: outbound adapters must not depend on transports
             - pkg: github.com/labstack/echo
               desc: outbound adapters must not depend on the HTTP framework
+            - pkg: github.com/danielgtaylor/huma
+              desc: outbound adapters must not depend on the HTTP framework
             - pkg: github.com/example/userapi/internal/adapter/outbound/memory
               desc: outbound adapters must not depend on each other
             - pkg: github.com/example/userapi/internal/adapter/outbound/postgres
@@ -135,6 +137,8 @@ linters:
               desc: adapters are wired in internal/app, not in cmd
             - pkg: github.com/labstack/echo
               desc: adapters are wired in internal/app, not in cmd
+            - pkg: github.com/danielgtaylor/huma
+              desc: adapters are wired in internal/app, not in cmd
             - pkg: github.com/twmb/franz-go
               desc: adapters are wired in internal/app, not in cmd
             - pkg: github.com/pressly/goose
@@ -163,6 +167,8 @@ linters:
               desc: only the postgres adapter may run migrations
             - pkg: github.com/labstack/echo
               desc: only the HTTP adapter may use the HTTP framework
+            - pkg: github.com/danielgtaylor/huma
+              desc: only the HTTP adapter may use Huma (operations and OpenAPI)
             - pkg: github.com/twmb/franz-go
               desc: only the kafka adapter may use the Kafka client (internal/outbox talks to it through Sink)
             - pkg: go.uber.org/fx

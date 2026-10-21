@@ -48,6 +48,9 @@ type Config struct {
 	// outage does not remove EVERY pod from the load balancer simultaneously.
 	ReadinessCheckDB bool
 
+	// APIDocsEnabled serves the generated OpenAPI document and the interactive documentation page.
+	APIDocsEnabled bool
+
 	DB     DB
 	Events Events
 }
@@ -121,6 +124,7 @@ func Load(lookup func(string) (string, bool)) (Config, error) {
 		RequestTimeout:   p.duration("REQUEST_TIMEOUT", "10s"),
 		HTTPIdleTimeout:  p.duration("HTTP_IDLE_TIMEOUT", "75s"),
 		ReadinessCheckDB: p.bool("READINESS_CHECK_DB", false),
+		APIDocsEnabled:   p.bool("API_DOCS_ENABLED", false),
 		TrustedProxies:   p.cidrs("TRUSTED_PROXIES"),
 	}
 

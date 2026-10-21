@@ -393,3 +393,36 @@ func TestRequestID_ClientValueIsSanitized(t *testing.T) {
 		}
 	}
 }
+
+func TestAPIMiddleware_RunsOncePerAPIRequest(t *testing.T) {
+	calls := 0
+	count := func(next echo.HandlerFunc) echo.HandlerFunc {
+		return func(c *echo.Context) error { calls++; return next(c) }
+	}
+	api := newAPIWith(t, httpapi.Options{
+		Logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
+		APIMiddleware: []echo.MiddlewareFunc{count},
+	})
+	created := decode[user](t, api.do(http.MethodPost, "/api/v1/users", `{"email":"mw@example.com","name":"MW"}`))
+	id := "/api/v1/users/" + created.ID
+	for _, tc := range []struct {
+		method, path, body string
+		want               int
+	}{
+		{http.MethodPost, "/api/v1/users", `{"email":"mw2@example.com","name":"MW"}`, 1},
+		{http.MethodGet, "/api/v1/users", "", 1},
+		{http.MethodGet, id, "", 1},
+		{http.MethodPatch, id, `{"name":"MW2"}`, 1},
+		{http.MethodDelete, id, "", 1},
+		{http.MethodGet, "/api/v1/nope", "", 1},
+		{http.MethodPut, "/api/v1/users", `{}`, 1},
+		{http.MethodGet, "/healthz", "", 0},
+		{http.MethodGet, "/readyz", "", 0},
+	} {
+		calls = 0
+		api.do(tc.method, tc.path, tc.body)
+		if calls != tc.want {
+			t.Errorf("%s %s: APIMiddleware ran %d times, want %d", tc.method, tc.path, calls, tc.want)
+		}
+	}
+}
