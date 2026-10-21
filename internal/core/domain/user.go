@@ -109,6 +109,8 @@ func normalizeName(raw string, v *ValidationError) string {
 	switch n := utf8.RuneCountInString(name); {
 	case n == 0:
 		v.Add("name", "is required")
+	case strings.ContainsRune(name, 0): // PostgreSQL TEXT cannot store U+0000.
+		v.Add("name", "must not contain NUL characters")
 	case n > MaxNameLength:
 		v.Add("name", "must be at most 100 characters")
 	}

@@ -537,3 +537,35 @@ func TestRun_ServesAPIDocsOnlyWhenEnabled(t *testing.T) {
 	expectGET(t, base+"/openapi.json", http.StatusOK)
 	expectGET(t, base+"/docs", http.StatusOK)
 }
+
+// send issues a JSON request and returns the status and Location header.
+func send(t *testing.T, method, url, body string) (int, string) {
+	t.Helper()
+	req, err := http.NewRequestWithContext(context.Background(), method, url, strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	return resp.StatusCode, resp.Header.Get("Location")
+}
+
+// PostgreSQL TEXT cannot store U+0000: with postgres storage a NUL name is a 422, as in memory, not a 500.
+func TestRun_PostgresRejectsNULInName(t *testing.T) {
+	dsn := pgtest.FreshSchemaDSN(t) // Skip without TEST_DATABASE_URL.
+	base, _, _ := startApp(t, map[string]string{"STORAGE": "postgres", "DATABASE_URL": dsn, "MIGRATE_ON_START": "true"}, 15*time.Second)
+	if code, _ := send(t, http.MethodPost, base+"/api/v1/users", `{"email":"nul@example.com","name":"a\u0000b"}`); code != http.StatusUnprocessableEntity {
+		t.Fatalf("POST NUL name = %d, want 422", code)
+	}
+	code, loc := send(t, http.MethodPost, base+"/api/v1/users", `{"email":"ok@example.com","name":"Ok"}`)
+	if code != http.StatusCreated {
+		t.Fatalf("POST = %d, want 201", code)
+	}
+	if code, _ := send(t, http.MethodPatch, base+loc, `{"name":"a\u0000b"}`); code != http.StatusUnprocessableEntity {
+		t.Fatalf("PATCH NUL name = %d, want 422", code)
+	}
+}
