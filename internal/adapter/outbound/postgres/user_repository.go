@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/example/userapi/internal/adapter/outbound/postgres/sqlcgen"
 	"github.com/example/userapi/internal/core/domain"
 	"github.com/example/userapi/internal/core/port"
 )
@@ -24,8 +25,9 @@ const (
 )
 
 type UserRepository struct {
-	pool   *pgxpool.Pool
-	outbox bool
+	pool    *pgxpool.Pool
+	queries *sqlcgen.Queries // Bound to the pool; write binds them to its transaction.
+	outbox  bool
 }
 
 var _ port.UserRepository = (*UserRepository)(nil)
@@ -34,7 +36,7 @@ var _ port.UserRepository = (*UserRepository)(nil)
 // Create/Update/Delete (transactional outbox; see docs/events.md). The
 // port.UserRepository contract stays unchanged; core knows nothing about events.
 func NewUserRepository(pool *pgxpool.Pool, outbox bool) *UserRepository {
-	return &UserRepository{pool: pool, outbox: outbox}
+	return &UserRepository{pool: pool, queries: sqlcgen.New(pool), outbox: outbox}
 }
 
 // PoolOptions configures the connection pool. Zero uses pgx defaults.
@@ -117,17 +119,9 @@ func Ping(ctx context.Context, pool *pgxpool.Pool) error {
 	return nil
 }
 
-// userRow is the persistence model, separate from domain.User so the schema and domain can evolve independently.
-type userRow struct {
-	ID        string    `db:"id"`
-	Email     string    `db:"email"`
-	Name      string    `db:"name"`
-	CreatedAt time.Time `db:"created_at"`
-	UpdatedAt time.Time `db:"updated_at"`
-	Version   int64     `db:"version"`
-}
-
-func (r userRow) toDomain() domain.User {
+// toDomain maps the generated persistence model (sqlcgen.User, separate from domain.User so the
+// schema and domain can evolve independently) without revalidating it: the email was valid when written.
+func toDomain(r sqlcgen.User) domain.User {
 	return domain.User{
 		ID:        domain.UserID(r.ID),
 		Email:     domain.EmailFromStore(r.Email),
@@ -138,13 +132,16 @@ func (r userRow) toDomain() domain.User {
 	}
 }
 
-const selectCols = `id::text AS id, email, name, created_at, updated_at, version`
-
 func (r *UserRepository) Create(ctx context.Context, u domain.User) error {
-	return mapError(r.write(ctx, func(q querier) error {
-		if _, err := q.Exec(ctx,
-			`INSERT INTO users (id, email, name, created_at, updated_at, version) VALUES ($1, $2, $3, $4, $5, $6)`,
-			u.ID.String(), u.Email.String(), u.Name, u.CreatedAt, u.UpdatedAt, u.Version); err != nil {
+	return mapError(r.write(ctx, func(q *sqlcgen.Queries) error {
+		if err := q.CreateUser(ctx, sqlcgen.CreateUserParams{
+			ID:        u.ID.String(),
+			Email:     u.Email.String(),
+			Name:      u.Name,
+			CreatedAt: u.CreatedAt,
+			UpdatedAt: u.UpdatedAt,
+			Version:   u.Version,
+		}); err != nil {
 			return err
 		}
 		return r.appendEvent(ctx, q, eventUserRegistered, u.ID, u.Version, u.CreatedAt)
@@ -152,36 +149,30 @@ func (r *UserRepository) Create(ctx context.Context, u domain.User) error {
 }
 
 func (r *UserRepository) GetByID(ctx context.Context, id domain.UserID) (domain.User, error) {
-	rows, err := r.pool.Query(ctx, `SELECT `+selectCols+` FROM users WHERE id = $1`, id.String())
+	row, err := r.queries.GetUser(ctx, id.String())
 	if err != nil {
 		return domain.User{}, mapError(err)
 	}
-	row, err := pgx.CollectExactlyOneRow(rows, pgx.RowToStructByName[userRow])
-	if err != nil {
-		return domain.User{}, mapError(err)
-	}
-	return row.toDomain(), nil
+	return toDomain(row), nil
 }
 
 func (r *UserRepository) List(ctx context.Context, limit, offset int) ([]domain.User, int, error) {
-	var total int
-	if err := r.pool.QueryRow(ctx, `SELECT count(*) FROM users`).Scan(&total); err != nil {
-		return nil, 0, mapError(err)
-	}
-	rows, err := r.pool.Query(ctx,
-		`SELECT `+selectCols+` FROM users ORDER BY created_at, id LIMIT $1 OFFSET $2`, limit, offset)
+	total, err := r.queries.CountUsers(ctx)
 	if err != nil {
 		return nil, 0, mapError(err)
 	}
-	dbRows, err := pgx.CollectRows(rows, pgx.RowToStructByName[userRow])
+	if int64(int(total)) != total { // Only possible where int has 32 bits.
+		return nil, 0, fmt.Errorf("postgres: user count %d overflows int", total)
+	}
+	rows, err := r.queries.ListUsers(ctx, sqlcgen.ListUsersParams{MaxRows: int64(limit), SkipRows: int64(offset)})
 	if err != nil {
 		return nil, 0, mapError(err)
 	}
-	users := make([]domain.User, len(dbRows))
-	for i, row := range dbRows {
-		users[i] = row.toDomain()
+	users := make([]domain.User, len(rows)) // Never nil: an empty page is [], not null.
+	for i, row := range rows {
+		users[i] = toDomain(row)
 	}
-	return users, total, nil
+	return users, int(total), nil
 }
 
 // Update uses compare-and-set on version: one UPDATE (plus an outbox INSERT in the same
@@ -189,11 +180,16 @@ func (r *UserRepository) List(ctx context.Context, limit, offset int) ([]domain.
 // the initial read and the write.
 func (r *UserRepository) Update(ctx context.Context, u domain.User, expectedVersion int64) error {
 	var updated bool
-	err := r.write(ctx, func(q querier) error {
-		tag, err := q.Exec(ctx,
-			`UPDATE users SET email = $2, name = $3, updated_at = $4, version = $5 WHERE id = $1 AND version = $6`,
-			u.ID.String(), u.Email.String(), u.Name, u.UpdatedAt, u.Version, expectedVersion)
-		if err != nil || tag.RowsAffected() == 0 {
+	err := r.write(ctx, func(q *sqlcgen.Queries) error {
+		n, err := q.UpdateUser(ctx, sqlcgen.UpdateUserParams{
+			ID:              u.ID.String(),
+			Email:           u.Email.String(),
+			Name:            u.Name,
+			UpdatedAt:       u.UpdatedAt,
+			Version:         u.Version,
+			ExpectedVersion: expectedVersion,
+		})
+		if err != nil || n == 0 {
 			return err
 		}
 		updated = true
@@ -206,8 +202,8 @@ func (r *UserRepository) Update(ctx context.Context, u domain.User, expectedVers
 		return nil
 	}
 	// No rows updated: either the record is absent or its version changed.
-	var exists bool
-	if err := r.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM users WHERE id = $1)`, u.ID.String()).Scan(&exists); err != nil {
+	exists, err := r.queries.UserExists(ctx, u.ID.String())
+	if err != nil {
 		return mapError(err)
 	}
 	if !exists {
@@ -217,9 +213,9 @@ func (r *UserRepository) Update(ctx context.Context, u domain.User, expectedVers
 }
 
 func (r *UserRepository) Delete(ctx context.Context, id domain.UserID) error {
-	return mapError(r.write(ctx, func(q querier) error {
-		var version int64
-		if err := q.QueryRow(ctx, `DELETE FROM users WHERE id = $1 RETURNING version`, id.String()).Scan(&version); err != nil {
+	return mapError(r.write(ctx, func(q *sqlcgen.Queries) error {
+		version, err := q.DeleteUser(ctx, id.String())
+		if err != nil {
 			return err // pgx.ErrNoRows => port.ErrNotFound via mapError
 		}
 		// user.deleted uses the last version + 1: event versions strictly increase per user,

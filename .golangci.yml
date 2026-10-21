@@ -71,8 +71,6 @@ linters:
               desc: outbound adapters must not depend on the HTTP framework
             - pkg: github.com/example/userapi/internal/adapter/outbound/memory
               desc: outbound adapters must not depend on each other
-            - pkg: github.com/example/userapi/internal/adapter/outbound/postgres
-              desc: outbound adapters must not depend on each other
             - pkg: github.com/example/userapi/internal/adapter/outbound/system
               desc: outbound adapters must not depend on each other
             - pkg: github.com/example/userapi/internal/adapter/outbound/kafka
@@ -104,6 +102,16 @@ linters:
               desc: dependency injection belongs in the composition root (internal/app)
             - pkg: go.uber.org/dig
               desc: dependency injection belongs in the composition root (internal/app)
+        # Other outbound adapters must not depend on the postgres adapter or its generated queries
+        # (postgres/sqlcgen); the postgres adapter itself imports sqlcgen.
+        outbound-adapters-not-postgres:
+          files:
+            - "**/internal/adapter/outbound/**"
+            - "!**/internal/adapter/outbound/postgres/**"
+            - "!$test"
+          deny:
+            - pkg: github.com/example/userapi/internal/adapter/outbound/postgres
+              desc: outbound adapters must not depend on each other; generated queries stay inside the postgres adapter
         # Only the kafka adapter may use a Kafka client; direct publishing elsewhere would be a dual write.
         outbound-adapters-no-broker:
           files:

@@ -9,10 +9,10 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"go.opentelemetry.io/otel/propagation"
 
+	"github.com/example/userapi/internal/adapter/outbound/postgres/sqlcgen"
 	"github.com/example/userapi/internal/core/domain"
 	"github.com/example/userapi/internal/outbox"
 )
@@ -35,24 +35,19 @@ type userEvent struct {
 	Version       int64     `json:"version"`
 }
 
-// querier is the pool/transaction interface needed by write operations.
-type querier interface {
-	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
-	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
-}
-
 // write executes fn in a transaction when outbox is enabled (data and event commit or
-// roll back together), or directly on the pool when disabled.
-func (r *UserRepository) write(ctx context.Context, fn func(q querier) error) error {
+// roll back together), or directly on the pool when disabled. fn must run every query through q,
+// which is bound to that transaction: r.queries would run outside it.
+func (r *UserRepository) write(ctx context.Context, fn func(q *sqlcgen.Queries) error) error {
 	if !r.outbox {
-		return fn(r.pool)
+		return fn(r.queries)
 	}
-	return pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error { return fn(tx) })
+	return pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error { return fn(r.queries.WithTx(tx)) })
 }
 
 // appendEvent writes through q, the mutation's transaction. Request trace context is saved
 // in headers so tracing continues through the broker to consumers.
-func (r *UserRepository) appendEvent(ctx context.Context, q querier, eventType string, id domain.UserID, version int64, at time.Time) error {
+func (r *UserRepository) appendEvent(ctx context.Context, q *sqlcgen.Queries, eventType string, id domain.UserID, version int64, at time.Time) error {
 	if !r.outbox {
 		return nil
 	}
@@ -75,24 +70,33 @@ func (r *UserRepository) appendEvent(ctx context.Context, q querier, eventType s
 	// client-supplied baggage may contain personal data or arbitrary values.
 	headers := propagation.MapCarrier{}
 	propagation.TraceContext{}.Inject(ctx, headers)
+	encodedHeaders, err := json.Marshal(headers) // Never nil: no trace context is stored as {}.
+	if err != nil {
+		return fmt.Errorf("outbox headers: %w", err)
+	}
 	// created_at uses clock_timestamp() (INSERT time), not now() (transaction start time).
 	// The INSERT runs after the mutation has locked the user row, so that user's created_at order
 	// matches commit order even when transactions started in a different order.
-	_, err = q.Exec(ctx,
-		`INSERT INTO outbox (id, aggregate_id, event_type, payload, headers, created_at)
-		VALUES ($1, $2, $3, $4, $5, clock_timestamp())`,
-		eventID.String(), id.String(), eventType, payload, map[string]string(headers))
-	return err
+	return q.InsertOutboxEvent(ctx, sqlcgen.InsertOutboxEventParams{
+		ID:          eventID.String(),
+		AggregateID: id.String(),
+		EventType:   eventType,
+		Payload:     payload,
+		Headers:     encodedHeaders,
+	})
 }
 
 // OutboxSource implements outbox.Source using the outbox table.
 type OutboxSource struct {
-	pool *pgxpool.Pool
+	pool    *pgxpool.Pool
+	queries *sqlcgen.Queries
 }
 
 var _ outbox.Source = (*OutboxSource)(nil)
 
-func NewOutboxSource(pool *pgxpool.Pool) *OutboxSource { return &OutboxSource{pool: pool} }
+func NewOutboxSource(pool *pgxpool.Pool) *OutboxSource {
+	return &OutboxSource{pool: pool, queries: sqlcgen.New(pool)}
+}
 
 // Process locks a batch with FOR UPDATE SKIP LOCKED: concurrent relays do not select the same
 // message or wait for each other. Locks remain until publishing and per-message result updates finish.
@@ -100,18 +104,17 @@ func (s *OutboxSource) Process(ctx context.Context, limit int, publish func(cont
 	var res outbox.Result
 	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
 		res = outbox.Result{}
-		rows, err := tx.Query(ctx, `SELECT id::text, aggregate_id::text, event_type, payload, headers FROM outbox
-			WHERE published_at IS NULL AND parked_at IS NULL ORDER BY created_at, id LIMIT $1 FOR UPDATE SKIP LOCKED`, limit)
-		if err != nil {
+		q := s.queries.WithTx(tx)
+		rows, err := q.LockPendingOutboxEvents(ctx, int64(limit))
+		if err != nil || len(rows) == 0 {
 			return err
 		}
-		msgs, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (outbox.Message, error) {
-			var m outbox.Message
-			err := row.Scan(&m.ID, &m.Key, &m.Type, &m.Payload, &m.Headers)
-			return m, err
-		})
-		if err != nil || len(msgs) == 0 {
-			return err
+		msgs := make([]outbox.Message, len(rows))
+		for i, row := range rows {
+			msgs[i] = outbox.Message{ID: row.ID, Key: row.AggregateID, Type: row.EventType, Payload: row.Payload}
+			if err := json.Unmarshal(row.Headers, &msgs[i].Headers); err != nil {
+				return fmt.Errorf("decode headers of %s: %w", row.ID, err)
+			}
 		}
 		errs := publish(ctx, msgs)
 		if len(errs) != len(msgs) {
@@ -123,7 +126,7 @@ func (s *OutboxSource) Process(ctx context.Context, limit int, publish func(cont
 			case err == nil:
 				published = append(published, m.ID)
 			case errors.Is(err, outbox.ErrPermanent):
-				if _, err := tx.Exec(ctx, `UPDATE outbox SET parked_at = now(), last_error = $2 WHERE id = $1`, m.ID, err.Error()); err != nil {
+				if err := q.ParkOutboxEvent(ctx, sqlcgen.ParkOutboxEventParams{ID: m.ID, LastError: err.Error()}); err != nil {
 					return err
 				}
 				res.Parked = append(res.Parked, m.ID)
@@ -135,7 +138,7 @@ func (s *OutboxSource) Process(ctx context.Context, limit int, publish func(cont
 			}
 		}
 		if len(published) > 0 {
-			if _, err := tx.Exec(ctx, `UPDATE outbox SET published_at = now() WHERE id = ANY($1::uuid[])`, published); err != nil {
+			if err := q.MarkOutboxEventsPublished(ctx, published); err != nil {
 				return err
 			}
 		}
@@ -149,9 +152,9 @@ func (s *OutboxSource) Process(ctx context.Context, limit int, publish func(cont
 }
 
 func (s *OutboxSource) Purge(ctx context.Context, before time.Time) (int64, error) {
-	tag, err := s.pool.Exec(ctx, `DELETE FROM outbox WHERE published_at < $1`, before)
+	n, err := s.queries.PurgePublishedOutboxEvents(ctx, before)
 	if err != nil {
 		return 0, fmt.Errorf("outbox purge: %w", err)
 	}
-	return tag.RowsAffected(), nil
+	return n, nil
 }
