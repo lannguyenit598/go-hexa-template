@@ -31,7 +31,10 @@ Compare against `docs/api.md`. Explicitly flag existing status, `detail`, or fie
 
 1. Add a subtest to `internal/adapter/outbound/repotest/contract.go`.
 2. Observe failure: `go test ./internal/adapter/outbound/memory/`.
-3. Implement in `memory`, then `postgres` (parameterized SQL, `mapError`; use the `add-migration` skill for schema changes). New postgres **writes** use `r.write` and call `r.appendEvent` on success, with `outbox_test.go` coverage (see `.claude/rules/messaging.md`).
+3. Implement in `memory`, then `postgres`:
+   - add a named query to `internal/adapter/outbound/postgres/queries/users.sql` (explicit columns, parameters) and run `make sqlc-generate`; use the `add-migration` skill for schema changes;
+   - call the generated method, convert rows with `toDomain`, and map errors with `mapError`;
+   - new **writes** use `r.write`, run every query through the `q` it passes, and call `r.appendEvent(ctx, q, ...)` on success, with `outbox_test.go` coverage (see `.claude/rules/messaging.md`).
 4. Run both, including PostgreSQL: `TEST_DATABASE_URL=... go test ./internal/adapter/outbound/...`
 
 ## 4. Service (`internal/core/service`)
@@ -73,5 +76,7 @@ Compare against `docs/api.md`. Explicitly flag existing status, `detail`, or fie
 | Huma `Body` field, `int` query field, or schema tags (`format`, `maxLength`) | Read in `Resolve` with the existing helpers; Huma's validation changes statuses and `detail` |
 | Native `v1.GET(...)` route for an API endpoint | Register a Huma operation so it appears in `/openapi.json` |
 | Update postgres but forget memory | Add a shared `repotest` subtest first to check both |
+| Write SQL inline in Go, or edit `sqlcgen/` | Add a named query in `queries/*.sql`, then `make sqlc-generate` |
+| Call `r.queries` inside `r.write` | Use the `q` argument: `r.queries` runs outside the transaction |
 | Change `.golangci.yml` after a depguard error | Fix the incorrect import direction |
 | Write `detail` from memory | Call the API and copy the exact response |

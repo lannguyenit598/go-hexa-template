@@ -211,6 +211,17 @@ func TestOutbox_CarriesTraceContextButNotBaggage(t *testing.T) {
 	if b, ok := rows[0].Headers["baggage"]; ok {
 		t.Fatalf("baggage stored in the outbox: %q", b)
 	}
+	// The relay reads the same headers back.
+	var relayed map[string]string
+	if _, err := postgres.NewOutboxSource(pool).Process(context.Background(), 10, func(_ context.Context, msgs []outbox.Message) []error {
+		relayed = msgs[0].Headers
+		return allErr(msgs, nil)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if fmt.Sprint(relayed) != fmt.Sprint(rows[0].Headers) {
+		t.Fatalf("relayed headers %v, want %v", relayed, rows[0].Headers)
+	}
 }
 
 func TestOutboxSource_ProcessInOrderAndOnlyMarksOnSuccess(t *testing.T) {
@@ -401,21 +412,42 @@ func TestOutboxSource_MarksEachMessageByItsOwnResult(t *testing.T) {
 	}
 }
 
-// pauseDelete holds DELETE on the client until the test releases it: the transaction has
-// begun but has not locked the row, allowing another Update to commit first.
-type pauseDelete struct {
+// pauseQuery holds the first query containing match on the client until the test releases it.
+// Contains, not HasPrefix: generated queries start with a "-- name: ..." comment.
+type pauseQuery struct {
+	match            string
 	reached, release chan struct{}
 }
 
-func (p pauseDelete) TraceQueryStart(ctx context.Context, _ *pgx.Conn, d pgx.TraceQueryStartData) context.Context {
-	if strings.HasPrefix(d.SQL, "DELETE FROM users") {
+func newPause(match string) *pauseQuery {
+	return &pauseQuery{match: match, reached: make(chan struct{}), release: make(chan struct{})}
+}
+
+func (p *pauseQuery) TraceQueryStart(ctx context.Context, _ *pgx.Conn, d pgx.TraceQueryStartData) context.Context {
+	if strings.Contains(d.SQL, p.match) {
 		close(p.reached)
 		<-p.release
 	}
 	return ctx
 }
 
-func (pauseDelete) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
+func (*pauseQuery) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
+
+// pausedPool returns a pool on dsn whose queries go through tracer.
+func pausedPool(t *testing.T, dsn string, tracer pgx.QueryTracer) *pgxpool.Pool {
+	t.Helper()
+	cfg, err := pgxpool.ParseConfig(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.ConnConfig.Tracer = tracer
+	pool, err := pgxpool.NewWithConfig(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pool.Close)
+	return pool
+}
 
 // A user's events must follow commit order even when Delete starts before an Update that
 // commits first (the relay sorts by outbox insertion time).
@@ -425,17 +457,10 @@ func TestOutbox_EventOrderFollowsCommitOrder(t *testing.T) {
 	if err := postgres.Migrate(ctx, dsn, slog.New(slog.DiscardHandler)); err != nil {
 		t.Fatal(err)
 	}
-	cfg, err := pgxpool.ParseConfig(dsn)
-	if err != nil {
-		t.Fatal(err)
-	}
-	pause := pauseDelete{reached: make(chan struct{}), release: make(chan struct{})}
-	cfg.ConnConfig.Tracer = pause
-	pool, err := pgxpool.NewWithConfig(ctx, cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(pool.Close)
+	// Hold DELETE: the transaction has begun but has not locked the row, allowing another Update
+	// to commit first.
+	pause := newPause("DELETE FROM users")
+	pool := pausedPool(t, dsn, pause)
 	repo := postgres.NewUserRepository(pool, true)
 
 	u := newUser(t, userA, "order@example.com")
@@ -531,5 +556,89 @@ func TestOutbox_UpdateAndDeleteAreAtomicWithTheirEvents(t *testing.T) {
 	got, err := repo.GetByID(ctx, u.ID)
 	if err != nil || got.Name != u.Name || got.Version != u.Version {
 		t.Fatalf("user after failed writes = %+v, %v; want it unchanged", got, err)
+	}
+}
+
+// Each write and its event run on one transaction connection: until it commits, other
+// connections see neither the data change nor the event. (Dropping the outbox table, as the
+// atomicity tests do, cannot detect an event inserted outside the transaction.)
+func TestOutbox_WriteAndEventShareOneTransaction(t *testing.T) {
+	dsn := pgtest.FreshSchemaDSN(t)
+	ctx := context.Background()
+	if err := postgres.Migrate(ctx, dsn, slog.New(slog.DiscardHandler)); err != nil {
+		t.Fatal(err)
+	}
+	pause := &pauseQuery{match: "commit"}
+	repo := postgres.NewUserRepository(pausedPool(t, dsn, pause), true)
+	observer, err := postgres.Connect(ctx, dsn, postgres.PoolOptions{MaxConns: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(observer.Close)
+	seen := postgres.NewUserRepository(observer, false)
+
+	u := newUser(t, userA, "a@example.com")
+	next, err := u.Apply(domain.Changes{Name: ptr("Renamed")}, u.UpdatedAt.Add(time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, step := range []struct {
+		name    string
+		write   func() error
+		visible func() bool // Whether other connections see the data change.
+	}{
+		{"create", func() error { return repo.Create(ctx, u) }, func() bool {
+			_, err := seen.GetByID(ctx, u.ID)
+			return err == nil
+		}},
+		{"update", func() error { return repo.Update(ctx, next, u.Version) }, func() bool {
+			got, err := seen.GetByID(ctx, u.ID)
+			return err == nil && got.Version == next.Version
+		}},
+		{"delete", func() error { return repo.Delete(ctx, u.ID) }, func() bool {
+			_, err := seen.GetByID(ctx, u.ID)
+			return errors.Is(err, port.ErrNotFound)
+		}},
+	} {
+		pause.reached, pause.release = make(chan struct{}), make(chan struct{})
+		done := make(chan error, 1)
+		go func() { done <- step.write() }()
+		select { // The write and its event are done; COMMIT has not been sent.
+		case <-pause.reached:
+		case err := <-done: // Without a transaction, no COMMIT is ever sent.
+			t.Fatalf("%s finished without committing a transaction: %v", step.name, err)
+		case <-time.After(10 * time.Second):
+			t.Fatalf("%s never reached COMMIT", step.name)
+		}
+		changed, events := step.visible(), len(outboxRows(t, observer))
+		close(pause.release)
+		if err := <-done; err != nil {
+			t.Fatalf("%s: %v", step.name, err)
+		}
+		if changed || events != i {
+			t.Errorf("%s before commit: change visible=%v, %d events visible; want neither", step.name, changed, events-i)
+		}
+		if !step.visible() || len(outboxRows(t, observer)) != i+1 {
+			t.Errorf("%s after commit: want the change and exactly one new event", step.name)
+		}
+	}
+}
+
+// A canceled request context stops reads and writes and keeps its identity through mapError.
+func TestUserRepository_CanceledContext(t *testing.T) {
+	pool := freshPool(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	for _, outboxOn := range []bool{false, true} {
+		repo := postgres.NewUserRepository(pool, outboxOn)
+		if err := repo.Create(ctx, newUser(t, userA, "a@example.com")); !errors.Is(err, context.Canceled) {
+			t.Errorf("Create (outbox %v) = %v, want context.Canceled", outboxOn, err)
+		}
+		if _, err := repo.GetByID(ctx, userA); !errors.Is(err, context.Canceled) {
+			t.Errorf("GetByID = %v, want context.Canceled", err)
+		}
+	}
+	if _, err := postgres.NewUserRepository(pool, true).GetByID(context.Background(), userA); !errors.Is(err, port.ErrNotFound) {
+		t.Fatalf("user written despite cancellation: %v", err)
 	}
 }

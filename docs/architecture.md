@@ -17,7 +17,7 @@ flowchart LR
     end
     subgraph Outbound["Adapter outbound (driven)"]
         MEM["memory"]
-        PG["postgres (pgx, goose)<br/>+ outbox table"]
+        PG["postgres (pgx, sqlc, goose)<br/>+ outbox table"]
         SYS["system<br/>UUIDv7, Clock"]
         KAFKA["kafka (franz-go)"]
     end
@@ -60,6 +60,7 @@ CI **automatically enforces** these rules through `depguard` (`.golangci.yml`); 
 | `core` | `internal/core/**` imports only the standard library and `internal/core/...`, excluding `net/http`, `database/sql`, and `os` (HTTP, SQL, and environment access belong to adapters/composition root) |
 | `inbound-adapters` | No outbound adapters, `internal/app`, database packages (`pgx`, `database/sql`, `goose`, `otelpgx`), Kafka clients (`franz-go`), `internal/outbox`, or fx/dig |
 | `outbound-adapters` | No inbound adapters, Echo, Huma, other outbound adapters, shared `repotest`, `internal/app`, or fx/dig |
+| `outbound-adapters-not-postgres` | Other outbound adapters cannot import the postgres adapter or its generated `postgres/sqlcgen`; the postgres adapter itself is exempt, so it can import `sqlcgen` |
 | `outbound-adapters-no-broker` | Outbound adapters except `kafka` cannot import `franz-go`: events go through the outbox, never direct publishing |
 | `outbox` | `internal/outbox` uses only the standard library: no database, broker, or domain |
 | `platform` | `internal/config` and `internal/observability` cannot import core, adapters, `internal/outbox`, `internal/app`, or fx/dig |
@@ -107,6 +108,29 @@ To add an operation:
 3. Register the operation in `userHandler.register` with an `OperationID`, the `Users` tag, `DefaultStatus`, `jsonBody[...]` for a body, `Parameters` for values read in `Resolve`, and `problemResponses` for every error status it can return.
 4. Check the document with `TestAPIDocs_*` and update `docs/api.md`.
 
+## PostgreSQL adapter: sqlc and pgx
+
+Queries are SQL files compiled by [sqlc](https://docs.sqlc.dev) into typed pgx/v5 code. The repository still owns transactions, error mapping, events, and conversion to domain types; sqlc only replaces handwritten query strings and row scanning.
+
+| Part | Where | Why |
+|---|---|---|
+| Schema | `postgres/migrations/*.sql` | Goose migrations are the only schema: sqlc applies their Up sections in file order and ignores everything after `-- +goose Down`, so no second schema file can drift |
+| Queries | `postgres/queries/users.sql`, `outbox.sql` | One named statement per query (`-- name: GetUser :one`) with explicit columns. Comments after the name line become doc comments on the generated method |
+| Generated code | `postgres/sqlcgen/` (`sqlc.yaml`) | Committed and never edited. UUIDs map to `string`, like `domain.UserID` and `outbox.Message.ID`, so PostgreSQL parses and formats them; `timestamptz` maps to `time.Time`; JSON and JSONB stay `[]byte`, so payload bytes reach the broker unchanged. No `Querier` interface or JSON tags: `port.UserRepository` and `outbox.Source` are the interfaces |
+| Mapping | `user_repository.go`, `outbox.go` | `toDomain` converts `sqlcgen.User` (stored emails go through `domain.EmailFromStore`, not revalidated) and `mapError` translates driver errors, so generated types and pgx errors never leave the adapter |
+| Transactions | `write` in `outbox.go` | With the outbox enabled, `write` passes `r.queries.WithTx(tx)` inside `pgx.BeginFunc`, so the data change and `appendEvent` share one transaction; disabled, it passes the pool-bound `r.queries`. `OutboxSource.Process` binds its queries to its own transaction, holding row locks until results are written |
+
+The generated queries run on the pool from `NewPool`, so statement timeout, `application_name`, otelpgx tracing, and pool metrics apply unchanged. Each query text starts with its `-- name: ...` comment; otelpgx skips leading comments when naming spans (`SELECT`, `INSERT`...). Handwritten SQL remains only where it is not a business query: Goose migrations and version tracking, the read-only `to_regclass` check in `PendingMigrations`, and test fixtures.
+
+The generator is pinned in the Makefile (`SQLC`) and runs through `go run`, locally and in CI: no install, and builds use the committed code without it. The first run downloads and builds sqlc (about a minute); `CGO_ENABLED=0` selects its pure-Go parser, which needs no C compiler and generates the same code. `make sqlc-check`, part of `make check` and the CI `lint` job, generates into a temporary directory and fails on stale, missing, or leftover files without a database.
+
+To add or change a query:
+1. Change the schema with a new migration first (`/add-migration`); never edit a merged one.
+2. Add a named query to `queries/*.sql` with explicit columns and parameters. Cast where sqlc would choose an awkward type: `sqlc.arg(max_rows)::bigint` avoids `int32` for `LIMIT`/`OFFSET`, and `sqlc.arg(last_error)::text` avoids a nullable `pgtype.Text` for a nullable column.
+3. Run `make sqlc-generate` and review the `sqlcgen/` diff.
+4. Call the method from the repository, converting at the boundary. In writes, use the `q` that `write` passes; `r.queries` runs outside the transaction.
+5. Run `make check` with `TEST_DATABASE_URL` set to a disposable database (the suite truncates tables).
+
 ## Error classification
 
 | Error | Owner | Meaning |
@@ -122,7 +146,7 @@ Repositories return bare sentinels; services wrap context (`fmt.Errorf("get user
 
 **Domain validation, not struct-tag validators.** Business rules (valid email, name up to 100 Unicode characters) belong in domain so every inbound adapter (gRPC, CLI, queue consumer) shares them, while avoiding roughly a dozen indirect dependencies.
 
-**DTOs and persistence models are separate from entities.** `userResponse` (JSON) and `userRow` (SQL) are distinct structs. Column or JSON changes do not affect domain. `domain.FieldError` has no JSON tags; httpapi maps it to a DTO.
+**DTOs and persistence models are separate from entities.** `userResponse` (JSON) and the generated `sqlcgen.User` (SQL) are distinct structs. Column or JSON changes do not affect domain. `domain.FieldError` has no JSON tags; httpapi maps it to a DTO.
 
 **Inbound ports accept primitives.** `port.UpdateUserCmd`, `port.ListUsersQuery`, and Get/Delete parameters use `string`, `*string`, `int`, `int64`, not `domain.UserID` or `domain.Changes`. Transports share one contract without constructing domain values; ID validation stays centralized in core. Results remain `domain.User`, which adapters may read.
 
@@ -137,6 +161,8 @@ Repositories return bare sentinels; services wrap context (`fmt.Errorf("get user
 **Optimistic locking instead of `SELECT ... FOR UPDATE`.** Version compare-and-set needs one UPDATE (plus the outbox insert in a short transaction when enabled), without holding locks or transactions between reads and writes; the same version supplies ETags. If no row is updated, a separate SELECT EXISTS distinguishes missing records (404) from version conflicts (409). It need not share the transaction because neither outcome committed a write. Heavy contention on one record may yield 409s; user profiles generally have low contention.
 
 **Separate goose migrations from application startup.** The app reads migration status; `userapi migrate` runs DDL under a separate role. `MIGRATE_ON_START=true` is a local-development convenience. See [operations.md](operations.md#migration).
+
+**Generated queries with sqlc, not an ORM.** Queries stay plain, reviewable SQL with the same plans and locks as before, while sqlc checks columns and types against the migrations at generation time. An ORM would hide the SQL behind its API and add runtime dependencies; sqlc adds none (it is not in `go.mod`).
 
 **Real PostgreSQL via `TEST_DATABASE_URL`, without testcontainers-go.** CI service containers and docker compose already provide PostgreSQL; testcontainers would add dozens of indirect dependencies for the same job. Kafka tests use franz-go's in-memory `kfake`, without a broker container. Revisit testcontainers for infrastructure without an in-memory alternative, such as Redis.
 
@@ -195,7 +221,7 @@ type UnitOfWork interface {
 }
 ```
 
-The postgres adapter uses `pgx.BeginTxFunc` and constructs Repos over `pgx.Tx`; memory locks its mutex and calls fn. The template does not add this unused abstraction before a use case needs it. Do not hide pgx.Tx in context: forgetting to retrieve it silently writes outside the transaction, and child goroutines may use it after commit.
+The postgres adapter uses `pgx.BeginTxFunc` and constructs Repos over `queries.WithTx(tx)`; memory locks its mutex and calls fn. The template does not add this unused abstraction before a use case needs it. Do not hide pgx.Tx in context: forgetting to retrieve it silently writes outside the transaction, and child goroutines may use it after commit.
 
 **With a second aggregate:** evaluate bounded-context packages (`internal/user/{domain,app,adapter}`, `internal/order/...`, shared infrastructure in `internal/platform`) instead of the current layer organization.
 

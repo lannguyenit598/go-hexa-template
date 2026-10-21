@@ -7,7 +7,7 @@ Repo mẫu cho một REST API quản lý user, tổ chức theo kiến trúc Hex
 - hai adapter lưu trữ hoán đổi được (in-memory và PostgreSQL), cùng chạy một bộ contract test;
 - optimistic locking kèm `ETag`/`If-Match`;
 - lỗi theo chuẩn RFC 9457;
-- migration bằng goose;
+- migration bằng goose và truy vấn SQL có kiểu do sqlc sinh ra;
 - graceful shutdown cho Kubernetes;
 - log có cấu trúc và OpenTelemetry;
 - phát sự kiện lên Kafka qua transactional outbox (tắt mặc định), không sửa core;
@@ -22,6 +22,7 @@ Domain `user` là ví dụ minh hoạ đủ mọi tầng, không bắt buộc gi
 | Huma (operation có kiểu, OpenAPI 3.1) | `github.com/danielgtaylor/huma/v2` v2.39.1 |
 | PostgreSQL driver | `github.com/jackc/pgx/v5` v5.11.0 |
 | Migration | `github.com/pressly/goose/v3` v3.27.0 |
+| Truy vấn SQL có kiểu (công cụ sinh mã, chạy qua `make`; không phải dependency của module) | sqlc v1.31.1 |
 | OpenTelemetry | `go.opentelemetry.io/otel` v1.46.0 |
 | Kafka client | `github.com/twmb/franz-go` v1.22.1 |
 | PostgreSQL | 18 |
@@ -87,7 +88,8 @@ internal/
   adapter/
     inbound/httpapi/         Echo v5 + Huma: operation, DTO, middleware, OpenAPI, ánh xạ lỗi sang problem+json
     outbound/memory/         repository trong RAM (map + RWMutex)
-    outbound/postgres/       repository pgx + outbox; migrations/ (SQL nhúng, chạy bằng goose)
+    outbound/postgres/       repository pgx + outbox; migrations/ (SQL nhúng, chạy bằng goose);
+                             queries/ (SQL) được sqlc biên dịch thành sqlcgen/ (mã sinh ra, có commit)
     outbound/postgres/pgtest/  helper integration test: schema PostgreSQL rỗng, riêng cho mỗi test
     outbound/repotest/       contract test dùng chung cho mọi repository
     outbound/system/         sinh UUIDv7, đồng hồ UTC
@@ -108,6 +110,7 @@ make test               # unit + HTTP + lifecycle, không cần database
 make test-integration   # thêm test trên PostgreSQL thật (TRUNCATE bảng users và outbox trong DB của docker compose!)
 make migrate DB_URL=postgres://...   # mọi lệnh make cần PostgreSQL bỏ qua Docker khi truyền DB_URL
 make lint               # golangci-lint, gồm depguard kiểm tra quy tắc phụ thuộc
+make sqlc-generate      # sinh lại truy vấn có kiểu sau khi sửa queries/ hoặc migrations/ (make check báo lỗi nếu mã cũ)
 make build              # build binary vào ./bin, kèm version từ git
 ```
 

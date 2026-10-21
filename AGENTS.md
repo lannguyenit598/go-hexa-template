@@ -1,18 +1,19 @@
 # userapi: instructions for AI agents
 
-User-management REST API in Go 1.26 + Echo v5 + Huma v2 (typed operations, generated OpenAPI) with Hexagonal Architecture. References: `docs/architecture.md` (developers), `docs/api.md` (HTTP contract), `docs/events.md` (event contract), `docs/operations.md` (configuration and operations), and `docs/new-project.md` (using the template).
+User-management REST API in Go 1.26 + Echo v5 + Huma v2 (typed operations, generated OpenAPI) + PostgreSQL through pgx/v5 and sqlc (generated typed queries) with Hexagonal Architecture. References: `docs/architecture.md` (developers), `docs/api.md` (HTTP contract), `docs/events.md` (event contract), `docs/operations.md` (configuration and operations), and `docs/new-project.md` (using the template).
 
 ## Commands
 
 | Task | Command |
 |---|---|
-| Required pre-commit checks | `make check`: gofmt, `go mod tidy -diff`, golangci-lint (including depguard), `go test -race -count=1 ./...` |
+| Required pre-commit checks | `make check`: `make sqlc-check`, gofmt, `go mod tidy -diff`, golangci-lint (including depguard), `go test -race -count=1 ./...` |
+| Regenerate SQL queries | `make sqlc-generate` after changing `internal/adapter/outbound/postgres/queries/*.sql`, migrations, or `sqlc.yaml`; never edit `sqlcgen/` |
 | PostgreSQL tests | Set `TEST_DATABASE_URL=postgres://...` and run `make check`. Without it, PostgreSQL tests skip; state this in results |
 | Run API | `make run` (in-memory) or `make run-pg` (requires Docker) |
 | Migration | `DATABASE_URL=... go run ./cmd/userapi migrate` |
 | Event relay (outbox → Kafka) | `STORAGE=postgres DATABASE_URL=... EVENTS_SINK=kafka KAFKA_BROKERS=... go run ./cmd/userapi relay` |
 
-Tools: Go >= 1.26 and golangci-lint **v2.14.0**, built with Go >= the `go.mod` version or lint refuses to run. `.github/workflows/ci.yml` runs the `make check` steps plus govulncheck and a Docker build.
+Tools: Go >= 1.26 and golangci-lint **v2.14.0**, built with Go >= the `go.mod` version or lint refuses to run. sqlc needs no install: the Makefile pins its version and runs it with `go run`. `.github/workflows/ci.yml` runs the `make check` steps plus govulncheck and a Docker build.
 
 ## Rules
 
@@ -22,11 +23,11 @@ Before editing or creating a file, read every rule whose paths match it.
 |---|---|
 | `internal/core/**` | `.claude/rules/core.md` |
 | `internal/adapter/inbound/**` | `.claude/rules/http-adapter.md` |
-| `internal/adapter/outbound/**`, `internal/adapter/outbound/postgres/migrations/*.sql` | `.claude/rules/persistence.md` |
+| `internal/adapter/outbound/**`, `internal/adapter/outbound/postgres/{migrations,queries}/*.sql`, `sqlc.yaml` | `.claude/rules/persistence.md` |
 | `internal/outbox/**`, `internal/adapter/outbound/kafka/**`, `internal/adapter/outbound/postgres/outbox*.go`, `internal/app/relay.go`, `docs/events.md` | `.claude/rules/messaging.md` |
 | `cmd/**`, `internal/app/**`, `internal/config/**`, `internal/observability/**`, `.env.example`, `docker-compose.yml`, `Dockerfile` | `.claude/rules/composition-and-config.md` |
 | `**/*_test.go`, `internal/adapter/outbound/repotest/**`, `internal/adapter/outbound/postgres/pgtest/**` | `.claude/rules/tests.md` |
-| `go.mod`, `go.sum`, `.golangci.yml`, `.github/**`, `Makefile` | `.claude/rules/tooling-and-deps.md` |
+| `go.mod`, `go.sum`, `.golangci.yml`, `.github/**`, `Makefile`, `sqlc.yaml` | `.claude/rules/tooling-and-deps.md` |
 | `**/*.md`, `api.http` | `.claude/rules/docs.md` |
 
 ## Architecture: mandatory rules

@@ -1,0 +1,21 @@
+# sqlc generates typed query code (package sqlcgen) for the postgres adapter. Regenerate with
+# `make sqlc-generate`; `make sqlc-check` (part of `make check`) fails when the output is stale.
+version: "2"
+sql:
+  - engine: postgresql
+    # The Goose migrations are the schema: sqlc applies their Up sections in file order and ignores
+    # everything after "-- +goose Down". There is no separate schema file to maintain.
+    schema: internal/adapter/outbound/postgres/migrations
+    queries: internal/adapter/outbound/postgres/queries
+    gen:
+      go:
+        package: sqlcgen
+        out: internal/adapter/outbound/postgres/sqlcgen
+        sql_package: pgx/v5
+        overrides:
+          # IDs stay strings, like domain.UserID and outbox.Message.ID: PostgreSQL parses and
+          # formats UUIDs, so the adapter does not convert them.
+          - db_type: uuid
+            go_type: string
+          - db_type: timestamptz
+            go_type: time.Time

@@ -38,15 +38,19 @@ ALTER TABLE users DROP COLUMN IF EXISTS phone;
 
 - Files containing `CREATE INDEX CONCURRENTLY` must begin with `-- +goose NO TRANSACTION` and contain only that statement.
 
-## 3. Update persistence code
+## 3. Regenerate queries and update persistence code
 
-In `internal/adapter/outbound/postgres/user_repository.go`, update `userRow`, `selectCols`, `INSERT`/`UPDATE`, and `toDomain`. New code must handle empty new columns in legacy records.
+sqlc reads the migrations as its schema (Up sections only), so no other schema file changes.
+
+1. Update the named queries in `internal/adapter/outbound/postgres/queries/*.sql` that must read or write the column (explicit column lists; `SELECT *` would change shape silently).
+2. Run `make sqlc-generate` and review the `sqlcgen/` diff: new fields in `sqlcgen.User` and the `...Params` structs. A nullable column becomes a `pgtype` type; cast parameters in SQL or convert at the boundary.
+3. In `internal/adapter/outbound/postgres/user_repository.go`, set the new params and update `toDomain`. New code must handle empty new columns in legacy records.
 
 ## 4. Verify (requires PostgreSQL and `TEST_DATABASE_URL`)
 
 1. Apply all migrations to an empty schema with `TestPendingMigrations_EmptySchema`.
 2. Run twice successfully (the second run is a no-op): `DATABASE_URL=$TEST_DATABASE_URL go run ./cmd/userapi migrate`.
-3. Run contract tests and the full suite: `make check`.
+3. Run contract tests and the full suite: `make check` (includes `make sqlc-check`, which fails if `sqlcgen/` is stale).
 4. If `Down` exists, test up → down → up in a temporary schema (the first goose CLI download takes about a minute):
    ```bash
    S=down_check
@@ -71,3 +75,4 @@ Update the expand/contract section of `docs/operations.md` with new migration ex
 | `CREATE INDEX CONCURRENTLY` with other statements | "cannot run inside a transaction block" | Separate file + `NO TRANSACTION` |
 | Regular `CREATE INDEX` on a large table | Blocks writes while building | `CONCURRENTLY` |
 | Remove/rename a column with the new code deployment | Old pods fail with `column does not exist` | Expand/contract across deployments |
+| Forget `make sqlc-generate` | `make check` and CI fail on stale generated code | Regenerate and commit `sqlcgen/` with the migration |
