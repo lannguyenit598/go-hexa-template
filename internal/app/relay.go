@@ -28,6 +28,10 @@ func RunRelay(ctx context.Context, cfg config.Config, logger *slog.Logger, opts 
 	return run(ctx, cfg, logger, opts, relayGraph(cfg))
 }
 
+// relayIdleInTxTimeout exceeds the relay's 30s batch: the server ends a batch transaction whose
+// relay vanished (releasing its outbox row locks) unless the deployment configured its own limit.
+const relayIdleInTxTimeout = 60 * time.Second
+
 // relayGraph wires the relay. Invoke order fixes hook order: the broker is checked before the
 // database to expose invalid sink configuration (including missing sinkModule branches) first;
 // on stop, the health server and relay loop stop before the pool and sink close.
@@ -35,7 +39,7 @@ func relayGraph(cfg config.Config) fx.Option {
 	return fx.Options(
 		sinkModule(cfg),
 		fx.Module("relay",
-			fx.Provide(newPool, newRelay),
+			fx.Provide(newRelayPool, newRelay),
 			fx.Invoke(
 				func(outbox.Sink) {},
 				func(*pgxpool.Pool) {},
@@ -43,6 +47,11 @@ func relayGraph(cfg config.Config) fx.Option {
 			),
 		),
 	)
+}
+
+// newRelayPool is newPool with relayIdleInTxTimeout as the idle-in-transaction default.
+func newRelayPool(lc fx.Lifecycle, cfg config.Config, logger *slog.Logger, run runContext) (*pgxpool.Pool, error) {
+	return openPool(lc, cfg, logger, run, relayIdleInTxTimeout)
 }
 
 // newRelay builds the relay and runs its loop from start until stop. The loop context is separate

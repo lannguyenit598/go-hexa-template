@@ -163,12 +163,18 @@ func storageModule(cfg config.Config) fx.Option {
 // newPool creates the shared pool without I/O. On start it pings, migrates if MIGRATE_ON_START is
 // enabled, and fails early if the schema is older than the code (migration Job did not run or failed).
 func newPool(lc fx.Lifecycle, cfg config.Config, logger *slog.Logger, run runContext) (*pgxpool.Pool, error) {
+	return openPool(lc, cfg, logger, run, 0)
+}
+
+// openPool is newPool with an optional default idle_in_transaction_session_timeout (0 = none).
+func openPool(lc fx.Lifecycle, cfg config.Config, logger *slog.Logger, run runContext, idleInTx time.Duration) (*pgxpool.Pool, error) {
 	pool, err := postgres.NewPool(context.Background(), cfg.DB.URL, postgres.PoolOptions{
-		MaxConns:         cfg.DB.MaxConns,
-		MinConns:         cfg.DB.MinConns,
-		MaxConnLifetime:  cfg.DB.MaxConnLifetime,
-		MaxConnIdleTime:  cfg.DB.MaxConnIdleTime,
-		StatementTimeout: cfg.DB.StatementTimeout,
+		MaxConns:                        cfg.DB.MaxConns,
+		MinConns:                        cfg.DB.MinConns,
+		MaxConnLifetime:                 cfg.DB.MaxConnLifetime,
+		MaxConnIdleTime:                 cfg.DB.MaxConnIdleTime,
+		StatementTimeout:                cfg.DB.StatementTimeout,
+		DefaultIdleInTransactionTimeout: idleInTx,
 	})
 	if err != nil {
 		return nil, err

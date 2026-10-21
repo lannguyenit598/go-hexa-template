@@ -480,8 +480,8 @@ func TestRun_HookOrder(t *testing.T) {
 	start, stop = runRecorded(t, "http://"+ln.Addr().String()+"/healthz", func(ctx context.Context, l *slog.Logger) error {
 		return app.Run(ctx, cfg, l, app.Options{Listener: ln})
 	})
-	expectOrder(t, "start", start, []string{"startTelemetry", "newPool", "newHTTPServer"})
-	expectOrder(t, "stop", stop, []string{"newHTTPServer", "newPool", "startTelemetry"})
+	expectOrder(t, "start", start, []string{"startTelemetry", "openPool", "newHTTPServer"})
+	expectOrder(t, "stop", stop, []string{"newHTTPServer", "openPool", "startTelemetry"})
 }
 
 // The broker is checked before the database; the relay loop stops before the pool and sink close.
@@ -500,8 +500,8 @@ func TestRunRelay_HookOrder(t *testing.T) {
 	start, stop := runRecorded(t, "http://"+health.Addr().String()+"/healthz", func(ctx context.Context, l *slog.Logger) error {
 		return app.RunRelay(ctx, cfg, l, app.Options{Listener: health})
 	})
-	expectOrder(t, "start", start, []string{"startTelemetry", "newKafkaSink", "newPool", "newRelay", "serveRelayHealth"})
-	expectOrder(t, "stop", stop, []string{"serveRelayHealth", "newRelay", "newPool", "newKafkaSink", "startTelemetry"})
+	expectOrder(t, "start", start, []string{"startTelemetry", "newKafkaSink", "openPool", "newRelay", "serveRelayHealth"})
+	expectOrder(t, "stop", stop, []string{"serveRelayHealth", "newRelay", "openPool", "newKafkaSink", "startTelemetry"})
 }
 
 // A signal during startup must abort steps waiting on the database (ping, goose lock retries),
