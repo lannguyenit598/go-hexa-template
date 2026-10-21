@@ -55,6 +55,20 @@ type PoolOptions struct {
 
 // Connect creates a pool and immediately checks connectivity.
 func Connect(ctx context.Context, dsn string, opts PoolOptions) (*pgxpool.Pool, error) {
+	pool, err := NewPool(ctx, dsn, opts)
+	if err != nil {
+		return nil, err
+	}
+	if err := Ping(ctx, pool); err != nil {
+		pool.Close()
+		return nil, err
+	}
+	return pool, nil
+}
+
+// NewPool creates a pool without checking connectivity: pgx connects on first use, or in the
+// background when MinConns > 0. The composition root pings it in a lifecycle start hook (see Ping).
+func NewPool(ctx context.Context, dsn string, opts PoolOptions) (*pgxpool.Pool, error) {
 	cfg, err := pgxpool.ParseConfig(dsn)
 	if err != nil {
 		return nil, fmt.Errorf("parse database url: %w", err)
@@ -84,12 +98,6 @@ func Connect(ctx context.Context, dsn string, opts PoolOptions) (*pgxpool.Pool, 
 	if err != nil {
 		return nil, fmt.Errorf("create pool: %w", err)
 	}
-	pingCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-	if err := pool.Ping(pingCtx); err != nil {
-		pool.Close()
-		return nil, fmt.Errorf("ping database: %w", err)
-	}
 	// Pool metrics (busy/idle connections, acquisition wait...): the first signals to check
 	// when latency rises while database CPU remains low.
 	if err := otelpgx.RecordStats(pool); err != nil {
@@ -97,6 +105,16 @@ func Connect(ctx context.Context, dsn string, opts PoolOptions) (*pgxpool.Pool, 
 		return nil, fmt.Errorf("record pool stats: %w", err)
 	}
 	return pool, nil
+}
+
+// Ping checks connectivity, bounded to 5s so an unreachable database fails startup promptly.
+func Ping(ctx context.Context, pool *pgxpool.Pool) error {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	if err := pool.Ping(ctx); err != nil {
+		return fmt.Errorf("ping database: %w", err)
+	}
+	return nil
 }
 
 // userRow is the persistence model, separate from domain.User so the schema and domain can evolve independently.

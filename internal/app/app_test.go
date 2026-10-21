@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -150,7 +151,7 @@ func TestRun_CanceledBeforeStartReturnsPromptly(t *testing.T) {
 	}
 }
 
-// A new Storage constant without a newRepository branch must fail startup,
+// A new Storage constant without a storageModule branch must fail startup,
 // not silently fall back to in-memory storage.
 func TestRun_RejectsUnknownStorage(t *testing.T) {
 	cfg := mustConfig(t, nil)
@@ -323,7 +324,7 @@ func TestRunRelay_RefusesWhenEventsAreDisabled(t *testing.T) {
 	}
 }
 
-// Adding an EventsSink constant without a newSink branch must fail relay startup before
+// Adding an EventsSink constant without a sinkModule branch must fail relay startup before
 // database connection.
 func TestRunRelay_RejectsUnknownSink(t *testing.T) {
 	cfg := mustConfig(t, nil)
@@ -396,5 +397,133 @@ func TestRunRelay_ServesHealthWhileRunning(t *testing.T) {
 	if resp, err := get(url); err == nil {
 		_ = resp.Body.Close()
 		t.Fatal("health endpoint still open after the relay stopped")
+	}
+}
+
+// hookRecorder captures, in order, the constructors whose lifecycle hooks fx runs
+// (fx logs them at debug level through the injected logger).
+type hookRecorder struct {
+	mu          sync.Mutex
+	start, stop []string
+}
+
+func (h *hookRecorder) Enabled(context.Context, slog.Level) bool { return true }
+func (h *hookRecorder) WithAttrs([]slog.Attr) slog.Handler       { return h }
+func (h *hookRecorder) WithGroup(string) slog.Handler            { return h }
+
+func (h *hookRecorder) Handle(_ context.Context, r slog.Record) error {
+	var caller string
+	r.Attrs(func(a slog.Attr) bool {
+		if a.Key == "caller" {
+			caller = a.Value.String()[strings.LastIndex(a.Value.String(), ".")+1:]
+		}
+		return true
+	})
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	switch r.Message {
+	case "OnStart hook executing":
+		h.start = append(h.start, caller)
+	case "OnStop hook executing":
+		h.stop = append(h.stop, caller)
+	}
+	return nil
+}
+
+// runRecorded runs until healthURL returns 200, stops, and returns the hook order.
+func runRecorded(t *testing.T, healthURL string, run func(context.Context, *slog.Logger) error) (start, stop []string) {
+	t.Helper()
+	rec := &hookRecorder{}
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	done := make(chan error, 1)
+	go func() { done <- run(ctx, slog.New(rec)) }()
+	deadline := time.Now().Add(15 * time.Second) // MIGRATE_ON_START may wait for the goose advisory lock.
+	for {
+		if resp, err := get(healthURL); err == nil {
+			_ = resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				break
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("never became healthy")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	cancel()
+	if err := waitDone(t, done, 5*time.Second); err != nil {
+		t.Fatal(err)
+	}
+	return rec.start, rec.stop
+}
+
+func expectOrder(t *testing.T, what string, got, want []string) {
+	t.Helper()
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Errorf("%s hooks = %v, want %v", what, got, want)
+	}
+}
+
+// Telemetry starts first and flushes last; the HTTP server drains before the pool closes.
+func TestRun_HookOrder(t *testing.T) {
+	ln := listen(t)
+	start, stop := runRecorded(t, "http://"+ln.Addr().String()+"/healthz", func(ctx context.Context, l *slog.Logger) error {
+		return app.Run(ctx, mustConfig(t, nil), l, app.Options{Listener: ln})
+	})
+	expectOrder(t, "start", start, []string{"startTelemetry", "newHTTPServer"})
+	expectOrder(t, "stop", stop, []string{"newHTTPServer", "startTelemetry"})
+
+	dsn := pgtest.FreshSchemaDSN(t) // Skip the postgres variant without TEST_DATABASE_URL.
+	ln = listen(t)
+	cfg := mustConfig(t, map[string]string{"STORAGE": "postgres", "DATABASE_URL": dsn, "MIGRATE_ON_START": "true"})
+	start, stop = runRecorded(t, "http://"+ln.Addr().String()+"/healthz", func(ctx context.Context, l *slog.Logger) error {
+		return app.Run(ctx, cfg, l, app.Options{Listener: ln})
+	})
+	expectOrder(t, "start", start, []string{"startTelemetry", "newPool", "newHTTPServer"})
+	expectOrder(t, "stop", stop, []string{"newHTTPServer", "newPool", "startTelemetry"})
+}
+
+// The broker is checked before the database; the relay loop stops before the pool and sink close.
+func TestRunRelay_HookOrder(t *testing.T) {
+	dsn := pgtest.FreshSchemaDSN(t) // Skip without TEST_DATABASE_URL.
+	cluster, err := kfake.NewCluster(kfake.NumBrokers(1), kfake.SeedTopics(1, "users"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(cluster.Close)
+	cfg := mustConfig(t, map[string]string{
+		"STORAGE": "postgres", "DATABASE_URL": dsn, "MIGRATE_ON_START": "true",
+		"EVENTS_SINK": "kafka", "KAFKA_BROKERS": strings.Join(cluster.ListenAddrs(), ","),
+	})
+	health := listen(t)
+	start, stop := runRecorded(t, "http://"+health.Addr().String()+"/healthz", func(ctx context.Context, l *slog.Logger) error {
+		return app.RunRelay(ctx, cfg, l, app.Options{Listener: health})
+	})
+	expectOrder(t, "start", start, []string{"startTelemetry", "newKafkaSink", "newPool", "newRelay", "serveRelayHealth"})
+	expectOrder(t, "stop", stop, []string{"serveRelayHealth", "newRelay", "newPool", "newKafkaSink", "startTelemetry"})
+}
+
+// A signal during startup must abort steps waiting on the database (ping, goose lock retries),
+// or the orchestrator kills the pod after its grace period instead of letting it exit.
+func TestRun_SignalAbortsStartupWaitingOnDatabase(t *testing.T) {
+	// A server that accepts connections and never answers: the database ping hangs.
+	silent := listen(t)
+	go func() {
+		for {
+			conn, err := silent.Accept()
+			if err != nil {
+				return
+			}
+			t.Cleanup(func() { _ = conn.Close() })
+		}
+	}()
+	cfg := mustConfig(t, map[string]string{
+		"STORAGE": "postgres", "DATABASE_URL": "postgres://u:p@" + silent.Addr().String() + "/db?sslmode=disable",
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	time.AfterFunc(100*time.Millisecond, cancel)
+	if err := runWithTimeout(t, ctx, cfg, app.Options{Listener: listen(t)}, 2*time.Second); err == nil {
+		t.Fatal("Run = nil, want startup error after cancellation")
 	}
 }

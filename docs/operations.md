@@ -11,7 +11,7 @@ All configuration comes from environment variables. Invalid configuration exits 
 | `HTTP_ADDR` | `:8080` | Listen address | |
 | `STORAGE` | `memory` | memory or postgres | Case-insensitive |
 | `DATABASE_URL` | (empty) | PostgreSQL URL | Required for STORAGE=postgres and migrate |
-| `LOG_LEVEL` | `info` | debug, info, warn, error | Case-insensitive; accepts slog forms such as warn+1 |
+| `LOG_LEVEL` | `info` | debug, info, warn, error | Case-insensitive; accepts slog forms such as warn+1. `debug` also logs Uber Fx wiring and lifecycle events |
 | `REQUEST_TIMEOUT` | `10s` | Per-request context timeout | > 0 |
 | `HTTP_IDLE_TIMEOUT` | `75s` | Idle keep-alive duration | > 0; must exceed LB idle timeout |
 | `SHUTDOWN_DELAY` | `0s` | Continue serving after SIGTERM before closing listener | ≥ 0; Kubernetes: 5s–10s |

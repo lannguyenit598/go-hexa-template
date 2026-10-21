@@ -53,6 +53,10 @@ linters:
               desc: events are written by the storage adapter inside its transaction, never from a transport
             - pkg: github.com/example/userapi/internal/app
               desc: only cmd may depend on the composition root
+            - pkg: go.uber.org/fx
+              desc: dependency injection belongs in the composition root (internal/app); take dependencies as constructor parameters
+            - pkg: go.uber.org/dig
+              desc: dependency injection belongs in the composition root (internal/app); take dependencies as constructor parameters
         # Outbound adapters are independent: no imports of other outbound adapters or shared test suites.
         outbound-adapters:
           files:
@@ -75,6 +79,10 @@ linters:
               desc: the shared contract test kit is for tests only
             - pkg: github.com/example/userapi/internal/app
               desc: only cmd may depend on the composition root
+            - pkg: go.uber.org/fx
+              desc: dependency injection belongs in the composition root (internal/app); take dependencies as constructor parameters
+            - pkg: go.uber.org/dig
+              desc: dependency injection belongs in the composition root (internal/app); take dependencies as constructor parameters
         # Shared infrastructure (config, observability) must not know core, adapters, or app.
         platform:
           files:
@@ -90,6 +98,10 @@ linters:
               desc: platform packages must not depend on the outbox relay
             - pkg: github.com/example/userapi/internal/app
               desc: only cmd may depend on the composition root
+            - pkg: go.uber.org/fx
+              desc: dependency injection belongs in the composition root (internal/app)
+            - pkg: go.uber.org/dig
+              desc: dependency injection belongs in the composition root (internal/app)
         # Only the kafka adapter may use a Kafka client; direct publishing elsewhere would be a dual write.
         outbound-adapters-no-broker:
           files:
@@ -127,6 +139,10 @@ linters:
               desc: adapters are wired in internal/app, not in cmd
             - pkg: github.com/pressly/goose
               desc: migrations run through internal/app (app.Migrate), not from cmd
+            - pkg: go.uber.org/fx
+              desc: the fx graph is built in internal/app; cmd only calls app.Run/app.RunRelay
+            - pkg: go.uber.org/dig
+              desc: the fx graph is built in internal/app; cmd only calls app.Run/app.RunRelay
         # All other packages (including new ones such as internal/worker): only the composition root may know adapters.
         # A new package category allowed to import adapters needs its own rule.
         everything-else:
@@ -149,6 +165,10 @@ linters:
               desc: only the HTTP adapter may use the HTTP framework
             - pkg: github.com/twmb/franz-go
               desc: only the kafka adapter may use the Kafka client (internal/outbox talks to it through Sink)
+            - pkg: go.uber.org/fx
+              desc: only the composition root (internal/app) may use the dependency injection container
+            - pkg: go.uber.org/dig
+              desc: only the composition root (internal/app) may use the dependency injection container
     forbidigo:
       forbid:
         - pattern: ^time\.Now$
