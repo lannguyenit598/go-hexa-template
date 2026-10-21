@@ -167,7 +167,11 @@ Old and new pods share the new schema during rollout; migrations must remain bac
 
 userapi publishes user.registered / user.updated / user.deleted to Kafka through a transactional outbox. Consumer contract: [events.md](events.md).
 
-Enable EVENTS_SINK=kafka with STORAGE=postgres and KAFKA_BROKERS, configured **identically** for API and relay:
+Enable EVENTS_SINK=kafka with STORAGE=postgres and KAFKA_BROKERS, configured **identically** for API and relay.
+
+Turn events on before the service takes its first write, or during a write freeze. During a rolling change, instances still running with EVENTS_SINK=none commit changes without outbox rows, and those events never exist; consumers cannot recover them from version gaps ([consumer guarantees](events.md#consumer-guarantees)).
+
+Configuration per process:
 
 - **API:** adds an outbox row atomically with each user creation, update, or deletion. It does not connect to Kafka; broker outages do not break API writes.
 - **Relay:** run userapi relay as a separate Deployment using the **same image**:
