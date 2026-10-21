@@ -448,3 +448,44 @@ func TestRelay_ShutdownDuringPurgeReturnsPromptly(t *testing.T) {
 		t.Fatalf("purge context error = %v, want context.Canceled", seen)
 	}
 }
+
+// deadlineSource records its own context deadline and the one its publish callback receives.
+type deadlineSource struct {
+	memSource
+	mu                 sync.Mutex
+	process, published time.Time
+}
+
+func (s *deadlineSource) Process(ctx context.Context, _ int, publish func(context.Context, []outbox.Message) []error) (outbox.Result, error) {
+	dl, _ := ctx.Deadline()
+	publish(ctx, messages(1))
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.process.IsZero() {
+		s.process = dl
+	}
+	return outbox.Result{}, nil
+}
+
+// Publishing gets at most 25s of the 30s batch, so marking and committing results keep at least 5s.
+func TestRelay_PublishLeavesTimeToRecordResults(t *testing.T) {
+	src := &deadlineSource{}
+	stop := runRelay(newRelay(src, sinkFunc(func(ctx context.Context, m []outbox.Message) []error {
+		dl, _ := ctx.Deadline()
+		src.mu.Lock()
+		if src.published.IsZero() {
+			src.published = dl
+		}
+		src.mu.Unlock()
+		return each(m, nil)
+	})))
+	waitFor(t, func() bool { src.mu.Lock(); defer src.mu.Unlock(); return !src.process.IsZero() })
+	if err := stop(); err != nil {
+		t.Fatal(err)
+	}
+	src.mu.Lock()
+	defer src.mu.Unlock()
+	if gap := src.process.Sub(src.published); gap < 5*time.Second {
+		t.Fatalf("batch deadline - publish deadline = %v, want at least 5s", gap)
+	}
+}

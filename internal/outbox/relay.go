@@ -53,9 +53,12 @@ type Sink interface {
 }
 
 const (
-	// batchTimeout bounds a batch; shutdown signals do not cancel an active batch (see Run).
-	batchTimeout = 30 * time.Second
-	purgeEvery   = time.Hour
+	// batchTimeout bounds a batch, publishing plus recording its results and committing; shutdown
+	// signals do not cancel an active batch (see Run). publishTimeout bounds publishing alone,
+	// leaving the rest for recording results, so a slow broker cannot expire the commit.
+	batchTimeout   = 30 * time.Second
+	publishTimeout = 25 * time.Second
+	purgeEvery     = time.Hour
 	// A purge turn deletes up to maxPurgeChunks chunks of purgeChunkSize rows within purgeBudget,
 	// so cleanup never takes over the loop; a larger backlog continues in the next iteration.
 	purgeChunkSize  = 1000
@@ -111,7 +114,7 @@ func (r *Relay) Run(ctx context.Context) error {
 	for {
 		r.beat()
 		batchCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), batchTimeout)
-		res, err := r.Source.Process(batchCtx, r.BatchSize, r.Sink.Publish)
+		res, err := r.Source.Process(batchCtx, r.BatchSize, r.publish)
 		cancel()
 		r.beat()
 		r.log(ctx, res, err)
@@ -131,6 +134,18 @@ func (r *Relay) Run(ctx context.Context) error {
 		case <-time.After(r.PollInterval):
 		}
 	}
+}
+
+// publish bounds Sink.Publish by publishTimeout, ending at least batchTimeout-publishTimeout before
+// the batch deadline so recording results always keeps that reserve.
+func (r *Relay) publish(ctx context.Context, msgs []Message) []error {
+	deadline := time.Now().Add(publishTimeout)
+	if dl, ok := ctx.Deadline(); ok && dl.Add(publishTimeout-batchTimeout).Before(deadline) {
+		deadline = dl.Add(publishTimeout - batchTimeout)
+	}
+	ctx, cancel := context.WithDeadline(ctx, deadline)
+	defer cancel()
+	return r.Sink.Publish(ctx, msgs)
 }
 
 // purge runs one bounded turn and returns when the next turn is due.
