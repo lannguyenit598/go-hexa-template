@@ -21,7 +21,7 @@ type problem struct {
 	Status   int          `json:"status"`
 	Detail   string       `json:"detail,omitempty"`
 	Instance string       `json:"instance,omitempty"`
-	Errors   []fieldError `json:"errors,omitempty"`
+	Errors   []fieldError `json:"errors,omitempty" nullable:"false"`
 }
 
 // fieldError is the DTO for domain.FieldError: JSON formatting belongs to the adapter, not domain.

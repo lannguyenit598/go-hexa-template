@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -9,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/danielgtaylor/huma/v2"
 	"github.com/labstack/echo/v5"
 
 	"github.com/example/userapi/internal/core/domain"
@@ -17,24 +19,30 @@ import (
 
 // ---------- DTO: JSON wire format, separate from domain ----------
 
+// The doc tags describe the OpenAPI schema; normalization and validation happen in the domain,
+// so the schemas add no length or format limits.
+
 type createUserRequest struct {
-	Email string `json:"email"`
-	Name  string `json:"name"`
+	_     struct{} `additionalProperties:"true"` // Unknown fields are ignored.
+	Email string   `json:"email" example:" Lan@Example.COM " doc:"Trimmed and lowercased; at most 254 characters; a bare address; unique."`
+	Name  string   `json:"name" example:"  Lan   Nguyen " doc:"Whitespace runs collapse to one space; at most 100 Unicode code points."`
 }
 
 // Pointers distinguish an omitted field (nil) from an explicitly empty string.
 type updateUserRequest struct {
-	Email *string `json:"email"`
-	Name  *string `json:"name"`
+	_     struct{} `additionalProperties:"true"`
+	Email *string  `json:"email" required:"false" nullable:"true" doc:"Omitted or null: unchanged. Same rules as on creation."`
+	Name  *string  `json:"name" required:"false" nullable:"true" example:"Lan Pham" doc:"Omitted or null: unchanged. Same rules as on creation."`
 }
 
 type userResponse struct {
-	ID        string    `json:"id"`
-	Email     string    `json:"email"`
-	Name      string    `json:"name"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
-	Version   int64     `json:"version"`
+	ID    string `json:"id" example:"01a15359-aa28-7a00-a380-c47e52905707"`
+	Email string `json:"email" example:"lan@example.com"`
+	Name  string `json:"name" example:"Lan Nguyen"`
+	// Times are UTC with up to microsecond precision; trailing fractional zeros are omitted.
+	CreatedAt time.Time `json:"created_at" example:"2026-10-19T08:49:07.624656Z" doc:"UTC, 0 to 6 fractional digits"`
+	UpdatedAt time.Time `json:"updated_at" example:"2026-10-19T08:49:07.624656Z" doc:"Changes only when data changes"`
+	Version   int64     `json:"version" example:"1" doc:"Starts at 1; increments on each actual change"`
 }
 
 type pageMeta struct {
@@ -44,7 +52,7 @@ type pageMeta struct {
 }
 
 type listUsersResponse struct {
-	Data []userResponse `json:"data"`
+	Data []userResponse `json:"data" nullable:"false"`
 	Meta pageMeta       `json:"meta"`
 }
 
@@ -124,90 +132,205 @@ func bindJSON(c *echo.Context, target any) error {
 	return err
 }
 
-func writeUser(c *echo.Context, status int, u domain.User) error {
-	c.Response().Header().Set("ETag", etag(u))
-	return c.JSON(status, toResponse(u))
-}
-
 // ---------- Handler ----------
 
 type userHandler struct {
 	users port.UserService
 }
 
-func (h *userHandler) create(c *echo.Context) error {
-	var req createUserRequest
-	if err := bindJSON(c, &req); err != nil {
-		return err // *echo.HTTPError 400/413/415; the error handler handles the response.
-	}
-	u, err := h.users.Register(c.Request().Context(), port.RegisterUserCmd{Email: req.Email, Name: req.Name})
-	if err != nil {
-		return err
-	}
-	c.Response().Header().Set(echo.HeaderLocation, "/api/v1/users/"+u.ID.String())
-	return writeUser(c, http.StatusCreated, u)
+// register adds the user operations. Inputs read the request in Resolve with the same helpers as
+// before Huma (bindJSON, parseIfMatch, echo.QueryParamOr), keeping their status codes and
+// details; Huma's own parsing and validation would answer with different errors.
+func (h *userHandler) register(api huma.API) {
+	tags := []string{"Users"}
+	register(api, huma.Operation{
+		OperationID:   "createUser",
+		Method:        http.MethodPost,
+		Path:          "/api/v1/users",
+		Summary:       "Create a user",
+		Tags:          tags,
+		DefaultStatus: http.StatusCreated,
+		RequestBody:   jsonBody[createUserRequest](api),
+		Responses:     problemResponses(api, 400, 409, 413, 415, 422, 500, 503),
+	}, h.create)
+	register(api, huma.Operation{
+		OperationID: "listUsers",
+		Method:      http.MethodGet,
+		Path:        "/api/v1/users",
+		Summary:     "List users",
+		Description: "Ordered by created_at, then id. meta reports the effective limit and offset.",
+		Tags:        tags,
+		Parameters: []*huma.Param{
+			{Name: "limit", In: "query", Description: "Page size. Values ≤ 0 use 20; values above 100 use 100.",
+				Schema: &huma.Schema{Type: huma.TypeInteger, Default: 20}},
+			{Name: "offset", In: "query", Description: "Users to skip. Negative values use 0.",
+				Schema: &huma.Schema{Type: huma.TypeInteger, Default: 0, Maximum: new(10000.0)}},
+		},
+		Responses: problemResponses(api, 400, 422, 500, 503),
+	}, h.list)
+	register(api, huma.Operation{
+		OperationID: "getUser",
+		Method:      http.MethodGet,
+		Path:        "/api/v1/users/{id}",
+		Summary:     "Get a user",
+		Tags:        tags,
+		Responses:   problemResponses(api, 404, 500, 503),
+	}, h.get)
+	register(api, huma.Operation{
+		OperationID: "updateUser",
+		Method:      http.MethodPatch,
+		Path:        "/api/v1/users/{id}",
+		Summary:     "Update a user",
+		Description: "Only supplied fields change; omitted or null fields stay unchanged. " +
+			"An empty body or {} returns the current user without a new version.",
+		Tags: tags,
+		Parameters: []*huma.Param{
+			{Name: "If-Match", In: "header", Schema: &huma.Schema{Type: huma.TypeString},
+				Description: `Update only if the current version matches this strong ETag, such as "1". ` +
+					`"*" or no header: no precondition. Other values, including weak, empty, or multiple ETags, return 412.`},
+		},
+		RequestBody: jsonBody[updateUserRequest](api),
+		Responses:   problemResponses(api, 400, 404, 409, 412, 413, 415, 422, 500, 503),
+	}, h.update)
+	register(api, huma.Operation{
+		OperationID:   "deleteUser",
+		Method:        http.MethodDelete,
+		Path:          "/api/v1/users/{id}",
+		Summary:       "Delete a user",
+		Description:   "If-Match is ignored.",
+		Tags:          tags,
+		DefaultStatus: http.StatusNoContent,
+		Responses:     problemResponses(api, 404, 500, 503),
+	}, h.delete)
 }
 
-func (h *userHandler) get(c *echo.Context) error {
-	u, err := h.users.Get(c.Request().Context(), c.Param("id"))
-	if err != nil {
-		return err
-	}
-	return writeUser(c, http.StatusOK, u)
+// userID is the path parameter. Malformed IDs reach the service, which reports them as absent (404).
+type userID struct {
+	ID string `path:"id" doc:"User ID: a lowercase UUID v7. Malformed IDs return 404."`
 }
 
-func (h *userHandler) list(c *echo.Context) error {
-	limit, err := echo.QueryParamOr[int](c, "limit", 0)
-	if err != nil {
-		return echo.NewHTTPError(http.StatusBadRequest, "limit must be an integer")
+type createUserInput struct {
+	body createUserRequest
+	err  error
+}
+
+func (in *createUserInput) Resolve(ctx huma.Context) []error {
+	in.err = bindJSON(echoContext(ctx), &in.body)
+	return nil
+}
+
+type listUsersInput struct {
+	limit, offset int
+	err           error
+}
+
+func (in *listUsersInput) Resolve(ctx huma.Context) []error {
+	c := echoContext(ctx)
+	var err error
+	if in.limit, err = echo.QueryParamOr[int](c, "limit", 0); err != nil {
+		in.err = echo.NewHTTPError(http.StatusBadRequest, "limit must be an integer")
+	} else if in.offset, err = echo.QueryParamOr[int](c, "offset", 0); err != nil {
+		in.err = echo.NewHTTPError(http.StatusBadRequest, "offset must be an integer")
 	}
-	offset, err := echo.QueryParamOr[int](c, "offset", 0)
-	if err != nil {
-		return echo.NewHTTPError(http.StatusBadRequest, "offset must be an integer")
+	return nil
+}
+
+type updateUserInput struct {
+	ID       string `path:"id" doc:"User ID: a lowercase UUID v7. Malformed IDs return 404."`
+	expected int64
+	body     updateUserRequest
+	err      error
+}
+
+func (in *updateUserInput) Resolve(ctx huma.Context) []error {
+	c := echoContext(ctx)
+	if in.expected, in.err = parseIfMatch(c); in.err == nil {
+		in.err = bindJSON(c, &in.body)
 	}
-	page, err := h.users.List(c.Request().Context(), port.ListUsersQuery{Limit: limit, Offset: offset})
+	return nil
+}
+
+type userOutput struct {
+	ETag string `header:"ETag" doc:"Current version as a strong ETag, such as \"1\""`
+	Body userResponse
+}
+
+type createUserOutput struct {
+	Location string `header:"Location" doc:"Path of the new user"`
+	ETag     string `header:"ETag" doc:"Current version as a strong ETag, such as \"1\""`
+	Body     userResponse
+}
+
+type listUsersOutput struct {
+	Body listUsersResponse
+}
+
+func newUserOutput(u domain.User) *userOutput { return &userOutput{ETag: etag(u), Body: toResponse(u)} }
+
+// Handlers return input errors (*echo.HTTPError 400/412/413/415) and service errors; register
+// maps both through toProblem.
+
+func (h *userHandler) create(ctx context.Context, in *createUserInput) (*createUserOutput, error) {
+	if in.err != nil {
+		return nil, in.err
+	}
+	u, err := h.users.Register(ctx, port.RegisterUserCmd{Email: in.body.Email, Name: in.body.Name})
 	if err != nil {
-		return err
+		return nil, err
+	}
+	return &createUserOutput{Location: "/api/v1/users/" + u.ID.String(), ETag: etag(u), Body: toResponse(u)}, nil
+}
+
+func (h *userHandler) get(ctx context.Context, in *userID) (*userOutput, error) {
+	u, err := h.users.Get(ctx, in.ID)
+	if err != nil {
+		return nil, err
+	}
+	return newUserOutput(u), nil
+}
+
+func (h *userHandler) list(ctx context.Context, in *listUsersInput) (*listUsersOutput, error) {
+	if in.err != nil {
+		return nil, in.err
+	}
+	page, err := h.users.List(ctx, port.ListUsersQuery{Limit: in.limit, Offset: in.offset})
+	if err != nil {
+		return nil, err
 	}
 	data := make([]userResponse, len(page.Users))
 	for i, u := range page.Users {
 		data[i] = toResponse(u)
 	}
-	return c.JSON(http.StatusOK, listUsersResponse{
+	return &listUsersOutput{Body: listUsersResponse{
 		Data: data,
 		Meta: pageMeta{Limit: page.Limit, Offset: page.Offset, Total: page.Total},
-	})
+	}}, nil
 }
 
-func (h *userHandler) update(c *echo.Context) error {
-	expected, err := parseIfMatch(c)
-	if err != nil {
-		return err
+func (h *userHandler) update(ctx context.Context, in *updateUserInput) (*userOutput, error) {
+	if in.err != nil {
+		return nil, in.err
 	}
-	var req updateUserRequest
-	if err := bindJSON(c, &req); err != nil {
-		return err
-	}
-	u, err := h.users.Update(c.Request().Context(), port.UpdateUserCmd{
-		ID:              c.Param("id"),
-		Email:           req.Email,
-		Name:            req.Name,
-		ExpectedVersion: expected,
+	u, err := h.users.Update(ctx, port.UpdateUserCmd{
+		ID:              in.ID,
+		Email:           in.body.Email,
+		Name:            in.body.Name,
+		ExpectedVersion: in.expected,
 	})
 	if err != nil {
 		// With If-Match, a version conflict means the precondition failed (412).
 		// Without If-Match, conflicts remaining after service retries become 409 (see toProblem).
-		if expected != 0 && errors.Is(err, port.ErrVersionConflict) {
-			return errPreconditionFailed
+		if in.expected != 0 && errors.Is(err, port.ErrVersionConflict) {
+			return nil, errPreconditionFailed
 		}
-		return err
+		return nil, err
 	}
-	return writeUser(c, http.StatusOK, u)
+	return newUserOutput(u), nil
 }
 
-func (h *userHandler) delete(c *echo.Context) error {
-	if err := h.users.Delete(c.Request().Context(), c.Param("id")); err != nil {
-		return err
+func (h *userHandler) delete(ctx context.Context, in *userID) (*struct{}, error) {
+	if err := h.users.Delete(ctx, in.ID); err != nil {
+		return nil, err
 	}
-	return c.NoContent(http.StatusNoContent)
+	return &struct{}{}, nil
 }

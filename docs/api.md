@@ -1,12 +1,12 @@
 # API reference
 
-Reference for API clients. Default local base URL: `http://localhost:8080`. Example requests: [`api.http`](../api.http).
+Reference for API clients. Default local base URL: `http://localhost:8080`. Example requests: [`api.http`](../api.http). With `API_DOCS_ENABLED=true`, the server also publishes an OpenAPI 3.1 document at `/openapi.json` and SwaggerUI at `/docs` ([operations.md](operations.md#api-documentation)); this page remains the reference for behavior the schema cannot express, such as normalization and `If-Match` rules.
 
 ## General conventions
 
 | Item | Convention |
 |---|---|
-| Format | JSON (`application/json`). Requests with bodies (POST, PATCH) **must** send `Content-Type: application/json` (case-insensitive; parameters such as `; charset=utf-8` are allowed). Missing headers and other media types, including forms/XML, return 415 |
+| Format | JSON (`application/json`); `Accept` is ignored. Requests with bodies (POST, PATCH) **must** send `Content-Type: application/json` (case-insensitive; parameters such as `; charset=utf-8` are allowed). Missing headers and other media types, including forms/XML, return 415 |
 | Body size | Maximum 1 MiB; larger bodies return 413, including chunked bodies without `Content-Length` |
 | Unknown body fields | Ignored without errors |
 | ID | Canonical lowercase UUID v7 (`01a15359-aa28-7a00-a380-c47e52905707`). Malformed IDs, including uppercase UUIDs, are treated as absent: 404 |

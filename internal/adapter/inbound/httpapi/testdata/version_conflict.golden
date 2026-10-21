@@ -1,0 +1,87 @@
+=== create
+POST /api/v1/users
+Content-Type: application/json
+X-Request-Id: contract-00
+
+{"email":"a@example.com","name":"A"}
+--- 409 Conflict
+Content-Length: 141
+Content-Type: application/problem+json
+X-Request-Id: contract-00
+
+{"type":"about:blank","title":"Conflict","status":409,"detail":"the user was modified concurrently, please retry","instance":"/api/v1/users"}
+
+=== list
+GET /api/v1/users
+X-Request-Id: contract-01
+
+
+--- 409 Conflict
+Content-Length: 141
+Content-Type: application/problem+json
+X-Request-Id: contract-01
+
+{"type":"about:blank","title":"Conflict","status":409,"detail":"the user was modified concurrently, please retry","instance":"/api/v1/users"}
+
+=== get
+GET /api/v1/users/01a15359-aa28-7a00-a380-000000000001
+X-Request-Id: contract-02
+
+
+--- 409 Conflict
+Content-Length: 178
+Content-Type: application/problem+json
+X-Request-Id: contract-02
+
+{"type":"about:blank","title":"Conflict","status":409,"detail":"the user was modified concurrently, please retry","instance":"/api/v1/users/01a15359-aa28-7a00-a380-000000000001"}
+
+=== get HEAD
+HEAD /api/v1/users/01a15359-aa28-7a00-a380-000000000001
+X-Request-Id: contract-03
+
+
+--- 405 Method Not Allowed
+Allow: OPTIONS, DELETE, GET, PATCH
+X-Request-Id: contract-03
+
+
+
+=== update
+PATCH /api/v1/users/01a15359-aa28-7a00-a380-000000000001
+Content-Type: application/json
+X-Request-Id: contract-04
+
+{"name":"B"}
+--- 409 Conflict
+Content-Length: 178
+Content-Type: application/problem+json
+X-Request-Id: contract-04
+
+{"type":"about:blank","title":"Conflict","status":409,"detail":"the user was modified concurrently, please retry","instance":"/api/v1/users/01a15359-aa28-7a00-a380-000000000001"}
+
+=== update with If-Match
+PATCH /api/v1/users/01a15359-aa28-7a00-a380-000000000001
+Content-Type: application/json
+If-Match: "1"
+X-Request-Id: contract-05
+
+{"name":"B"}
+--- 412 Precondition Failed
+Content-Length: 200
+Content-Type: application/problem+json
+X-Request-Id: contract-05
+
+{"type":"about:blank","title":"Precondition Failed","status":412,"detail":"If-Match does not match the current version of the resource","instance":"/api/v1/users/01a15359-aa28-7a00-a380-000000000001"}
+
+=== delete
+DELETE /api/v1/users/01a15359-aa28-7a00-a380-000000000001
+X-Request-Id: contract-06
+
+
+--- 409 Conflict
+Content-Length: 178
+Content-Type: application/problem+json
+X-Request-Id: contract-06
+
+{"type":"about:blank","title":"Conflict","status":409,"detail":"the user was modified concurrently, please retry","instance":"/api/v1/users/01a15359-aa28-7a00-a380-000000000001"}
+

@@ -18,6 +18,7 @@ All configuration comes from environment variables. Invalid configuration exits 
 | `SHUTDOWN_TIMEOUT` | `10s` | Active-request drain period after SHUTDOWN_DELAY | ≥ 0 |
 | `TRUSTED_PROXIES` | (empty) | Comma-separated LB/ingress CIDRs | Valid CIDRs |
 | `READINESS_CHECK_DB` | `false` | Ping DB from /readyz (500ms timeout) | Go boolean syntax: true/false, 1/0, t/f, etc. |
+| `API_DOCS_ENABLED` | `false` | Serve the OpenAPI document at /openapi.json and SwaggerUI at /docs; see [API documentation](#api-documentation) | Go boolean syntax |
 | `DB_MAX_CONNS` | `10` | Maximum connections **per pod**; always overrides pool_max_conns in DATABASE_URL | ≥ 1 |
 | `DB_MIN_CONNS` | `0` | Minimum idle-ready connections; 0 uses URL pool_min_conns or pgx default | 0 ≤ DB_MIN_CONNS ≤ DB_MAX_CONNS |
 | `DB_MAX_CONN_LIFETIME` | `30m` | Maximum connection age, helping rebalance after failover | ≤ 0 uses pgx default |
@@ -103,6 +104,17 @@ func requireAuth(next echo.HandlerFunc) echo.HandlerFunc {
 	}
 }
 ```
+
+### API documentation
+
+`API_DOCS_ENABLED=true` adds two public routes. They bypass `APIMiddleware`, so authentication attached there does not protect them:
+
+| Route | Response |
+|---|---|
+| `GET /openapi.json` | OpenAPI 3.1 document generated from the registered operations (`application/openapi+json`) |
+| `GET /docs` | SwaggerUI page. It loads pinned, integrity-checked assets from `unpkg.com`, so the browser needs access to that host; the page's `Content-Security-Policy` allows only those assets |
+
+With the default `false`, both routes return 404, as do `/openapi.yaml`, `/openapi-3.0.json`, and `/schemas/...`, which this API never serves. The document uses the relative server `/` and declares no security scheme because the template enforces none; add one only together with real authentication.
 
 ## Migration
 

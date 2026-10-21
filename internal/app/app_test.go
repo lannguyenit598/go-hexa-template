@@ -527,3 +527,13 @@ func TestRun_SignalAbortsStartupWaitingOnDatabase(t *testing.T) {
 		t.Fatal("Run = nil, want startup error after cancellation")
 	}
 }
+
+func TestRun_ServesAPIDocsOnlyWhenEnabled(t *testing.T) {
+	base, _, _ := startApp(t, nil, 5*time.Second)
+	expectGET(t, base+"/openapi.json", http.StatusNotFound)
+	expectGET(t, base+"/docs", http.StatusNotFound)
+
+	base, _, _ = startApp(t, map[string]string{"API_DOCS_ENABLED": "true"}, 5*time.Second)
+	expectGET(t, base+"/openapi.json", http.StatusOK)
+	expectGET(t, base+"/docs", http.StatusOK)
+}

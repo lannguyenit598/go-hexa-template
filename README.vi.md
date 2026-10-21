@@ -19,6 +19,7 @@ Domain `user` là ví dụ minh hoạ đủ mọi tầng, không bắt buộc gi
 |---|---|
 | Go | 1.26 trở lên (bản vá bảo mật HTTP/2 của `golang.org/x/net` yêu cầu Go 1.26) |
 | Echo | `github.com/labstack/echo/v5` v5.4.0 |
+| Huma (operation có kiểu, OpenAPI 3.1) | `github.com/danielgtaylor/huma/v2` v2.39.1 |
 | PostgreSQL driver | `github.com/jackc/pgx/v5` v5.11.0 |
 | Migration | `github.com/pressly/goose/v3` v3.27.0 |
 | OpenTelemetry | `go.opentelemetry.io/otel` v1.46.0 |
@@ -84,7 +85,7 @@ internal/
                              lỗi kết quả use case (ErrNotFound, ErrVersionConflict)
     service/                 use case: Register, Get, List, Update (PATCH), Delete
   adapter/
-    inbound/httpapi/         Echo v5: route, DTO, middleware, ánh xạ lỗi sang problem+json
+    inbound/httpapi/         Echo v5 + Huma: operation, DTO, middleware, OpenAPI, ánh xạ lỗi sang problem+json
     outbound/memory/         repository trong RAM (map + RWMutex)
     outbound/postgres/       repository pgx + outbox; migrations/ (SQL nhúng, chạy bằng goose)
     outbound/postgres/pgtest/  helper integration test: schema PostgreSQL rỗng, riêng cho mỗi test

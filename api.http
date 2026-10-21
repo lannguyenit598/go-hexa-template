@@ -2,6 +2,9 @@
 ### Full documentation: docs/api.md
 @base = http://localhost:8080
 
+### OpenAPI 3.1 document (requires API_DOCS_ENABLED=true; SwaggerUI at {{base}}/docs)
+GET {{base}}/openapi.json
+
 ### Create a user. Response includes Location (new user path) and ETag: "1"
 POST {{base}}/api/v1/users
 Content-Type: application/json

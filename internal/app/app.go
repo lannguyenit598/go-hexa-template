@@ -232,6 +232,7 @@ func newHTTPServer(lc fx.Lifecycle, cfg config.Config, logger *slog.Logger, opts
 		Ready:          readiness(&draining, checkDB),
 		RequestTimeout: cfg.RequestTimeout,
 		TrustedProxies: cfg.TrustedProxies,
+		APIDocs:        cfg.APIDocsEnabled,
 	})
 	// Root request context: cancel when draining times out so handlers stop and release database
 	// connections before pool.Close(), which otherwise waits for running queries.

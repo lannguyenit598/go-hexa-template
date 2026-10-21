@@ -19,6 +19,7 @@ The `user` domain is a worked example of every layer, not a requirement. Add you
 |---|---|
 | Go | 1.26 or later (the HTTP/2 security fixes in `golang.org/x/net` require Go 1.26) |
 | Echo | `github.com/labstack/echo/v5` v5.4.0 |
+| Huma (typed operations, OpenAPI 3.1) | `github.com/danielgtaylor/huma/v2` v2.39.1 |
 | PostgreSQL driver | `github.com/jackc/pgx/v5` v5.11.0 |
 | Migrations | `github.com/pressly/goose/v3` v3.27.0 |
 | OpenTelemetry | `go.opentelemetry.io/otel` v1.46.0 |
@@ -86,7 +87,7 @@ internal/
                              use-case outcome errors (ErrNotFound, ErrVersionConflict)
     service/                 use cases: Register, Get, List, Update (PATCH), Delete
   adapter/
-    inbound/httpapi/         Echo v5: routes, DTOs, middleware, mapping errors to problem+json
+    inbound/httpapi/         Echo v5 + Huma: operations, DTOs, middleware, OpenAPI, mapping errors to problem+json
     outbound/memory/         in-memory repository (map + RWMutex)
     outbound/postgres/       pgx repository + outbox; migrations/ (embedded SQL, run by goose)
     outbound/postgres/pgtest/  integration-test helper: an empty, isolated PostgreSQL schema per test
